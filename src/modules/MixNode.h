@@ -24,6 +24,7 @@ protected:
         glActiveTexture(GL_TEXTURE1); glBindTexture(GL_TEXTURE_2D, b.id);
         glUniform1i(glGetUniformLocation(program_, "uB"), 1);
         glUniform1f(glGetUniformLocation(program_, "uFactor"), f);
+        glActiveTexture(GL_TEXTURE0);   // restore default active unit
     }
 };
 
