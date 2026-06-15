@@ -10,7 +10,7 @@ void SignalGenerator::generate(float* out, std::size_t count) {
         double s = 0.6 * std::sin(phase_)
                  + 0.3 * std::sin(2.0 * phase_)
                  + 0.1 * std::sin(3.0 * phase_);
-        out[i] = (float)s;
+        out[i] = static_cast<float>(s);
         phase_ += inc;
         if (phase_ > kTwoPi) phase_ -= kTwoPi;
     }
