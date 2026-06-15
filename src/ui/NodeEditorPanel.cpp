@@ -39,6 +39,12 @@ NodeEditorPanel::~NodeEditorPanel() {
 void NodeEditorPanel::draw(Graph& graph,
         const std::function<int(const std::string&, glm::vec2)>& addNodeOfType) {
     ImGui::Begin("Node Graph");
+    // Capture focus while "Node Graph" is the current window. Used below to gate
+    // the Backspace-to-delete shortcut so it only fires when the graph window
+    // (or its canvas child) is focused -- matching the editor's built-in Delete
+    // key, which requires the canvas to be focused + hovered.
+    const bool windowFocused =
+        ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows);
     ed::SetCurrentEditor(impl_->ctx);
     ed::Begin("graph");
 
@@ -101,6 +107,28 @@ void NodeEditorPanel::draw(Graph& graph,
         }
     }
     ed::EndCreate();
+
+    // Backspace also deletes the current selection. The editor only binds the
+    // Delete key internally (DeleteItemsAction::Accept), so translate a
+    // Backspace press into ed::DeleteNode/DeleteLink. Those queue the items so
+    // they surface through QueryDeleted*() on the next frame and reuse the
+    // graph-mutation code below -- no duplicate delete logic. Gated to match
+    // Delete: the graph window must be focused and no text field may be
+    // capturing input (WantTextInput), else Backspace in a filename field
+    // would delete the selected node instead of editing the text.
+    if (windowFocused && !ImGui::GetIO().WantTextInput &&
+        ed::AreShortcutsEnabled() &&
+        ImGui::IsKeyPressed(ImGuiKey_Backspace, false)) {
+        int count = ed::GetSelectedObjectCount();
+        if (count > 0) {
+            std::vector<ed::NodeId> selNodes(count);
+            std::vector<ed::LinkId> selLinks(count);
+            int nNodes = ed::GetSelectedNodes(selNodes.data(), count);
+            int nLinks = ed::GetSelectedLinks(selLinks.data(), count);
+            for (int i = 0; i < nNodes; ++i) ed::DeleteNode(selNodes[i]);
+            for (int i = 0; i < nLinks; ++i) ed::DeleteLink(selLinks[i]);
+        }
+    }
 
     // Delete links / nodes. Resolve each deleted LinkId to a stable
     // (dstNode, dstPort) key BEFORE mutating: disconnect() erases from
