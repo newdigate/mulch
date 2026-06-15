@@ -124,6 +124,9 @@ add_executable(gl_smoke
   src/gfx/Framebuffer.cpp
   src/gfx/FullscreenPass.cpp
   src/gfx/ShaderNode.cpp
+  src/modules/SpectrographNode.cpp
+  src/audio/FFT.cpp
+  src/audio/SignalGenerator.cpp
 )
 target_include_directories(gl_smoke PRIVATE src)
 target_compile_definitions(gl_smoke PRIVATE GLFW_INCLUDE_NONE)

@@ -12,6 +12,7 @@
 #include "modules/ColourNode.h"
 #include "modules/MixNode.h"
 #include "modules/OutputNode.h"
+#include "modules/SpectrographNode.h"
 
 using namespace oss;
 
@@ -92,6 +93,34 @@ int main() {
             glfwTerminate(); return fail("mix pixel wrong");
         }
         std::fprintf(stderr, "gl_smoke OK: Mix blends red+blue correctly\n");
+    }
+
+    // --- Scenario 3: Spectrograph -> Output (synth audio -> FFT -> bars) ---
+    {
+        Graph g3;
+        auto spec = std::make_unique<SpectrographNode>();
+        auto out3 = std::make_unique<OutputNode>();
+        spec->initGL(); out3->initGL();
+        int sId  = g3.addNode(std::move(spec));
+        int oId3 = g3.addNode(std::move(out3));
+        if (!g3.connect(sId, 0, oId3, 0)) return fail("connect spectrograph->output");
+        for (int f = 0; f < 8; ++f) g3.evaluate(1.0f / 60.0f);   // fill the rolling window
+        auto* o3 = dynamic_cast<OutputNode*>(g3.findNode(oId3));
+        TexRef t3 = o3->current();
+        if (!t3.id) return fail("spectrograph output texture not produced");
+        std::vector<unsigned char> px((size_t)t3.w * t3.h * 4);
+        glBindTexture(GL_TEXTURE_2D, t3.id);
+        glGetTexImage(GL_TEXTURE_2D, 0, GL_RGBA, GL_UNSIGNED_BYTE, px.data());
+        bool sawBg = false, sawBar = false;
+        for (size_t i = 0; i < px.size(); i += 4) {
+            int r = px[i], g = px[i+1], b = px[i+2];
+            if (r < 40 && g < 40 && b < 40) sawBg = true;          // dark background
+            if (g > 200 && r < 90 && b < 170) sawBar = true;        // bright green bar
+            if (sawBg && sawBar) break;
+        }
+        std::fprintf(stderr, "gl_smoke spectrograph: sawBg=%d sawBar=%d\n", (int)sawBg, (int)sawBar);
+        if (!(sawBg && sawBar)) return fail("spectrograph did not render bars");
+        std::fprintf(stderr, "gl_smoke OK: Spectrograph rendered FFT bars\n");
     }
 
     glfwDestroyWindow(win);
