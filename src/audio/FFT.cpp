@@ -1,10 +1,12 @@
 #include "audio/FFT.h"
+#include <cassert>
 #include <cmath>
 
 namespace oss {
 
 void fft(std::vector<std::complex<float>>& a) {
     const std::size_t n = a.size();
+    assert((n == 0 || (n & (n - 1)) == 0) && "fft size must be a power of two");
     if (n < 2) return;
     // bit-reversal permutation
     for (std::size_t i = 1, j = 0; i < n; ++i) {
@@ -15,15 +17,16 @@ void fft(std::vector<std::complex<float>>& a) {
     }
     const float kPi = 3.14159265358979323846f;
     for (std::size_t len = 2; len <= n; len <<= 1) {
-        float ang = -2.0f * kPi / (float)len;
+        float ang = -2.0f * kPi / static_cast<float>(len);
         std::complex<float> wlen(std::cos(ang), std::sin(ang));
+        const std::size_t half = len / 2;
         for (std::size_t i = 0; i < n; i += len) {
             std::complex<float> w(1.0f, 0.0f);
-            for (std::size_t k = 0; k < len / 2; ++k) {
+            for (std::size_t k = 0; k < half; ++k) {
                 std::complex<float> u = a[i + k];
-                std::complex<float> v = a[i + k + len / 2] * w;
-                a[i + k] = u + v;
-                a[i + k + len / 2] = u - v;
+                std::complex<float> v = a[i + k + half] * w;
+                a[i + k]        = u + v;
+                a[i + k + half] = u - v;
                 w *= wlen;
             }
         }

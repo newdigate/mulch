@@ -11,7 +11,9 @@ TEST_CASE("magnitudeSpectrum peaks at a pure sine's bin") {
     auto mag = oss::magnitudeSpectrum(s);
     REQUIRE(mag.size() == (size_t)N / 2);
     int peak = 0;
-    for (int i = 1; i < (int)mag.size(); ++i) if (mag[i] > mag[peak]) peak = i;
+    for (int i = 1; i < (int)mag.size(); ++i) {
+        if (mag[i] > mag[peak]) peak = i;
+    }
     CHECK(peak == k);
 }
 
@@ -19,5 +21,5 @@ TEST_CASE("magnitudeSpectrum of DC has all energy in bin 0") {
     std::vector<float> s(32, 1.0f);
     auto mag = oss::magnitudeSpectrum(s);
     for (size_t i = 1; i < mag.size(); ++i) CHECK(mag[i] == doctest::Approx(0.0f).epsilon(1e-3));
-    CHECK(mag[0] > 1.0f);
+    CHECK(mag[0] == doctest::Approx(32.0f));
 }
