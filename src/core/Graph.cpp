@@ -87,4 +87,34 @@ std::vector<int> Graph::topologicalOrder() const {
     return order;
 }
 
+void Graph::evaluate(float dt) {
+    if (orderDirty_) { order_ = topologicalOrder(); orderDirty_ = false; }
+    for (int id : order_) {
+        Node* n = findNode(id);
+        if (!n) continue;
+        const auto& ins = n->inputs();
+
+        std::vector<Value> inputs(ins.size());
+        for (std::size_t i = 0; i < ins.size(); ++i) {
+            const Connection* conn = nullptr;
+            for (auto& c : connections_)
+                if (c.dstNode == id && c.dstPort == (int)i) { conn = &c; break; }
+            if (conn) {
+                auto it = outputs_.find(conn->srcNode);
+                if (it != outputs_.end() && conn->srcPort < (int)it->second.size())
+                    inputs[i] = it->second[conn->srcPort];
+                else
+                    inputs[i] = ins[i].defaultValue;
+            } else {
+                inputs[i] = ins[i].defaultValue;
+            }
+        }
+
+        std::vector<Value>& outs = outputs_[id];
+        outs.assign(n->outputs().size(), Value{});
+        EvalContext ctx{inputs, outs, dt};
+        n->evaluate(ctx);
+    }
+}
+
 } // namespace oss

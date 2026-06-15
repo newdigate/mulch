@@ -45,6 +45,11 @@ TEST_CASE("EvalContext resolves inputs and writes outputs") {
 #include "core/Graph.h"
 
 namespace {
+struct CaptureFloat : Node {
+    float captured = -999.0f;
+    CaptureFloat() : Node("capture") { addInput("in", PortType::Float, 0.0f); }
+    void evaluate(EvalContext& ctx) override { captured = ctx.in<float>(0); }
+};
 struct ColourSink : Node {           // input-only Colour node, for type-mismatch tests
     ColourSink() : Node("csink") { addInput("c", PortType::Colour, glm::vec4(0)); }
     void evaluate(EvalContext&) override {}
@@ -83,4 +88,32 @@ TEST_CASE("topologicalOrder places sources before consumers") {
     auto idx = [&](int id){ return std::find(order.begin(), order.end(), id) - order.begin(); };
     CHECK(idx(a) < idx(b));
     CHECK(idx(b) < idx(c));
+}
+
+TEST_CASE("evaluate propagates values along edges in topological order") {
+    Graph g;
+    int a   = g.addNode(std::make_unique<ConstFloat>(2.0f));
+    int b   = g.addNode(std::make_unique<ConstFloat>(3.0f));
+    int sum = g.addNode(std::make_unique<AddFloats>());
+    int cap = g.addNode(std::make_unique<CaptureFloat>());
+    g.connect(a, 0, sum, 0);
+    g.connect(b, 0, sum, 1);
+    g.connect(sum, 0, cap, 0);
+    g.evaluate(0.016f);
+    auto* capture = dynamic_cast<CaptureFloat*>(g.findNode(cap));
+    REQUIRE(capture != nullptr);
+    CHECK(capture->captured == doctest::Approx(5.0f));
+}
+
+TEST_CASE("evaluate uses the port default for an unconnected input") {
+    Graph g;
+    int a   = g.addNode(std::make_unique<ConstFloat>(7.0f));
+    int sum = g.addNode(std::make_unique<AddFloats>());   // input b left unconnected -> default 0
+    int cap = g.addNode(std::make_unique<CaptureFloat>());
+    g.connect(a, 0, sum, 0);
+    g.connect(sum, 0, cap, 0);
+    g.evaluate(0.016f);
+    auto* capture = dynamic_cast<CaptureFloat*>(g.findNode(cap));
+    REQUIRE(capture != nullptr);
+    CHECK(capture->captured == doctest::Approx(7.0f));    // 7 + default 0
 }
