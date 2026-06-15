@@ -39,7 +39,8 @@ FetchContent_MakeAvailable(imgui)
 
 # --- imgui-node-editor ---
 FetchContent_Declare(imgui_node_editor
-  GIT_REPOSITORY https://github.com/thedmd/imgui-node-editor.git GIT_TAG master) # TODO: pin to a tagged release once API verified
+  GIT_REPOSITORY https://github.com/thedmd/imgui-node-editor.git
+  GIT_TAG 021aa0ea4da13fed864bafb2a92d4c5205076866) # pinned: v0.9.4 (commit 021aa0e)
 FetchContent_MakeAvailable(imgui_node_editor)
 
 # --- doctest ---
@@ -132,3 +133,9 @@ target_include_directories(gl_smoke PRIVATE src)
 target_compile_definitions(gl_smoke PRIVATE GLFW_INCLUDE_NONE)
 target_link_libraries(gl_smoke PRIVATE glad_gl41 glfw glm::glm OpenGL::GL)
 add_test(NAME gl_smoke COMMAND gl_smoke WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
+
+# Copy shaders next to the executable so the app can be run from the build dir too
+# (it also resolves shaders/ when run from the repo root).
+add_custom_command(TARGET shader_streamer POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_directory
+        ${CMAKE_SOURCE_DIR}/shaders $<TARGET_FILE_DIR:shader_streamer>/shaders)
