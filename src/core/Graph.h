@@ -24,7 +24,6 @@ public:
     Node* findNode(int nodeId) const;
 
     // Evaluate every node once in topological order. dt = seconds this frame.
-    // (Implemented in a later task.)
     void evaluate(float dt);
 
     // Topological order of node ids; empty if the graph is cyclic. (Testable.)
