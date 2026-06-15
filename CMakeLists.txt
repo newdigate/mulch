@@ -106,6 +106,7 @@ add_executable(core_tests
   tests/test_graph.cpp
   tests/test_fft.cpp
   tests/test_signal_generator.cpp
+  tests/test_sine_wave.cpp
   src/core/Node.cpp
   src/core/Graph.cpp
   src/audio/FFT.cpp

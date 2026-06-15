@@ -37,6 +37,10 @@ void SpectrographNode::evaluate(EvalContext& ctx) {
     // connected source's sample rate when present, else the internal synth's.
     int sr = (a.samples && a.sampleRate > 0) ? a.sampleRate : gen_.sampleRate();
     int adv = std::clamp((int)std::lround(sr * (double)ctx.dt), 1, kWindow);
+    // When an external source is connected, ingest exactly the block it gave us
+    // (capped to the window). This keeps the rolling window gap-free regardless
+    // of the source's per-frame block size, instead of recomputing adv from dt.
+    if (a.samples) adv = std::clamp((int)a.count, 1, kWindow);
     std::move(window_.begin() + adv, window_.end(), window_.begin());
     float* tail = window_.data() + (kWindow - adv);
 

@@ -46,6 +46,10 @@ protected:
     void addInput(std::string n, PortType t, Value def) {
         inputs_.push_back({std::move(n), Direction::Input, t, std::move(def)});
     }
+    // Overload carrying a numeric range for the inline Float slider.
+    void addInput(std::string n, PortType t, Value def, float lo, float hi) {
+        inputs_.push_back({std::move(n), Direction::Input, t, std::move(def), lo, hi});
+    }
     void addOutput(std::string n, PortType t) {
         outputs_.push_back({std::move(n), Direction::Output, t, Value{}});
     }

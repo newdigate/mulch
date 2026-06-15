@@ -3,12 +3,14 @@
 #include "modules/ColourNode.h"
 #include "modules/MixNode.h"
 #include "modules/OutputNode.h"
+#include "modules/SineWaveNode.h"
 #include "modules/SpectrographNode.h"
 
 namespace oss {
 
 std::unique_ptr<Node> makeNode(const std::string& type) {
     if (type == "Colour")      return std::make_unique<ColourNode>();
+    if (type == "Sine")        return std::make_unique<SineWaveNode>();
     if (type == "Spectrograph") return std::make_unique<SpectrographNode>();
     if (type == "Mix")         return std::make_unique<MixNode>();
     if (type == "Output")      return std::make_unique<OutputNode>();
@@ -16,7 +18,7 @@ std::unique_ptr<Node> makeNode(const std::string& type) {
 }
 
 const std::vector<std::string>& nodeTypeNames() {
-    static const std::vector<std::string> names = { "Colour", "Spectrograph", "Mix", "Output" };
+    static const std::vector<std::string> names = { "Colour", "Sine", "Spectrograph", "Mix", "Output" };
     return names;
 }
 

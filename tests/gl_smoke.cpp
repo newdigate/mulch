@@ -12,6 +12,7 @@
 #include "modules/ColourNode.h"
 #include "modules/MixNode.h"
 #include "modules/OutputNode.h"
+#include "modules/SineWaveNode.h"
 #include "modules/SpectrographNode.h"
 
 using namespace oss;
@@ -121,6 +122,57 @@ int main() {
         std::fprintf(stderr, "gl_smoke spectrograph: sawBg=%d sawBar=%d\n", (int)sawBg, (int)sawBar);
         if (!(sawBg && sawBar)) { glfwTerminate(); return fail("spectrograph did not render bars"); }
         std::fprintf(stderr, "gl_smoke OK: Spectrograph rendered FFT bars\n");
+    }
+
+    // --- Scenario 4: SineWave -> Spectrograph -> Output (audio crosses an edge) ---
+    // A connected sine must drive the spectrum. To prove the edge actually
+    // carries audio (rather than the spectrograph silently using its internal
+    // synth), render a second spectrograph with NO input and assert the two
+    // spectra differ -- a single 4 kHz tone has a different shape than the
+    // 220 Hz synth + harmonics.
+    {
+        Graph gc;  // connected: sine -> spectrograph -> output
+        auto sine  = std::make_unique<SineWaveNode>();
+        sine->inputDefault(0) = 4000.0f;   // distinct tone, well above the synth band
+        auto specC = std::make_unique<SpectrographNode>();
+        auto outC  = std::make_unique<OutputNode>();
+        sine->initGL(); specC->initGL(); outC->initGL();   // sine initGL is a no-op
+        int siId = gc.addNode(std::move(sine));
+        int spId = gc.addNode(std::move(specC));
+        int ocId = gc.addNode(std::move(outC));
+        if (!gc.connect(siId, 0, spId, 0)) { glfwTerminate(); return fail("connect sine->spectrograph"); }
+        if (!gc.connect(spId, 0, ocId, 0)) { glfwTerminate(); return fail("connect spectrograph->output"); }
+
+        Graph gu;  // unconnected control: spectrograph(synth) -> output
+        auto specU = std::make_unique<SpectrographNode>();
+        auto outU  = std::make_unique<OutputNode>();
+        specU->initGL(); outU->initGL();
+        int spuId = gu.addNode(std::move(specU));
+        int ouId  = gu.addNode(std::move(outU));
+        if (!gu.connect(spuId, 0, ouId, 0)) { glfwTerminate(); return fail("connect synth-spectrograph->output"); }
+
+        for (int f = 0; f < 8; ++f) { gc.evaluate(1.0f / 60.0f); gu.evaluate(1.0f / 60.0f); }
+
+        TexRef tc = dynamic_cast<OutputNode*>(gc.findNode(ocId))->current();
+        TexRef tu = dynamic_cast<OutputNode*>(gu.findNode(ouId))->current();
+        if (!tc.id || !tu.id) { glfwTerminate(); return fail("sine/spectrograph textures not produced"); }
+
+        std::vector<unsigned char> pc((size_t)tc.w * tc.h * 4), pu((size_t)tu.w * tu.h * 4);
+        glBindTexture(GL_TEXTURE_2D, tc.id);
+        glGetTexImage(GL_TEXTURE_2D, 0, GL_RGBA, GL_UNSIGNED_BYTE, pc.data());
+        glBindTexture(GL_TEXTURE_2D, tu.id);
+        glGetTexImage(GL_TEXTURE_2D, 0, GL_RGBA, GL_UNSIGNED_BYTE, pu.data());
+
+        bool sawBar = false, differ = false;
+        for (size_t i = 0; i < pc.size() && !(sawBar && differ); i += 4) {
+            if (pc[i+1] > 200 && pc[i] < 90 && pc[i+2] < 170) sawBar = true;   // bright green bar
+            if (pc[i] != pu[i] || pc[i+1] != pu[i+1] || pc[i+2] != pu[i+2]) differ = true;
+        }
+        std::fprintf(stderr, "gl_smoke sine->spectrograph: sawBar=%d differsFromSynth=%d\n",
+                     (int)sawBar, (int)differ);
+        if (!sawBar)  { glfwTerminate(); return fail("sine->spectrograph rendered no bars"); }
+        if (!differ)  { glfwTerminate(); return fail("connected sine produced same spectrum as synth (edge not carrying audio)"); }
+        std::fprintf(stderr, "gl_smoke OK: SineWave drives Spectrograph through a connection\n");
     }
 
     glfwDestroyWindow(win);

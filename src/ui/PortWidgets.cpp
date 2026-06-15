@@ -20,7 +20,7 @@ void drawInlineInputWidget(Node& node, std::size_t i) {
             break;
         }
         case PortType::Float: {
-            ImGui::SliderFloat("##f", &std::get<float>(v), 0.0f, 1.0f);
+            ImGui::SliderFloat("##f", &std::get<float>(v), port.minVal, port.maxVal);
             break;
         }
         case PortType::Bool: {
