@@ -14,5 +14,9 @@ TEST_CASE("typeOf maps each Value alternative to its PortType") {
 
 TEST_CASE("portTypeName is stable") {
     CHECK(std::string(portTypeName(PortType::Texture)) == "Texture");
+    CHECK(std::string(portTypeName(PortType::Colour))  == "Colour");
+    CHECK(std::string(portTypeName(PortType::Float))   == "Float");
+    CHECK(std::string(portTypeName(PortType::Bool))    == "Bool");
     CHECK(std::string(portTypeName(PortType::Audio))   == "Audio");
+    CHECK(std::string(portTypeName(PortType::String))  == "String");
 }
