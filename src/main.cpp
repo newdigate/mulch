@@ -17,7 +17,12 @@ int main() {
     if (!window) { glfwTerminate(); return 1; }
     glfwMakeContextCurrent(window);
     glfwSwapInterval(1);
-    if (!gladLoadGL((GLADloadfunc)glfwGetProcAddress)) { std::fprintf(stderr, "glad failed\n"); return 1; }
+    if (!gladLoadGL((GLADloadfunc)glfwGetProcAddress)) {
+        std::fprintf(stderr, "glad failed\n");
+        glfwDestroyWindow(window);
+        glfwTerminate();
+        return 1;
+    }
 
     IMGUI_CHECKVERSION();
     ImGui::CreateContext();

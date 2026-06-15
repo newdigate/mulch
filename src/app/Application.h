@@ -2,6 +2,7 @@
 #include <memory>
 #include <string>
 #include <vector>
+#include <glm/vec2.hpp>
 #include "core/Graph.h"
 
 struct GLFWwindow;
@@ -22,7 +23,7 @@ public:
 private:
     void drawViewer();
 
-    GLFWwindow* window_;
+    GLFWwindow* window_;   // reserved for framebuffer-size / HiDPI queries
     Graph graph_;
 };
 
