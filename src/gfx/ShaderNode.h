@@ -13,6 +13,7 @@ class ShaderNode : public Node {
 public:
     ShaderNode(std::string name, std::string fragPath)
         : Node(std::move(name)), fragPath_(std::move(fragPath)) {}
+    ~ShaderNode() override;     // deletes the GL program (fbo_/fsq_ free themselves)
 
     void initGL() override;     // compile program + create FBO/VAO
 

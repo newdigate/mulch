@@ -15,6 +15,10 @@ void main() {
 }
 )";
 
+ShaderNode::~ShaderNode() {
+    if (program_) glDeleteProgram(program_);
+}
+
 void ShaderNode::initGL() {
     program_ = linkProgram(kFullscreenVS, readFile(fragPath_));
     fbo_.create(kCanvasW, kCanvasH);
