@@ -1,4 +1,6 @@
 #include <doctest/doctest.h>
+#include <algorithm>
+#include <memory>
 #include "core/Node.h"
 
 using namespace oss;
@@ -38,4 +40,47 @@ TEST_CASE("EvalContext resolves inputs and writes outputs") {
     EvalContext ctx{ inputs, outputs, 0.016f };
     n.evaluate(ctx);
     CHECK(std::get<float>(outputs[0]) == doctest::Approx(5.0f));
+}
+
+#include "core/Graph.h"
+
+namespace {
+struct ColourSink : Node {           // input-only Colour node, for type-mismatch tests
+    ColourSink() : Node("csink") { addInput("c", PortType::Colour, glm::vec4(0)); }
+    void evaluate(EvalContext&) override {}
+};
+} // namespace
+
+TEST_CASE("connect accepts matching types and rejects mismatches") {
+    Graph g;
+    int c = g.addNode(std::make_unique<ConstFloat>(1.0f));
+    int a = g.addNode(std::make_unique<AddFloats>());
+    int s = g.addNode(std::make_unique<ColourSink>());
+
+    CHECK(g.connect(c, 0, a, 0) == true);          // Float -> Float OK
+    CHECK(g.connect(c, 0, s, 0) == false);         // Float -> Colour rejected
+    CHECK(g.connect(c, 0, a, 0) == false);         // input already connected
+    CHECK(g.connect(c, 0, a, 5) == false);         // bad port index
+}
+
+TEST_CASE("connect rejects edges that would create a cycle") {
+    Graph g;
+    int a = g.addNode(std::make_unique<AddFloats>());
+    int b = g.addNode(std::make_unique<AddFloats>());
+    CHECK(g.connect(a, 0, b, 0) == true);
+    CHECK(g.connect(b, 0, a, 0) == false);         // would form a cycle
+}
+
+TEST_CASE("topologicalOrder places sources before consumers") {
+    Graph g;
+    int a = g.addNode(std::make_unique<ConstFloat>(1.0f));
+    int b = g.addNode(std::make_unique<AddFloats>());
+    int c = g.addNode(std::make_unique<AddFloats>());
+    g.connect(a, 0, b, 0);
+    g.connect(b, 0, c, 0);
+    auto order = g.topologicalOrder();
+    REQUIRE(order.size() == 3);
+    auto idx = [&](int id){ return std::find(order.begin(), order.end(), id) - order.begin(); };
+    CHECK(idx(a) < idx(b));
+    CHECK(idx(b) < idx(c));
 }
