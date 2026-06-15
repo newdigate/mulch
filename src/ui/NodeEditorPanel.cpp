@@ -4,6 +4,8 @@
 #include <imgui.h>
 #include <imgui_node_editor.h>
 #include <set>
+#include <vector>
+#include <utility>
 
 namespace ed = ax::NodeEditor;
 
@@ -62,6 +64,8 @@ void NodeEditorPanel::draw(Graph& graph,
 
         // Place each node at its model position the first time it is seen; on
         // later frames read the position back so user drags persist into n.pos.
+        // `placed` only grows with total nodes ever created (ids are monotonic
+        // and never reused), so stale entries for deleted nodes are harmless.
         if (impl_->placed.find(n.id()) == impl_->placed.end()) {
             ed::SetNodePosition(ed::NodeId(n.id()), ImVec2(n.pos.x, n.pos.y));
             impl_->placed.insert(n.id());
@@ -98,18 +102,25 @@ void NodeEditorPanel::draw(Graph& graph,
     }
     ed::EndCreate();
 
-    // Delete links / nodes.
+    // Delete links / nodes. Resolve each deleted LinkId to a stable
+    // (dstNode, dstPort) key BEFORE mutating: disconnect() erases from
+    // connections_ and shifts later indices, so deleting 2+ links in one
+    // batch by live index would drop or mis-target edges. (Inputs are
+    // single-connection, so the key uniquely identifies the edge.)
     if (ed::BeginDelete()) {
+        std::vector<std::pair<int, int>> toDisconnect;   // (dstNode, dstPort)
         ed::LinkId lid;
         while (ed::QueryDeletedLink(&lid)) {
             if (ed::AcceptDeletedItem()) {
                 int idx = (int)lid.Get() - 1;
                 if (idx >= 0 && idx < (int)graph.connections().size()) {
                     const Connection& c = graph.connections()[idx];
-                    graph.disconnect(c.dstNode, c.dstPort);
+                    toDisconnect.emplace_back(c.dstNode, c.dstPort);
                 }
             }
         }
+        for (auto& [dn, dp] : toDisconnect) graph.disconnect(dn, dp);
+
         ed::NodeId nid;
         while (ed::QueryDeletedNode(&nid)) {
             if (ed::AcceptDeletedItem()) graph.removeNode((int)nid.Get());
