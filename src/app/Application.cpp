@@ -34,6 +34,7 @@ int Application::addNodeOfType(const std::string& type, glm::vec2 pos) {
 }
 
 void Application::frame(float dt) {
+    editor_.draw(graph_, [this](const std::string& t, glm::vec2 p){ return addNodeOfType(t, p); });
     graph_.evaluate(dt);
     drawViewer();
 }
