@@ -31,16 +31,21 @@ void SpectrographNode::initGL() {
 }
 
 void SpectrographNode::evaluate(EvalContext& ctx) {
-    // Advance the rolling window by one frame's worth of samples.
-    int adv = std::clamp((int)std::lround(gen_.sampleRate() * (double)ctx.dt), 1, kWindow);
+    AudioRef a = ctx.in<AudioRef>(0);
+
+    // Advance the rolling window by one frame's worth of samples. Use the
+    // connected source's sample rate when present, else the internal synth's.
+    int sr = (a.samples && a.sampleRate > 0) ? a.sampleRate : gen_.sampleRate();
+    int adv = std::clamp((int)std::lround(sr * (double)ctx.dt), 1, kWindow);
     std::move(window_.begin() + adv, window_.end(), window_.begin());
     float* tail = window_.data() + (kWindow - adv);
 
-    AudioRef a = ctx.in<AudioRef>(0);
     if (a.samples && a.count >= (std::size_t)adv) {
         std::copy(a.samples + (a.count - adv), a.samples + a.count, tail);
     } else {
-        gen_.generate(tail, adv);   // unconnected default: synth
+        // No audio connected (a.samples==nullptr), or an upstream underrun
+        // (a.count<adv): fill the new tail from the internal synth.
+        gen_.generate(tail, adv);
     }
 
     auto mag = magnitudeSpectrum(window_);

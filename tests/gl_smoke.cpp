@@ -103,11 +103,11 @@ int main() {
         spec->initGL(); out3->initGL();
         int sId  = g3.addNode(std::move(spec));
         int oId3 = g3.addNode(std::move(out3));
-        if (!g3.connect(sId, 0, oId3, 0)) return fail("connect spectrograph->output");
+        if (!g3.connect(sId, 0, oId3, 0)) { glfwTerminate(); return fail("connect spectrograph->output"); }
         for (int f = 0; f < 8; ++f) g3.evaluate(1.0f / 60.0f);   // fill the rolling window
         auto* o3 = dynamic_cast<OutputNode*>(g3.findNode(oId3));
         TexRef t3 = o3->current();
-        if (!t3.id) return fail("spectrograph output texture not produced");
+        if (!t3.id) { glfwTerminate(); return fail("spectrograph output texture not produced"); }
         std::vector<unsigned char> px((size_t)t3.w * t3.h * 4);
         glBindTexture(GL_TEXTURE_2D, t3.id);
         glGetTexImage(GL_TEXTURE_2D, 0, GL_RGBA, GL_UNSIGNED_BYTE, px.data());
@@ -119,7 +119,7 @@ int main() {
             if (sawBg && sawBar) break;
         }
         std::fprintf(stderr, "gl_smoke spectrograph: sawBg=%d sawBar=%d\n", (int)sawBg, (int)sawBar);
-        if (!(sawBg && sawBar)) return fail("spectrograph did not render bars");
+        if (!(sawBg && sawBar)) { glfwTerminate(); return fail("spectrograph did not render bars"); }
         std::fprintf(stderr, "gl_smoke OK: Spectrograph rendered FFT bars\n");
     }
 
