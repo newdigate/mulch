@@ -1,18 +1,20 @@
 #include "app/Application.h"
 #include <imgui.h>
 #include "modules/ColourNode.h"
+#include "modules/MixNode.h"
 #include "modules/OutputNode.h"
 
 namespace oss {
 
 std::unique_ptr<Node> makeNode(const std::string& type) {
     if (type == "Colour") return std::make_unique<ColourNode>();
+    if (type == "Mix")    return std::make_unique<MixNode>();
     if (type == "Output") return std::make_unique<OutputNode>();
     return nullptr;
 }
 
 const std::vector<std::string>& nodeTypeNames() {
-    static const std::vector<std::string> names = { "Colour", "Output" };
+    static const std::vector<std::string> names = { "Colour", "Mix", "Output" };
     return names;
 }
 
