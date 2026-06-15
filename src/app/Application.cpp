@@ -21,7 +21,8 @@ const std::vector<std::string>& nodeTypeNames() {
 }
 
 Application::Application(GLFWwindow* window) : window_(window) {
-    // Hardcoded Colour -> Output graph for this milestone.
+    // Seed a small starting graph (Colour -> Output) so the canvas isn't empty
+    // on launch. The user can add/connect/delete nodes freely from here.
     int c = addNodeOfType("Colour", {40, 40});
     int o = addNodeOfType("Output", {360, 40});
     graph_.connect(c, 0, o, 0);
