@@ -113,3 +113,19 @@ add_executable(core_tests
 target_include_directories(core_tests PRIVATE src)
 target_link_libraries(core_tests PRIVATE glm::glm doctest::doctest)
 add_test(NAME core_tests COMMAND core_tests)
+
+# Headless GL render smoke test: renders the graph offscreen and reads back pixels.
+# Requires a display/WindowServer (works locally on macOS; may be skipped in headless CI).
+add_executable(gl_smoke
+  tests/gl_smoke.cpp
+  src/core/Node.cpp
+  src/core/Graph.cpp
+  src/gfx/GLUtil.cpp
+  src/gfx/Framebuffer.cpp
+  src/gfx/FullscreenPass.cpp
+  src/gfx/ShaderNode.cpp
+)
+target_include_directories(gl_smoke PRIVATE src)
+target_compile_definitions(gl_smoke PRIVATE GLFW_INCLUDE_NONE)
+target_link_libraries(gl_smoke PRIVATE glad_gl41 glfw glm::glm OpenGL::GL)
+add_test(NAME gl_smoke COMMAND gl_smoke WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
