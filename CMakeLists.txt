@@ -39,11 +39,14 @@ FetchContent_MakeAvailable(imgui)
 
 # --- imgui-node-editor ---
 FetchContent_Declare(imgui_node_editor
-  GIT_REPOSITORY https://github.com/thedmd/imgui-node-editor.git GIT_TAG master)
+  GIT_REPOSITORY https://github.com/thedmd/imgui-node-editor.git GIT_TAG master) # TODO: pin to a tagged release once API verified
 FetchContent_MakeAvailable(imgui_node_editor)
 
 # --- doctest ---
 FetchContent_Declare(doctest GIT_REPOSITORY https://github.com/doctest/doctest.git GIT_TAG v2.4.11)
+# doctest v2.4.11's bundled CMake uses cmake_minimum_required(VERSION 3.0), which
+# CMake 4.x rejects. Relax the policy minimum just for doctest's sub-build, then
+# restore it so other dependencies are unaffected.
 set(CMAKE_POLICY_VERSION_MINIMUM 3.5)
 FetchContent_MakeAvailable(doctest)
 unset(CMAKE_POLICY_VERSION_MINIMUM)
@@ -69,6 +72,7 @@ target_include_directories(ui_thirdparty PUBLIC
   ${imgui_node_editor_SOURCE_DIR}
 )
 target_link_libraries(ui_thirdparty PUBLIC glfw OpenGL::GL)
+target_compile_definitions(ui_thirdparty PRIVATE GLFW_INCLUDE_NONE)
 
 # --- Core/gfx/audio/modules/ui sources shared by the app ---
 set(APP_SOURCES
@@ -90,7 +94,7 @@ set(APP_SOURCES
 add_executable(shader_streamer src/main.cpp ${APP_SOURCES})
 target_include_directories(shader_streamer PRIVATE src)
 target_compile_definitions(shader_streamer PRIVATE GLFW_INCLUDE_NONE)
-target_link_libraries(shader_streamer PRIVATE ui_thirdparty glad_gl41 glm::glm OpenGL::GL)
+target_link_libraries(shader_streamer PRIVATE ui_thirdparty glad_gl41 glm::glm)
 
 # --- Tests (GL-free core only) ---
 enable_testing()

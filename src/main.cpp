@@ -18,7 +18,10 @@ int main() {
     glfwSwapInterval(1);
 
     if (!gladLoadGL((GLADloadfunc)glfwGetProcAddress)) {
-        std::fprintf(stderr, "glad load failed\n"); return 1;
+        std::fprintf(stderr, "glad load failed\n");
+        glfwDestroyWindow(window);
+        glfwTerminate();
+        return 1;
     }
 
     IMGUI_CHECKVERSION();
