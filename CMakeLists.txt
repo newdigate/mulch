@@ -52,6 +52,36 @@ set(CMAKE_POLICY_VERSION_MINIMUM 3.5)
 FetchContent_MakeAvailable(doctest)
 unset(CMAKE_POLICY_VERSION_MINIMUM)
 
+# --- libsoundio (cross-platform audio output) ---
+FetchContent_Declare(libsoundio
+  GIT_REPOSITORY https://github.com/andrewrk/libsoundio.git
+  GIT_TAG 2.0.0)
+# Build only the static lib we link; skip the shared lib, example programs, and
+# the library's own test suite.
+set(BUILD_DYNAMIC_LIBS   OFF CACHE BOOL "" FORCE)
+set(BUILD_STATIC_LIBS    ON  CACHE BOOL "" FORCE)
+set(BUILD_EXAMPLE_PROGRAMS OFF CACHE BOOL "" FORCE)
+set(BUILD_TESTS          OFF CACHE BOOL "" FORCE)
+# libsoundio's bundled CMake requires cmake_minimum_required(VERSION 2.8.x),
+# which CMake 4.x rejects. Relax the policy minimum just for its sub-build.
+set(CMAKE_POLICY_VERSION_MINIMUM 3.5)
+FetchContent_MakeAvailable(libsoundio)
+unset(CMAKE_POLICY_VERSION_MINIMUM)
+# libsoundio's Debug build adds -Werror; its CoreAudio backend still uses
+# kAudioObjectPropertyElementMaster, deprecated since macOS 12, which then fails
+# the build. Stop treating its warnings as errors (its target only).
+if(TARGET libsoundio_static)
+  target_compile_options(libsoundio_static PRIVATE -Wno-error -Wno-deprecated-declarations)
+  # Its bundled CMake links the CoreAudio frameworks only to its (skipped) own
+  # binaries, not as usage requirements, so consumers must get them. Attach them
+  # as INTERFACE deps so anything linking libsoundio_static pulls them in.
+  if(APPLE)
+    target_link_libraries(libsoundio_static INTERFACE
+      "-framework CoreAudio" "-framework AudioUnit"
+      "-framework AudioToolbox" "-framework CoreFoundation")
+  endif()
+endif()
+
 find_package(OpenGL REQUIRED)
 
 # --- UI third-party static lib: ImGui + backends + node editor ---
@@ -85,6 +115,7 @@ set(APP_SOURCES
   src/gfx/Framebuffer.cpp
   src/gfx/FullscreenPass.cpp
   src/gfx/ShaderNode.cpp
+  src/modules/AudioOutputNode.cpp
   src/modules/SpectrographNode.cpp
   src/ui/NodeEditorPanel.cpp
   src/ui/PortWidgets.cpp
@@ -93,9 +124,9 @@ set(APP_SOURCES
 
 # --- Application executable ---
 add_executable(shader_streamer src/main.cpp ${APP_SOURCES})
-target_include_directories(shader_streamer PRIVATE src)
+target_include_directories(shader_streamer PRIVATE src ${libsoundio_SOURCE_DIR})
 target_compile_definitions(shader_streamer PRIVATE GLFW_INCLUDE_NONE)
-target_link_libraries(shader_streamer PRIVATE ui_thirdparty glad_gl41 glm::glm)
+target_link_libraries(shader_streamer PRIVATE ui_thirdparty glad_gl41 glm::glm libsoundio_static)
 
 # --- Tests (GL-free core only) ---
 enable_testing()
@@ -107,6 +138,7 @@ add_executable(core_tests
   tests/test_fft.cpp
   tests/test_signal_generator.cpp
   tests/test_sine_wave.cpp
+  tests/test_ring_buffer.cpp
   src/core/Node.cpp
   src/core/Graph.cpp
   src/audio/FFT.cpp

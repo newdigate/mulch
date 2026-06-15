@@ -7,13 +7,18 @@ together and watch textures and audio stream through the graph in real time.
 ## Modules
 
 - **Colour** — colour parameter -> texture
-- **Spectrograph** — synthesized audio -> FFT -> texture (an audio input port that
-  synthesizes a test signal when left unconnected)
+- **Sine** — a pure sine-wave audio source (frequency / amplitude) -> audio
+- **Spectrograph** — audio -> FFT -> texture (synthesizes a test signal when its audio
+  input is left unconnected; wire **Sine** in to drive it with a live tone)
 - **Mix** — two textures + a float factor -> blended texture
 - **Output** — displays a texture in the Viewer
+- **Audio Out** — plays its audio input through the system's default output device
 
-Each node renders a fragment shader into its own framebuffer and publishes the result
-as a texture; the graph is evaluated once per frame in topological order.
+Most nodes render a fragment shader into their own framebuffer and publish the result
+as a texture; **Sine** and **Audio Out** are audio-only. The graph is evaluated once
+per frame in topological order. Audio flows between nodes as blocks of samples; **Audio
+Out** hands those blocks to libsoundio's real-time callback through a lock-free ring
+buffer.
 
 ## Build
 
@@ -23,7 +28,8 @@ cmake --build build -j
 ```
 
 The first configure downloads pinned dependencies via CMake FetchContent (network
-required): GLFW, glad (GL 4.1 core), Dear ImGui, imgui-node-editor, glm, doctest.
+required): GLFW, glad (GL 4.1 core), Dear ImGui, imgui-node-editor, glm, doctest, and
+libsoundio (audio output; uses CoreAudio on macOS).
 
 ## Run
 
@@ -33,7 +39,10 @@ required): GLFW, glad (GL 4.1 core), Dear ImGui, imgui-node-editor, glm, doctest
 
 Right-click the canvas to add nodes; drag between pins to connect; unconnected inputs
 show inline editors (colour picker, slider). Wire `Colour -> Mix.a`,
-`Spectrograph -> Mix.b`, `Mix -> Output` to see the blend in the Viewer.
+`Spectrograph -> Mix.b`, `Mix -> Output` to see the blend in the Viewer. For audio, add
+**Sine** and **Audio Out** and wire `Sine -> Audio Out` to hear the tone (and
+`Sine -> Spectrograph -> Output` to see it). Select a node or link and press Delete or
+Backspace to remove it.
 
 ## Test
 
@@ -51,8 +60,8 @@ ctest --test-dir build --output-on-failure
 
 - `src/core/` — GL-free graph engine (Value, Port, Node, Graph)
 - `src/gfx/` — OpenGL helpers (shader/program, framebuffer, fullscreen pass, ShaderNode base)
-- `src/audio/` — FFT and the synthesized signal generator
-- `src/modules/` — the four example nodes
+- `src/audio/` — FFT, the synthesized signal generator, and the SPSC ring buffer
+- `src/modules/` — the example nodes (Colour, Sine, Spectrograph, Mix, Output, Audio Out)
 - `src/ui/` — imgui-node-editor panel and inline port widgets
 - `shaders/` — fragment shaders
 - `docs/superpowers/` — design spec and implementation plan

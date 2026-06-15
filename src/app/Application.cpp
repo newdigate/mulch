@@ -1,6 +1,7 @@
 #include "app/Application.h"
 #include <imgui.h>
 #include "modules/ColourNode.h"
+#include "modules/AudioOutputNode.h"
 #include "modules/MixNode.h"
 #include "modules/OutputNode.h"
 #include "modules/SineWaveNode.h"
@@ -14,11 +15,12 @@ std::unique_ptr<Node> makeNode(const std::string& type) {
     if (type == "Spectrograph") return std::make_unique<SpectrographNode>();
     if (type == "Mix")         return std::make_unique<MixNode>();
     if (type == "Output")      return std::make_unique<OutputNode>();
+    if (type == "Audio Out")   return std::make_unique<AudioOutputNode>();
     return nullptr;
 }
 
 const std::vector<std::string>& nodeTypeNames() {
-    static const std::vector<std::string> names = { "Colour", "Sine", "Spectrograph", "Mix", "Output" };
+    static const std::vector<std::string> names = { "Colour", "Sine", "Spectrograph", "Mix", "Output", "Audio Out" };
     return names;
 }
 
