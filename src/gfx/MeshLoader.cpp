@@ -101,6 +101,13 @@ bool loadGltf(const std::string& path, std::vector<float>& pos,
                   : loader.LoadASCIIFromFile(&model, &err, &warn, path);
     if (!ok) return false;
 
+    // tinygltf is a glTF 2.0 loader; glTF 1.0 (string-keyed mesh maps, GLSL
+    // techniques) parses but exposes no 2.0 meshes. Detect it and say so.
+    if (!model.asset.version.empty() && model.asset.version[0] == '1') {
+        err = "glTF 1.0 is not supported -- use the glTF 2.0 version of the file";
+        return false;
+    }
+
     // Draco is decoded by tinygltf during load (TINYGLTF_ENABLE_DRACO); decode any
     // EXT_meshopt_compression buffer views here so the reader below sees plain data.
     if (!decodeMeshopt(model, err)) return false;
