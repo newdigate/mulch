@@ -39,7 +39,7 @@ to see it; or `Mesh Loader → Shaded Render → Output` to spin a 3D model.
 | **Mix** | blend two textures by a factor |
 | **Spectrograph** | audio → FFT → texture (and a 3D line-strip vertex buffer) |
 | **Sine** | pure sine-wave audio source |
-| **Audio File** | play an audio file (decoded to 48 kHz stereo) → audio; signed `rate` (negative = reverse), variable speed, loop |
+| **Audio File** | play an audio file — mp3, wav, flac, m4a, ogg, … (any FFmpeg format), decoded to 48 kHz stereo → audio; signed `rate` (negative = reverse), variable speed, loop |
 | **Audio In / Out** | capture the mic/line-in (stereo if available) / play to the default device, in stereo (libsoundio) |
 | **Audio Mix** | four inputs, each with gain + pan → one stereo mix (pan mono sources into the stereo field) |
 | **MIDI In / Out** | hardware or virtual MIDI ports (RtMidi) |

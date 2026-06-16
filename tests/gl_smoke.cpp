@@ -699,6 +699,14 @@ int main() {
         if (!clipNz) { glfwTerminate(); return fail("decoded audio clip is silent"); }
         std::fprintf(stderr, "gl_smoke OK: decodeAudioFile -> %zu stereo frames\n", clip.frames());
 
+        // A different container/codec (.mp3) decodes through the same path -- the
+        // player inherits FFmpeg's format coverage (mp3, wav, flac, ogg, m4a, ...).
+        AudioClip mp3 = decodeAudioFile("tests/assets/tone.mp3");
+        if (!mp3.ok || mp3.channels != 2 || mp3.frames() == 0) {
+            glfwTerminate(); return fail(("decodeAudioFile failed for mp3: " + mp3.error).c_str());
+        }
+        std::fprintf(stderr, "gl_smoke OK: decodeAudioFile loads .mp3 -> %zu stereo frames\n", mp3.frames());
+
         // (b) the node plays it (decoded on a worker thread): stereo + advancing.
         Graph g;
         auto ap = std::make_unique<AudioPlayerNode>();
