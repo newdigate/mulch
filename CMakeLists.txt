@@ -193,6 +193,7 @@ set(APP_SOURCES
   src/core/Graph.cpp
   src/audio/FFT.cpp
   src/audio/SignalGenerator.cpp
+  src/audio/AudioFile.cpp
   src/gfx/GLUtil.cpp
   src/gfx/Framebuffer.cpp
   src/gfx/FullscreenPass.cpp
@@ -202,6 +203,7 @@ set(APP_SOURCES
   src/gfx/VideoEncoder.cpp
   src/gfx/TextGeometry.cpp
   src/modules/AudioInputNode.cpp
+  src/modules/AudioPlayerNode.cpp
   src/modules/RecorderNode.cpp
   src/modules/TextNode.cpp
   src/modules/VideoPlayerNode.cpp
@@ -275,8 +277,10 @@ add_executable(gl_smoke
   src/modules/TextNode.cpp
   src/modules/VideoPlayerNode.cpp
   src/modules/WireframeNode.cpp
+  src/modules/AudioPlayerNode.cpp
   src/audio/FFT.cpp
   src/audio/SignalGenerator.cpp
+  src/audio/AudioFile.cpp
 )
 target_include_directories(gl_smoke PRIVATE src ${tinygltf_SOURCE_DIR}
   ${meshoptimizer_SOURCE_DIR}/src ${draco_SOURCE_DIR}/src

@@ -18,8 +18,10 @@
 #include "modules/ShadedRenderNode.h"
 #include "modules/SineWaveNode.h"
 #include "modules/AudioMixerNode.h"
+#include "modules/AudioPlayerNode.h"
 #include "modules/RecorderNode.h"
 #include "modules/SpectrographNode.h"
+#include "audio/AudioFile.h"
 #include "modules/TextNode.h"
 #include "modules/VideoPlayerNode.h"
 #include "modules/WireframeNode.h"
@@ -683,6 +685,50 @@ int main() {
             if (got3 == 0) { glfwTerminate(); return fail("stereo recording decoded no frames"); }
             std::fprintf(stderr, "gl_smoke OK: Sine->Mixer(pan)->Recorder wrote a stereo movie\n");
         }
+    }
+
+    // --- Scenario 13: Audio File player (stereo, forward + reverse) ---
+    {
+        // (a) decode the whole file to interleaved 48 kHz stereo.
+        AudioClip clip = decodeAudioFile("tests/assets/test.mp4");
+        if (!clip.ok || clip.channels != 2 || clip.frames() == 0) {
+            glfwTerminate(); return fail(("decodeAudioFile failed: " + clip.error).c_str());
+        }
+        bool clipNz = false;
+        for (float s : clip.samples) if (s > 0.01f || s < -0.01f) { clipNz = true; break; }
+        if (!clipNz) { glfwTerminate(); return fail("decoded audio clip is silent"); }
+        std::fprintf(stderr, "gl_smoke OK: decodeAudioFile -> %zu stereo frames\n", clip.frames());
+
+        // (b) the node plays it (decoded on a worker thread): stereo + advancing.
+        Graph g;
+        auto ap = std::make_unique<AudioPlayerNode>();
+        ap->inputDefault(0) = std::string("tests/assets/test.mp4");
+        int aId = g.addNode(std::move(ap));
+        auto* an = dynamic_cast<AudioPlayerNode*>(g.findNode(aId));
+
+        bool sawAudio = false;
+        for (int f = 0; f < 400 && !sawAudio; ++f) {     // poll while the worker decodes
+            g.evaluate(1.0f / 60.0f);
+            AudioRef o = an->audioOut();
+            if (o.channels == 2)
+                for (std::size_t i = 0; i < o.count; ++i)
+                    if (o.samples[i] > 0.01f || o.samples[i] < -0.01f) { sawAudio = true; break; }
+            if (!sawAudio) std::this_thread::sleep_for(std::chrono::milliseconds(2));
+        }
+        if (!sawAudio) { glfwTerminate(); return fail("audio player produced no stereo audio"); }
+
+        for (int f = 0; f < 10; ++f) g.evaluate(1.0f / 60.0f);   // play forward a bit
+        double fwd = an->playhead();
+        if (!(fwd > 0.0)) { glfwTerminate(); return fail("audio playhead did not advance forward"); }
+
+        an->inputDefault(1) = -1.0f;                     // rate: reverse
+        an->inputDefault(3) = false;                     // loop off (deterministic)
+        double before = an->playhead();
+        for (int f = 0; f < 5; ++f) g.evaluate(1.0f / 60.0f);
+        double after = an->playhead();
+        if (!(after < before)) { glfwTerminate(); return fail("audio playhead did not move backwards on reverse"); }
+        std::fprintf(stderr, "gl_smoke OK: Audio File played stereo, advanced %.2fs then reversed %.2f->%.2f\n",
+                     fwd, before, after);
     }
 
     glfwDestroyWindow(win);

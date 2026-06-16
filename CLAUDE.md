@@ -77,6 +77,10 @@ CMake 4.x, it's relaxed with `CMAKE_POLICY_VERSION_MINIMUM 3.5` around its
   an H.264/AAC mp4. The `RecorderNode` is a pass-through tap (video/audio in → same
   out) that reads back the input texture and feeds the encoder while `record` is on,
   capturing whatever channel count the input audio carries.
+- **`AudioFile` (`src/audio/AudioFile.{h,cpp}`)** decodes a whole audio file to a
+  48 kHz stereo float buffer (FFmpeg, GL-free). The `AudioPlayerNode` plays it with
+  a playhead advanced by rate*dt, reading the buffer with linear interpolation for
+  forward / reverse / variable-rate — the audio analogue of the Video Player.
 
 ## Adding a node
 
