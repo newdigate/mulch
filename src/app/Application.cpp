@@ -1,6 +1,7 @@
 #include "app/Application.h"
 #include "modules/ColourNode.h"
 #include "modules/ArpeggiatorNode.h"
+#include "modules/AutomationNode.h"
 #include "modules/AudioInputNode.h"
 #include "modules/AudioPlayerNode.h"
 #include "modules/AudioMixerNode.h"
@@ -45,6 +46,7 @@ std::unique_ptr<Node> makeNode(const std::string& type) {
     if (type == "Arpeggiator") return std::make_unique<ArpeggiatorNode>();
     if (type == "MIDI Merge")  return std::make_unique<MidiMergeNode>();
     if (type == "MIDI Out")    return std::make_unique<MidiOutputNode>();
+    if (type == "Automation")  return std::make_unique<AutomationNode>();
     return nullptr;
 }
 
@@ -54,6 +56,7 @@ const std::vector<NodeCategory>& nodeCategories() {
         { "Audio",   { "Sine", "Audio File", "Audio In", "Audio Mix", "Spectrograph", "Audio Out" } },
         { "MIDI",    { "MIDI In", "Step Seq", "Arpeggiator", "MIDI Merge", "MIDI Out" } },
         { "3D",      { "Mesh Loader", "Text 2D", "Text 3D", "Wireframe", "Shaded Render" } },
+        { "Control", { "Automation" } },
     };
     return cats;
 }
@@ -79,6 +82,7 @@ int Application::addNodeOfType(const std::string& type, glm::vec2 pos) {
 void Application::frame(float dt) {
     drawTransportBar(graph_.transport());   // top toolbar: tempo + play/stop/scrub
     editor_.draw(graph_, [this](const std::string& t, glm::vec2 p){ return addNodeOfType(t, p); });
+    automation_.draw(graph_);                // automation timeline window
     graph_.evaluate(dt);                     // advances the transport by dt
 }
 

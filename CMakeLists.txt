@@ -217,6 +217,7 @@ set(APP_SOURCES
   src/ui/NodeEditorPanel.cpp
   src/ui/PortWidgets.cpp
   src/ui/TransportBar.cpp
+  src/ui/AutomationPanel.cpp
   src/app/Application.cpp
 )
 
@@ -247,6 +248,7 @@ add_executable(core_tests
   tests/test_midi_merge.cpp
   tests/test_mesh_edges.cpp
   tests/test_transport.cpp
+  tests/test_automation.cpp
   src/core/Node.cpp
   src/core/Graph.cpp
   src/audio/FFT.cpp

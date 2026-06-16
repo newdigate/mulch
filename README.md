@@ -27,6 +27,12 @@ decimal tempo, Play / Stop / Rewind / Fast-forward, and the song position shown 
 bars·beats, beats, and minutes:seconds.milliseconds. It's a global clock the whole
 graph shares, advanced each frame while playing; nodes can read it to sync to the beat.
 
+The **Automation** window holds a scrollable timeline: add an **Automation** node,
+then draw breakpoint curves with the mouse (click to add, drag to move, right-click
+to delete) over the song length in bars. Each of its 4 channels is sampled at the
+transport position and output as a Float, so wiring a channel into any parameter
+sequences it over time as the transport plays.
+
 Try it: wire `Sine → Audio Out` to hear a tone and `Sine → Spectrograph → Output`
 to see it; or `Mesh Loader → Shaded Render → Output` to spin a 3D model.
 
@@ -51,6 +57,7 @@ to see it; or `Mesh Loader → Shaded Render → Output` to spin a 3D model.
 | **Wireframe / Shaded Render** | a vertex buffer → a rotating wireframe / lit texture |
 | **Recorder** | inline tap: passes video + audio through unchanged while recording them to a movie file (H.264/AAC mp4, mono or stereo per the input); toggle `record`, set `file` |
 | **Output** | marks the texture shown in the Output window |
+| **Automation** | 4 float channels, each a mouse-drawn curve over song time (bars), sampled at the transport position → sequences any Float parameter. Edited in the **Automation** window |
 
 Texture nodes render a fragment shader into their own framebuffer; audio and MIDI
 nodes carry samples and events; geometry flows as GL vertex-buffer handles. The

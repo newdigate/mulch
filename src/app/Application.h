@@ -5,6 +5,7 @@
 #include <glm/vec2.hpp>
 #include "core/Graph.h"
 #include "ui/NodeEditorPanel.h"
+#include "ui/AutomationPanel.h"
 
 struct GLFWwindow;
 
@@ -26,6 +27,7 @@ private:
     GLFWwindow* window_;   // reserved for framebuffer-size / HiDPI queries
     Graph graph_;
     NodeEditorPanel editor_;
+    AutomationPanel automation_;
 };
 
 // Factory used by the app and the add-node menu.

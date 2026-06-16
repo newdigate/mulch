@@ -43,6 +43,12 @@ CMake 4.x, it's relaxed with `CMAKE_POLICY_VERSION_MINIMUM 3.5` around its
   it and hands it to every node via `EvalContext::transport` (a `const Transport*`,
   so nodes can sync to the beat). The top toolbar (`src/ui/TransportBar.cpp`) drives
   it. `Graph::transport()` is the accessor.
+- **Automation** (`src/modules/AutomationNode.h`, header-only + GL-free): N float
+  channels, each a piecewise-linear curve of breakpoints over song bars, sampled at
+  the transport's bar position and scaled to a per-channel range. The breakpoints
+  are mouse-edited in the `Automation` window (`src/ui/AutomationPanel.cpp`), which
+  finds the first AutomationNode and draws a scrollable timeline. The Application
+  draws it each frame and exposes a `Control` add-node category.
 - **Texture nodes** derive from `ShaderNode` (`src/gfx/ShaderNode.h`): render a
   fragment shader into their own FBO and publish a `TexRef` on output 0. `ColourNode`
   is the minimal example — declare ports, override `setUniforms()`, call `render(ctx)`.
