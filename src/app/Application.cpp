@@ -1,5 +1,4 @@
 #include "app/Application.h"
-#include <imgui.h>
 #include "modules/ColourNode.h"
 #include "modules/ArpeggiatorNode.h"
 #include "modules/AudioInputNode.h"
@@ -68,24 +67,13 @@ int Application::addNodeOfType(const std::string& type, glm::vec2 pos) {
 void Application::frame(float dt) {
     editor_.draw(graph_, [this](const std::string& t, glm::vec2 p){ return addNodeOfType(t, p); });
     graph_.evaluate(dt);
-    drawViewer();
 }
 
-void Application::drawViewer() {
-    ImGui::Begin("Viewer");
-    TexRef tex{};
+// The first OutputNode's current texture, shown in the dedicated output window.
+TexRef Application::outputTexture() const {
     for (auto& n : graph_.nodes())
-        if (auto* o = dynamic_cast<OutputNode*>(n.get())) { tex = o->current(); break; }
-    if (tex.id) {
-        float avail = ImGui::GetContentRegionAvail().x;
-        float aspect = tex.h ? (float)tex.h / (float)tex.w : 0.5625f;
-        ImVec2 size(avail, avail * aspect);
-        // Flip V: FBO origin is bottom-left, ImGui expects top-left.
-        ImGui::Image((ImTextureID)(intptr_t)tex.id, size, ImVec2(0, 1), ImVec2(1, 0));
-    } else {
-        ImGui::TextUnformatted("No output texture.");
-    }
-    ImGui::End();
+        if (auto* o = dynamic_cast<OutputNode*>(n.get())) return o->current();
+    return TexRef{};
 }
 
 } // namespace oss

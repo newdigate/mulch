@@ -18,12 +18,11 @@ public:
     // Create a node of the given type, run its GL setup, add it to the graph.
     int addNodeOfType(const std::string& type, glm::vec2 pos);
 
-    void frame(float dt);   // build UI, evaluate graph, draw viewer
+    void frame(float dt);             // build the editor UI and evaluate the graph
+    TexRef outputTexture() const;     // the OutputNode's current texture (for the output window)
     Graph& graph() { return graph_; }
 
 private:
-    void drawViewer();
-
     GLFWwindow* window_;   // reserved for framebuffer-size / HiDPI queries
     Graph graph_;
     NodeEditorPanel editor_;

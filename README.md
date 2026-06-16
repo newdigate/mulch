@@ -21,7 +21,7 @@ together and watch textures and audio stream through the graph in real time.
   texture, drawn through a slowly rotating 3D camera
 - **Shaded Render** — a streamed triangle buffer (with normals) -> a solid, diffuse-lit
   texture with a colour input, drawn through a slowly rotating 3D camera
-- **Output** — displays a texture in the Viewer
+- **Output** — marks a texture as the result shown in the Output window
 - **Audio Out** — plays its audio input through the system's default output device
 - **MIDI In** — receives from a hardware or virtual MIDI input port -> midi
 - **Step Seq** — a 16-step drum sequencer (a basic TR-909 voice): toggle steps; set tempo /
@@ -58,9 +58,12 @@ draco is a sizable build, so the first configure/build takes noticeably longer.
 ./build/shader_streamer    # from the repo root, or from build/ (shaders are copied there)
 ```
 
+Two windows open, sharing one OpenGL context: a **Graph** window (the node editor) and
+an **Output** window that displays the OutputNode's texture fullscreen.
+
 Right-click the canvas to add nodes; drag between pins to connect; unconnected inputs
 show inline editors (colour picker, slider). Wire `Colour -> Mix.a`,
-`Spectrograph -> Mix.b`, `Mix -> Output` to see the blend in the Viewer. For audio, add
+`Spectrograph -> Mix.b`, `Mix -> Output` to see the blend in the Output window. For audio, add
 **Sine** and **Audio Out** and wire `Sine -> Audio Out` to hear the tone (and
 `Sine -> Spectrograph -> Output` to see it). Combine sources by wiring them into an
 **Audio Mix**, or capture the microphone with **Audio In** (macOS will prompt for mic
