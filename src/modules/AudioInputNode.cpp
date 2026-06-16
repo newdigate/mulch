@@ -28,9 +28,10 @@ void AudioInputNode::evaluate(EvalContext& ctx) {
 }
 
 bool AudioInputNode::ensureStarted() {
-    if (initTried_) return ok_;
-    initTried_ = true;
+    return lazy_.ensure([this] { return openDevice(); });
+}
 
+bool AudioInputNode::openDevice() {
     soundio_ = soundio_create();
     if (!soundio_) return false;
     if (int err = soundio_connect(soundio_)) {
@@ -65,7 +66,6 @@ bool AudioInputNode::ensureStarted() {
         return false;
     }
     std::fprintf(stderr, "[AudioIn] capturing from default device: %d Hz\n", sampleRate_);
-    ok_ = true;
     return true;
 }
 

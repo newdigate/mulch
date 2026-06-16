@@ -1,8 +1,8 @@
 #pragma once
 #include <glad/gl.h>
-#include <future>
 #include <string>
 #include "core/Node.h"
+#include "core/AsyncLoader.h"
 #include "gfx/MeshLoader.h"   // MeshData
 
 namespace oss {
@@ -32,8 +32,7 @@ private:
     int    lineCount_ = 0;
     int    triCount_  = 0;
 
-    std::string           requestedPath_;       // last path a parse was started for
-    std::future<MeshData> pending_;             // in-flight worker parse
+    AsyncLoader<MeshData> loader_;               // worker-thread parse, keyed on path
     MeshData              unit_;                 // cached unit-scale geometry
     bool                  haveUnit_     = false;
     float                 appliedScale_ = -1.0f; // scale currently uploaded

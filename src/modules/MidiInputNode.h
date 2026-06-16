@@ -2,6 +2,7 @@
 #include <vector>
 #include "core/Node.h"
 #include "core/Value.h"
+#include "core/LazyInit.h"
 
 class RtMidiIn;   // opaque; <RtMidi.h> stays out of this header
 
@@ -20,10 +21,10 @@ public:
 
 private:
     bool ensureStarted();
+    bool openDevice();
     RtMidiIn*              midiin_ = nullptr;
     std::vector<MidiEvent> events_;        // this frame's events (owns MidiRef storage)
-    bool initTried_ = false;
-    bool ok_        = false;
+    LazyInit lazy_;
 };
 
 } // namespace oss

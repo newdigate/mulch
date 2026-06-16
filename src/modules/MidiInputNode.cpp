@@ -33,8 +33,10 @@ void MidiInputNode::evaluate(EvalContext& ctx) {
 }
 
 bool MidiInputNode::ensureStarted() {
-    if (initTried_) return ok_;
-    initTried_ = true;
+    return lazy_.ensure([this] { return openDevice(); });
+}
+
+bool MidiInputNode::openDevice() {
     try {
         midiin_ = new RtMidiIn(RtMidi::UNSPECIFIED, "shader-streamer");
         midiin_->ignoreTypes(true, true, true);   // skip sysex / timing / active sensing
@@ -46,12 +48,11 @@ bool MidiInputNode::ensureStarted() {
             midiin_->openVirtualPort("shader-streamer in");
             std::fprintf(stderr, "[MidiIn] no ports found; opened a virtual input port\n");
         }
-        ok_ = true;
+        return true;
     } catch (RtMidiError& err) {
         std::fprintf(stderr, "[MidiIn] init failed: %s\n", err.getMessage().c_str());
-        ok_ = false;
+        return false;
     }
-    return ok_;
 }
 
 } // namespace oss

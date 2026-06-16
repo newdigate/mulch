@@ -15,8 +15,8 @@ MeshLoaderNode::MeshLoaderNode() : Node("Mesh Loader") {
 }
 
 MeshLoaderNode::~MeshLoaderNode() {
-    // pending_'s destructor joins the worker; its task captures the path by value
-    // (not `this`), so finishing after we're gone would be harmless anyway.
+    // loader_'s destructor joins any in-flight worker; its task captures the path
+    // by value (not `this`), so finishing after we're gone is harmless anyway.
     if (vboLines_) glDeleteBuffers(1, &vboLines_);
     if (vboTris_)  glDeleteBuffers(1, &vboTris_);
 }
@@ -30,34 +30,26 @@ void MeshLoaderNode::evaluate(EvalContext& ctx) {
     const std::string& path = ctx.in<std::string>(0);
     float scale = ctx.in<float>(1);
 
-    // Start a worker parse when the file path changes (the expensive step).
-    if (path != requestedPath_) {
-        requestedPath_ = path;
+    // Start a worker-thread parse when the file path changes (the expensive step);
+    // `scale` is applied later, so re-scaling never re-parses.
+    if (loader_.request(path, [path] { return loadMeshData(path, 1.0f); })) {
         haveUnit_ = false;
         lineCount_ = triCount_ = 0;
         appliedScale_ = -1.0f;
-        if (path.empty()) {
-            pending_ = {};
-            status_.clear();
-        } else {
-            // Parse to unit scale on a worker thread; `scale` is applied later.
-            status_ = "loading...";
-            std::fprintf(stderr, "[Mesh] loading %s\n", path.c_str());
-            pending_ = std::async(std::launch::async,
-                                  [path] { return loadMeshData(path, 1.0f); });
-        }
+        if (path.empty()) status_.clear();
+        else { status_ = "loading..."; std::fprintf(stderr, "[Mesh] loading %s\n", path.c_str()); }
     }
 
     // When the worker has finished, cache its result (GL upload happens below).
-    if (pending_.valid() &&
-        pending_.wait_for(std::chrono::seconds(0)) == std::future_status::ready) {
-        unit_ = pending_.get();
+    MeshData done;
+    if (loader_.poll(done)) {
+        unit_ = std::move(done);
         haveUnit_ = unit_.ok;
         appliedScale_ = -1.0f;   // force an upload at the current scale
         if (unit_.ok) {
             int tris = (int)(unit_.tris.size() / 18);   // 18 floats per triangle
             status_ = "loaded: " + std::to_string(tris) + " triangles";
-            std::fprintf(stderr, "[Mesh] loaded %s: %d triangles\n", requestedPath_.c_str(), tris);
+            std::fprintf(stderr, "[Mesh] loaded: %d triangles\n", tris);
         } else {
             status_ = "load failed: " + unit_.error;
             std::fprintf(stderr, "[Mesh] load failed: %s\n", unit_.error.c_str());

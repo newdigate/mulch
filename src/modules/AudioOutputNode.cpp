@@ -29,9 +29,10 @@ void AudioOutputNode::evaluate(EvalContext& ctx) {
 }
 
 bool AudioOutputNode::ensureStarted() {
-    if (initTried_) return ok_;            // open the device exactly once
-    initTried_ = true;
+    return lazy_.ensure([this] { return openDevice(); });
+}
 
+bool AudioOutputNode::openDevice() {
     soundio_ = soundio_create();
     if (!soundio_) return false;
     if (int err = soundio_connect(soundio_)) {
@@ -69,7 +70,6 @@ bool AudioOutputNode::ensureStarted() {
     }
     std::fprintf(stderr, "[AudioOut] playing on default device: %d Hz, %d ch\n",
                  sampleRate_, outstream_->layout.channel_count);
-    ok_ = true;
     return true;
 }
 

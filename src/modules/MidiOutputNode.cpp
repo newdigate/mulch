@@ -10,7 +10,7 @@ MidiOutputNode::MidiOutputNode() : Node("MIDI Out") {
 }
 
 MidiOutputNode::~MidiOutputNode() {
-    if (midiout_ && ok_) {
+    if (midiout_ && lazy_.ok()) {
         // Politely silence anything still sounding (all-notes-off, channels 1-16).
         try {
             for (int ch = 0; ch < 16; ++ch) {
@@ -34,8 +34,10 @@ void MidiOutputNode::evaluate(EvalContext& ctx) {
 }
 
 bool MidiOutputNode::ensureStarted() {
-    if (initTried_) return ok_;
-    initTried_ = true;
+    return lazy_.ensure([this] { return openDevice(); });
+}
+
+bool MidiOutputNode::openDevice() {
     try {
         midiout_ = new RtMidiOut(RtMidi::UNSPECIFIED, "shader-streamer");
         if (midiout_->getPortCount() > 0) {
@@ -46,12 +48,11 @@ bool MidiOutputNode::ensureStarted() {
             midiout_->openVirtualPort("shader-streamer out");
             std::fprintf(stderr, "[MidiOut] no ports found; opened a virtual output port\n");
         }
-        ok_ = true;
+        return true;
     } catch (RtMidiError& err) {
         std::fprintf(stderr, "[MidiOut] init failed: %s\n", err.getMessage().c_str());
-        ok_ = false;
+        return false;
     }
-    return ok_;
 }
 
 } // namespace oss

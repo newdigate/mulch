@@ -1,6 +1,7 @@
 #pragma once
 #include "core/Node.h"
 #include "core/Value.h"
+#include "core/LazyInit.h"
 
 class RtMidiOut;   // opaque; <RtMidi.h> stays out of this header
 
@@ -18,9 +19,9 @@ public:
 
 private:
     bool ensureStarted();
+    bool openDevice();
     RtMidiOut* midiout_ = nullptr;
-    bool initTried_ = false;
-    bool ok_        = false;
+    LazyInit lazy_;
 };
 
 } // namespace oss

@@ -2,6 +2,7 @@
 #include <vector>
 #include "core/Node.h"
 #include "core/Value.h"
+#include "core/LazyInit.h"
 #include "audio/SpscRingBuffer.h"
 
 // libsoundio types, kept opaque so <soundio/soundio.h> stays out of this header.
@@ -27,6 +28,7 @@ public:
 
 private:
     bool ensureStarted();                                  // lazy device open
+    bool openDevice();
     static void readCallback(SoundIoInStream* is, int frameMin, int frameMax);
     static void errorCallback(SoundIoInStream* is, int err);
 
@@ -38,8 +40,7 @@ private:
     std::vector<float>    block_;           // per-frame output buffer (main thread only)
 
     int  sampleRate_ = 48000;
-    bool initTried_  = false;
-    bool ok_         = false;
+    LazyInit lazy_;
 };
 
 } // namespace oss

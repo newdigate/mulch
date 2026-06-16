@@ -2,6 +2,7 @@
 #include <vector>
 #include "core/Node.h"
 #include "core/Value.h"
+#include "core/LazyInit.h"
 #include "audio/SpscRingBuffer.h"
 
 // libsoundio types, kept opaque so <soundio/soundio.h> stays out of this header.
@@ -26,6 +27,7 @@ public:
 
 private:
     bool ensureStarted();                                   // lazy device open
+    bool openDevice();
     static void writeCallback(SoundIoOutStream* os, int frameMin, int frameMax);
     static void errorCallback(SoundIoOutStream* os, int err);
 
@@ -36,8 +38,7 @@ private:
     SpscRingBuffer<float> ring_{1 << 14};   // ~340 ms at 48 kHz; producer/consumer
     std::vector<float>    scratch_;         // preallocated; touched only on RT thread
 
-    bool initTried_ = false;
-    bool ok_        = false;
+    LazyInit lazy_;
     int  sampleRate_ = 48000;
 };
 
