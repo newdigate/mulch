@@ -12,6 +12,7 @@
 #include "modules/ColourNode.h"
 #include "modules/MixNode.h"
 #include "modules/OutputNode.h"
+#include "gfx/MeshLoader.h"
 #include "modules/MeshLoaderNode.h"
 #include "modules/ShadedRenderNode.h"
 #include "modules/SineWaveNode.h"
@@ -265,6 +266,17 @@ int main() {
         std::fprintf(stderr, "gl_smoke OK: .gltf mesh loaded (worker thread) and rendered as wireframe\n");
         if (!renderMesh("tests/assets/tetra.obj", true))      { glfwTerminate(); return fail(".obj mesh did not render shaded"); }
         std::fprintf(stderr, "gl_smoke OK: mesh shaded output rendered as a lit surface\n");
+    }
+
+    // --- Scenario 7: loadMeshData reports success / failure for diagnostics ---
+    {
+        MeshData good = loadMeshData("tests/assets/tetra.obj", 1.0f);
+        if (!good.ok || good.tris.empty()) { glfwTerminate(); return fail("loadMeshData should succeed for tetra.obj"); }
+        MeshData missing = loadMeshData("tests/assets/does_not_exist.obj", 1.0f);
+        if (missing.ok || missing.error.empty()) { glfwTerminate(); return fail("loadMeshData should fail with an error for a missing file"); }
+        MeshData badType = loadMeshData("tests/assets/tetra.png", 1.0f);
+        if (badType.ok || badType.error.empty()) { glfwTerminate(); return fail("loadMeshData should reject an unsupported extension"); }
+        std::fprintf(stderr, "gl_smoke OK: loadMeshData reports errors (missing: \"%s\")\n", missing.error.c_str());
     }
 
     glfwDestroyWindow(win);

@@ -12,6 +12,7 @@ struct MeshData {
     bool ok = false;
     std::vector<float> lines;
     std::vector<float> tris;
+    std::string error;          // human-readable reason when ok == false
 };
 
 // Load a .obj or .gltf/.glb file (by extension), center + uniformly scale it,

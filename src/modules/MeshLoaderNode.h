@@ -20,9 +20,12 @@ public:
     ~MeshLoaderNode() override;
     void initGL() override;
     void evaluate(EvalContext& ctx) override;
+    std::string statusLine() const override { return status_; }
 
 private:
     void uploadScaled(float scale);
+
+    std::string status_;   // "loading...", "loaded: N triangles", or "load failed: ..."
 
     GLuint vboLines_ = 0;
     GLuint vboTris_  = 0;

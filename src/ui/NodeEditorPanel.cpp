@@ -4,6 +4,7 @@
 #include <imgui.h>
 #include <imgui_node_editor.h>
 #include <set>
+#include <string>
 #include <vector>
 #include <utility>
 
@@ -56,6 +57,8 @@ void NodeEditorPanel::draw(Graph& graph,
         // at the same port index on two nodes (e.g. a Float at index 1) collides.
         ImGui::PushID(n.id());
         ImGui::TextUnformatted(n.name().c_str());
+        std::string status = n.statusLine();
+        if (!status.empty()) ImGui::TextDisabled("%s", status.c_str());
         for (std::size_t i = 0; i < n.inputs().size(); ++i) {
             ed::BeginPin(ed::PinId(pinId(n.id(), (int)i, false)), ed::PinKind::Input);
             ImGui::Text("-> %s", n.inputs()[i].name.c_str());

@@ -27,32 +27,30 @@ bool endsWith(const std::string& s, const std::string& suffix) {
 }
 
 bool loadObj(const std::string& path, std::vector<float>& pos,
-             std::vector<unsigned int>& idx) {
+             std::vector<unsigned int>& idx, std::string& err) {
     tinyobj::attrib_t attrib;
     std::vector<tinyobj::shape_t> shapes;
     std::vector<tinyobj::material_t> materials;
-    std::string err;
     if (!tinyobj::LoadObj(&attrib, &shapes, &materials, &err, path.c_str(),
-                          nullptr, /*triangulate=*/true)) {
-        std::fprintf(stderr, "[Mesh] obj load failed: %s\n", err.c_str());
+                          nullptr, /*triangulate=*/true))
         return false;
-    }
     pos = attrib.vertices;   // flat xyz, already in float
     for (const auto& shape : shapes)
         for (const auto& corner : shape.mesh.indices)
             idx.push_back((unsigned int)corner.vertex_index);
-    return !pos.empty() && !idx.empty();
+    if (pos.empty() || idx.empty()) { err = "no triangle geometry in .obj"; return false; }
+    return true;
 }
 
 bool loadGltf(const std::string& path, std::vector<float>& pos,
-              std::vector<unsigned int>& idx) {
+              std::vector<unsigned int>& idx, std::string& err) {
     tinygltf::TinyGLTF loader;
     tinygltf::Model model;
-    std::string err, warn;
+    std::string warn;
     bool ok = endsWith(path, ".glb")
                   ? loader.LoadBinaryFromFile(&model, &err, &warn, path)
                   : loader.LoadASCIIFromFile(&model, &err, &warn, path);
-    if (!ok) { std::fprintf(stderr, "[Mesh] gltf load failed: %s\n", err.c_str()); return false; }
+    if (!ok) return false;
 
     for (const auto& mesh : model.meshes) {
         for (const auto& prim : mesh.primitives) {
@@ -95,7 +93,8 @@ bool loadGltf(const std::string& path, std::vector<float>& pos,
             }
         }
     }
-    return !pos.empty() && !idx.empty();
+    if (pos.empty() || idx.empty()) { err = "no triangle-mode meshes in glTF"; return false; }
+    return true;
 }
 
 // Center the mesh at the origin and uniformly scale it to ~fit a unit box.
@@ -122,14 +121,20 @@ MeshData loadMeshData(const std::string& path, float scale) {
     MeshData data;
     std::vector<float> pos;
     std::vector<unsigned int> idx;
-    bool parsed = endsWith(path, ".obj")  ? loadObj(path, pos, idx)
-                : (endsWith(path, ".gltf") || endsWith(path, ".glb")) ? loadGltf(path, pos, idx)
-                : false;
-    if (!parsed) return data;
+    std::string err;
+    bool parsed;
+    if (endsWith(path, ".obj"))
+        parsed = loadObj(path, pos, idx, err);
+    else if (endsWith(path, ".gltf") || endsWith(path, ".glb"))
+        parsed = loadGltf(path, pos, idx, err);
+    else { data.error = "unsupported file type (use .obj, .gltf or .glb)"; return data; }
+
+    if (!parsed) { data.error = err.empty() ? "could not read file" : err; return data; }
     normalize(pos, scale);
     data.lines = trianglesToLineList(pos, idx);
     data.tris  = trianglesToShadedList(pos, idx);
     data.ok = !data.lines.empty() || !data.tris.empty();
+    if (!data.ok) data.error = "no triangle geometry";
     return data;
 }
 

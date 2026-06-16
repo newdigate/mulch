@@ -42,6 +42,10 @@ public:
     // One-time GL setup (shaders, FBOs). Base does nothing (GL-free nodes).
     virtual void initGL() {}
 
+    // Optional short status line shown under the node's name in the editor
+    // (e.g. a loader's progress/result). Empty by default.
+    virtual std::string statusLine() const { return std::string(); }
+
 protected:
     void addInput(std::string n, PortType t, Value def) {
         inputs_.push_back({std::move(n), Direction::Input, t, std::move(def)});

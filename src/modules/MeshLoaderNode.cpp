@@ -1,6 +1,8 @@
 #include "modules/MeshLoaderNode.h"
 #include "core/Value.h"
 #include <chrono>
+#include <cstdio>
+#include <string>
 #include <vector>
 
 namespace oss {
@@ -36,8 +38,11 @@ void MeshLoaderNode::evaluate(EvalContext& ctx) {
         appliedScale_ = -1.0f;
         if (path.empty()) {
             pending_ = {};
+            status_.clear();
         } else {
             // Parse to unit scale on a worker thread; `scale` is applied later.
+            status_ = "loading...";
+            std::fprintf(stderr, "[Mesh] loading %s\n", path.c_str());
             pending_ = std::async(std::launch::async,
                                   [path] { return loadMeshData(path, 1.0f); });
         }
@@ -49,6 +54,14 @@ void MeshLoaderNode::evaluate(EvalContext& ctx) {
         unit_ = pending_.get();
         haveUnit_ = unit_.ok;
         appliedScale_ = -1.0f;   // force an upload at the current scale
+        if (unit_.ok) {
+            int tris = (int)(unit_.tris.size() / 18);   // 18 floats per triangle
+            status_ = "loaded: " + std::to_string(tris) + " triangles";
+            std::fprintf(stderr, "[Mesh] loaded %s: %d triangles\n", requestedPath_.c_str(), tris);
+        } else {
+            status_ = "load failed: " + unit_.error;
+            std::fprintf(stderr, "[Mesh] load failed: %s\n", unit_.error.c_str());
+        }
     }
 
     // Apply scale cheaply on the main thread (re-upload, no re-parse).

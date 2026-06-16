@@ -14,7 +14,8 @@ together and watch textures and audio stream through the graph in real time.
   spectrum as a 3D line strip (synthesizes a test signal when its audio input is unconnected)
 - **Mix** — two textures + a float factor -> blended texture
 - **Mesh Loader** — loads a .obj or .gltf/.glb file on a worker thread and streams it as
-  two geometry outputs: wireframe edges and shaded triangles (with normals)
+  two geometry outputs: wireframe edges and shaded triangles (with normals). Shows its
+  load status under the node name (loading / loaded N triangles / load failed: reason)
 - **Wireframe** — a streamed vertex buffer (line strip or mesh edges) -> a wireframe
   texture, drawn through a slowly rotating 3D camera
 - **Shaded Render** — a streamed triangle buffer (with normals) -> a solid, diffuse-lit
