@@ -276,7 +276,9 @@ int main() {
         if (missing.ok || missing.error.empty()) { glfwTerminate(); return fail("loadMeshData should fail with an error for a missing file"); }
         MeshData badType = loadMeshData("tests/assets/tetra.png", 1.0f);
         if (badType.ok || badType.error.empty()) { glfwTerminate(); return fail("loadMeshData should reject an unsupported extension"); }
-        std::fprintf(stderr, "gl_smoke OK: loadMeshData reports errors (missing: \"%s\")\n", missing.error.c_str());
+        MeshData strip = loadMeshData("tests/assets/strip.gltf", 1.0f);   // TRIANGLE_STRIP -> 2 tris
+        if (!strip.ok || strip.tris.size() != 2 * 18) { glfwTerminate(); return fail("loadMeshData should expand a TRIANGLE_STRIP gltf to 2 triangles"); }
+        std::fprintf(stderr, "gl_smoke OK: loadMeshData reports errors (missing: \"%s\"), and expands strips\n", missing.error.c_str());
     }
 
     glfwDestroyWindow(win);

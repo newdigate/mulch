@@ -52,31 +52,50 @@ bool loadGltf(const std::string& path, std::vector<float>& pos,
                   : loader.LoadASCIIFromFile(&model, &err, &warn, path);
     if (!ok) return false;
 
+    // Geometry compression we can't decode (needs the draco / meshopt libraries).
+    for (const auto& ext : model.extensionsRequired)
+        if (ext == "KHR_draco_mesh_compression" || ext == "EXT_meshopt_compression") {
+            err = "glTF requires " + ext + " (compressed geometry, not supported)";
+            return false;
+        }
+
+    int primCount = 0, posPrims = 0, compressedPrims = 0;
     for (const auto& mesh : model.meshes) {
         for (const auto& prim : mesh.primitives) {
-            if (prim.mode != TINYGLTF_MODE_TRIANGLES && prim.mode != -1) continue;
+            ++primCount;
+            if (prim.extensions.count("KHR_draco_mesh_compression")) { ++compressedPrims; continue; }
+
+            const int mode = prim.mode < 0 ? TINYGLTF_MODE_TRIANGLES : prim.mode;
+            if (mode != TINYGLTF_MODE_TRIANGLES &&
+                mode != TINYGLTF_MODE_TRIANGLE_STRIP &&
+                mode != TINYGLTF_MODE_TRIANGLE_FAN) continue;
+
             auto pit = prim.attributes.find("POSITION");
             if (pit == prim.attributes.end()) continue;
+            const tinygltf::Accessor& pa = model.accessors[pit->second];
+            if (pa.bufferView < 0) { ++compressedPrims; continue; }   // sparse/compressed accessor
+            ++posPrims;
 
-            const tinygltf::Accessor&   pa = model.accessors[pit->second];
             const tinygltf::BufferView& pv = model.bufferViews[pa.bufferView];
             const tinygltf::Buffer&     pb = model.buffers[pv.buffer];
             int pstride = pa.ByteStride(pv);
             if (pstride <= 0) pstride = (int)(3 * sizeof(float));
             const unsigned char* pd = pb.data.data() + pv.byteOffset + pa.byteOffset;
-
             const unsigned int base = (unsigned int)(pos.size() / 3);
             for (size_t v = 0; v < pa.count; ++v) {
                 const float* f = reinterpret_cast<const float*>(pd + v * (size_t)pstride);
                 pos.push_back(f[0]); pos.push_back(f[1]); pos.push_back(f[2]);
             }
 
+            // Gather this primitive's index sequence (or 0..count-1 if non-indexed).
+            std::vector<unsigned int> seq;
             if (prim.indices >= 0) {
                 const tinygltf::Accessor&   ia = model.accessors[prim.indices];
                 const tinygltf::BufferView& iv = model.bufferViews[ia.bufferView];
                 const tinygltf::Buffer&     ib = model.buffers[iv.buffer];
                 int istride = ia.ByteStride(iv);
                 const unsigned char* idp = ib.data.data() + iv.byteOffset + ia.byteOffset;
+                seq.reserve(ia.count);
                 for (size_t e = 0; e < ia.count; ++e) {
                     const unsigned char* p = idp + e * (size_t)(istride > 0 ? istride : 1);
                     unsigned int v = 0;
@@ -86,15 +105,36 @@ bool loadGltf(const std::string& path, std::vector<float>& pos,
                         case TINYGLTF_COMPONENT_TYPE_UNSIGNED_INT:   v = *reinterpret_cast<const uint32_t*>(p); break;
                         default: break;
                     }
-                    idx.push_back(base + v);
+                    seq.push_back(v);
                 }
             } else {
-                for (size_t v = 0; v < pa.count; ++v) idx.push_back(base + (unsigned int)v);
+                seq.reserve(pa.count);
+                for (size_t v = 0; v < pa.count; ++v) seq.push_back((unsigned int)v);
+            }
+
+            // Expand the sequence into triangle indices according to the mode.
+            if (mode == TINYGLTF_MODE_TRIANGLES) {
+                for (unsigned int v : seq) idx.push_back(base + v);
+            } else if (mode == TINYGLTF_MODE_TRIANGLE_STRIP) {
+                for (size_t i = 2; i < seq.size(); ++i) {
+                    if (i % 2 == 0) { idx.push_back(base+seq[i-2]); idx.push_back(base+seq[i-1]); idx.push_back(base+seq[i]); }
+                    else            { idx.push_back(base+seq[i-1]); idx.push_back(base+seq[i-2]); idx.push_back(base+seq[i]); }
+                }
+            } else {  // TRIANGLE_FAN
+                for (size_t i = 2; i < seq.size(); ++i) {
+                    idx.push_back(base+seq[0]); idx.push_back(base+seq[i-1]); idx.push_back(base+seq[i]);
+                }
             }
         }
     }
-    if (pos.empty() || idx.empty()) { err = "no triangle-mode meshes in glTF"; return false; }
-    return true;
+
+    if (!pos.empty() && !idx.empty()) return true;
+    if (compressedPrims > 0)   err = "glTF mesh uses compressed geometry (Draco/sparse) -- not supported";
+    else if (model.meshes.empty()) err = "glTF contains no meshes";
+    else if (primCount == 0)   err = "glTF meshes have no primitives";
+    else if (posPrims == 0)    err = "glTF has no triangle/strip/fan primitives with POSITION";
+    else                       err = "glTF triangle data was empty";
+    return false;
 }
 
 // Center the mesh at the origin and uniformly scale it to ~fit a unit box.
