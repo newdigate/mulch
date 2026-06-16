@@ -16,6 +16,7 @@
 #include "modules/StepSequencerNode.h"
 #include "modules/VideoPlayerNode.h"
 #include "modules/WireframeNode.h"
+#include "ui/TransportBar.h"
 
 namespace oss {
 
@@ -69,8 +70,9 @@ int Application::addNodeOfType(const std::string& type, glm::vec2 pos) {
 }
 
 void Application::frame(float dt) {
+    drawTransportBar(graph_.transport());   // top toolbar: tempo + play/stop/scrub
     editor_.draw(graph_, [this](const std::string& t, glm::vec2 p){ return addNodeOfType(t, p); });
-    graph_.evaluate(dt);
+    graph_.evaluate(dt);                     // advances the transport by dt
 }
 
 // The first OutputNode's current texture, shown in the dedicated output window.

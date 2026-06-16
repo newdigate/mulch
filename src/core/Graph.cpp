@@ -88,6 +88,7 @@ std::vector<int> Graph::topologicalOrder() const {
 }
 
 void Graph::evaluate(float dt) {
+    transport_.advance(dt);   // advance the global clock once per frame
     if (orderDirty_) { order_ = topologicalOrder(); orderDirty_ = false; }
     for (int id : order_) {
         Node* n = findNode(id);
@@ -112,7 +113,7 @@ void Graph::evaluate(float dt) {
 
         std::vector<Value>& outs = outputs_[id];
         outs.assign(n->outputs().size(), Value{});
-        EvalContext ctx{inputs, outs, dt};
+        EvalContext ctx{inputs, outs, dt, &transport_};
         n->evaluate(ctx);
     }
 }

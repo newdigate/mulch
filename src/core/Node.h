@@ -5,6 +5,7 @@
 #include <glm/vec2.hpp>
 #include "core/Port.h"
 #include "core/Value.h"
+#include "core/Transport.h"
 
 namespace oss {
 
@@ -15,6 +16,7 @@ struct EvalContext {
     const std::vector<Value>& inputs;   // one resolved value per input port
     std::vector<Value>&       outputs;  // node writes one value per output port
     float                     dt;        // seconds since previous frame
+    const Transport*          transport = nullptr;  // global clock (set by Graph::evaluate)
 
     template <class T> const T& in(std::size_t i) const { return std::get<T>(inputs[i]); }
     template <class T> void out(std::size_t i, T v) { outputs[i] = Value(std::move(v)); }

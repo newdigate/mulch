@@ -36,6 +36,11 @@ CMake 4.x, it's relaxed with `CMAKE_POLICY_VERSION_MINIMUM 3.5` around its
 - **Nodes** derive from `Node` (`src/core/Node.h`): declare ports in the constructor
   via `addInput/addOutput`, do GL setup in `initGL()`, compute in `evaluate()`.
   Optional `statusLine()` shows a line under the node in the editor (used by loaders).
+- **Global transport** (`src/core/Transport.h`): the `Graph` owns a `Transport`
+  (tempo + song position in seconds; derives beats/bars/ms). `evaluate(dt)` advances
+  it and hands it to every node via `EvalContext::transport` (a `const Transport*`,
+  so nodes can sync to the beat). The top toolbar (`src/ui/TransportBar.cpp`) drives
+  it. `Graph::transport()` is the accessor.
 - **Texture nodes** derive from `ShaderNode` (`src/gfx/ShaderNode.h`): render a
   fragment shader into their own FBO and publish a `TexRef` on output 0. `ColourNode`
   is the minimal example — declare ports, override `setUniforms()`, call `render(ctx)`.

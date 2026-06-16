@@ -4,11 +4,17 @@
 #include <unordered_map>
 #include "core/Node.h"
 #include "core/Connection.h"
+#include "core/Transport.h"
 
 namespace oss {
 
 class Graph {
 public:
+    // Global transport (tempo + song position). The toolbar drives it; every
+    // evaluate() advances it by dt and hands it to each node via EvalContext.
+    Transport&       transport()       { return transport_; }
+    const Transport& transport() const { return transport_; }
+
     // Takes ownership; returns the assigned (>=1) node id.
     int  addNode(std::unique_ptr<Node> node);
     void removeNode(int nodeId);
@@ -40,6 +46,7 @@ private:
     mutable std::vector<int> order_;
     mutable bool             orderDirty_ = true;
 
+    Transport transport_;
     std::unordered_map<int, std::vector<Value>> outputs_;  // per-frame node outputs
 };
 

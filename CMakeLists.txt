@@ -188,6 +188,7 @@ set(APP_SOURCES
   src/modules/WireframeNode.cpp
   src/ui/NodeEditorPanel.cpp
   src/ui/PortWidgets.cpp
+  src/ui/TransportBar.cpp
   src/app/Application.cpp
 )
 
@@ -215,6 +216,7 @@ add_executable(core_tests
   tests/test_step_sequencer.cpp
   tests/test_midi_merge.cpp
   tests/test_mesh_edges.cpp
+  tests/test_transport.cpp
   src/core/Node.cpp
   src/core/Graph.cpp
   src/audio/FFT.cpp
