@@ -9,11 +9,13 @@
 #include "tiny_gltf.h"
 // tinyobjloader's implementation is provided by its linked library target.
 #include "tiny_obj_loader.h"
+#include "meshoptimizer.h"
 
 #include <algorithm>
 #include <cctype>
 #include <cstdint>
 #include <cstdio>
+#include <utility>
 
 namespace oss {
 namespace {
@@ -42,6 +44,53 @@ bool loadObj(const std::string& path, std::vector<float>& pos,
     return true;
 }
 
+// Decode any EXT_meshopt_compression buffer views in place: replace each with a
+// freshly-decoded buffer so the rest of the loader sees plain vertex/index data.
+// (Draco, by contrast, is decoded by tinygltf itself when TINYGLTF_ENABLE_DRACO.)
+bool decodeMeshopt(tinygltf::Model& model, std::string& err) {
+    for (auto& bv : model.bufferViews) {
+        auto it = bv.extensions.find("EXT_meshopt_compression");
+        if (it == bv.extensions.end()) continue;
+        const tinygltf::Value& e = it->second;
+        if (!e.Has("buffer") || !e.Has("byteLength") || !e.Has("byteStride") ||
+            !e.Has("count") || !e.Has("mode")) { err = "meshopt: incomplete extension"; return false; }
+
+        int    srcBuf = e.Get("buffer").GetNumberAsInt();
+        size_t srcOff = e.Has("byteOffset") ? (size_t)e.Get("byteOffset").GetNumberAsInt() : 0;
+        size_t srcLen = (size_t)e.Get("byteLength").GetNumberAsInt();
+        size_t stride = (size_t)e.Get("byteStride").GetNumberAsInt();
+        size_t count  = (size_t)e.Get("count").GetNumberAsInt();
+        std::string mode = e.Get("mode").Get<std::string>();
+        std::string filt = e.Has("filter") ? e.Get("filter").Get<std::string>() : "NONE";
+
+        if (srcBuf < 0 || (size_t)srcBuf >= model.buffers.size()) { err = "meshopt: bad buffer index"; return false; }
+        const std::vector<unsigned char>& sd = model.buffers[srcBuf].data;
+        if (srcOff + srcLen > sd.size()) { err = "meshopt: source range out of bounds"; return false; }
+
+        std::vector<unsigned char> dst(count * stride);
+        int rc = -1;
+        if (mode == "ATTRIBUTES")     rc = meshopt_decodeVertexBuffer(dst.data(), count, stride, sd.data() + srcOff, srcLen);
+        else if (mode == "TRIANGLES") rc = meshopt_decodeIndexBuffer(dst.data(), count, stride, sd.data() + srcOff, srcLen);
+        else if (mode == "INDICES")   rc = meshopt_decodeIndexSequence(dst.data(), count, stride, sd.data() + srcOff, srcLen);
+        else { err = "meshopt: unknown mode '" + mode + "'"; return false; }
+        if (rc != 0) { err = "meshopt: decode failed (mode " + mode + ")"; return false; }
+
+        if (filt == "OCTAHEDRAL")       meshopt_decodeFilterOct(dst.data(), count, stride);
+        else if (filt == "QUATERNION")  meshopt_decodeFilterQuat(dst.data(), count, stride);
+        else if (filt == "EXPONENTIAL") meshopt_decodeFilterExp(dst.data(), count, stride);
+
+        tinygltf::Buffer nb;
+        nb.data = std::move(dst);
+        model.buffers.push_back(std::move(nb));
+        bv.buffer     = (int)model.buffers.size() - 1;
+        bv.byteOffset = 0;
+        bv.byteLength = count * stride;
+        bv.byteStride = (mode == "ATTRIBUTES") ? (int)stride : 0;
+        bv.extensions.erase("EXT_meshopt_compression");
+    }
+    return true;
+}
+
 bool loadGltf(const std::string& path, std::vector<float>& pos,
               std::vector<unsigned int>& idx, std::string& err) {
     tinygltf::TinyGLTF loader;
@@ -52,18 +101,14 @@ bool loadGltf(const std::string& path, std::vector<float>& pos,
                   : loader.LoadASCIIFromFile(&model, &err, &warn, path);
     if (!ok) return false;
 
-    // Geometry compression we can't decode (needs the draco / meshopt libraries).
-    for (const auto& ext : model.extensionsRequired)
-        if (ext == "KHR_draco_mesh_compression" || ext == "EXT_meshopt_compression") {
-            err = "glTF requires " + ext + " (compressed geometry, not supported)";
-            return false;
-        }
+    // Draco is decoded by tinygltf during load (TINYGLTF_ENABLE_DRACO); decode any
+    // EXT_meshopt_compression buffer views here so the reader below sees plain data.
+    if (!decodeMeshopt(model, err)) return false;
 
     int primCount = 0, posPrims = 0, compressedPrims = 0;
     for (const auto& mesh : model.meshes) {
         for (const auto& prim : mesh.primitives) {
             ++primCount;
-            if (prim.extensions.count("KHR_draco_mesh_compression")) { ++compressedPrims; continue; }
 
             const int mode = prim.mode < 0 ? TINYGLTF_MODE_TRIANGLES : prim.mode;
             if (mode != TINYGLTF_MODE_TRIANGLES &&

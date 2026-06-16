@@ -13,6 +13,7 @@
 #include "modules/MixNode.h"
 #include "modules/OutputNode.h"
 #include "gfx/MeshLoader.h"
+#include <meshoptimizer.h>
 #include "modules/MeshLoaderNode.h"
 #include "modules/ShadedRenderNode.h"
 #include "modules/SineWaveNode.h"
@@ -279,6 +280,46 @@ int main() {
         MeshData strip = loadMeshData("tests/assets/strip.gltf", 1.0f);   // TRIANGLE_STRIP -> 2 tris
         if (!strip.ok || strip.tris.size() != 2 * 18) { glfwTerminate(); return fail("loadMeshData should expand a TRIANGLE_STRIP gltf to 2 triangles"); }
         std::fprintf(stderr, "gl_smoke OK: loadMeshData reports errors (missing: \"%s\"), and expands strips\n", missing.error.c_str());
+    }
+
+    // --- Scenario 8: a meshopt-compressed gltf decodes (EXT_meshopt_compression) ---
+    // Encode the tetra with meshopt, author a gltf that references the compressed
+    // data via EXT_meshopt_compression, and confirm loadMeshData decodes it.
+    {
+        const float pos[12] = { 0,1,0,  -1,-1,1,  1,-1,1,  0,-1,-1 };
+        const unsigned int ind[12] = { 0,1,2,  0,2,3,  0,3,1,  1,3,2 };
+
+        std::vector<unsigned char> cpos(meshopt_encodeVertexBufferBound(4, 12));
+        cpos.resize(meshopt_encodeVertexBuffer(cpos.data(), cpos.size(), pos, 4, 12));
+        std::vector<unsigned char> cidx(meshopt_encodeIndexBufferBound(12, 4));
+        cidx.resize(meshopt_encodeIndexBuffer(cidx.data(), cidx.size(), ind, 12));
+
+        // One .bin: [48 zero pos-fallback][24 zero idx-fallback][cpos][cidx].
+        std::vector<unsigned char> bin(48 + 24, 0);
+        size_t posOff = bin.size(); bin.insert(bin.end(), cpos.begin(), cpos.end());
+        size_t idxOff = bin.size(); bin.insert(bin.end(), cidx.begin(), cidx.end());
+        if (FILE* f = std::fopen("build/_meshopt.bin", "wb")) { std::fwrite(bin.data(), 1, bin.size(), f); std::fclose(f); }
+
+        std::string g =
+            "{\"asset\":{\"version\":\"2.0\"},"
+            "\"buffers\":[{\"uri\":\"_meshopt.bin\",\"byteLength\":" + std::to_string(bin.size()) + "}],"
+            "\"bufferViews\":["
+              "{\"buffer\":0,\"byteOffset\":0,\"byteLength\":48,\"byteStride\":12,\"extensions\":{\"EXT_meshopt_compression\":"
+                "{\"buffer\":0,\"byteOffset\":" + std::to_string(posOff) + ",\"byteLength\":" + std::to_string(cpos.size()) +
+                ",\"byteStride\":12,\"count\":4,\"mode\":\"ATTRIBUTES\"}}},"
+              "{\"buffer\":0,\"byteOffset\":48,\"byteLength\":24,\"extensions\":{\"EXT_meshopt_compression\":"
+                "{\"buffer\":0,\"byteOffset\":" + std::to_string(idxOff) + ",\"byteLength\":" + std::to_string(cidx.size()) +
+                ",\"byteStride\":2,\"count\":12,\"mode\":\"TRIANGLES\"}}}],"
+            "\"accessors\":["
+              "{\"bufferView\":0,\"componentType\":5126,\"count\":4,\"type\":\"VEC3\"},"
+              "{\"bufferView\":1,\"componentType\":5123,\"count\":12,\"type\":\"SCALAR\"}],"
+            "\"meshes\":[{\"primitives\":[{\"attributes\":{\"POSITION\":0},\"indices\":1,\"mode\":4}]}],"
+            "\"extensionsUsed\":[\"EXT_meshopt_compression\"],\"extensionsRequired\":[\"EXT_meshopt_compression\"]}";
+        if (FILE* f = std::fopen("build/_meshopt.gltf", "wb")) { std::fwrite(g.data(), 1, g.size(), f); std::fclose(f); }
+
+        MeshData m = loadMeshData("build/_meshopt.gltf", 1.0f);
+        if (!m.ok || m.tris.size() != 4 * 18) { glfwTerminate(); return fail("meshopt-compressed gltf did not decode to 4 triangles"); }
+        std::fprintf(stderr, "gl_smoke OK: EXT_meshopt_compression gltf decoded to %d triangles\n", (int)(m.tris.size() / 18));
     }
 
     glfwDestroyWindow(win);

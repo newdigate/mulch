@@ -114,6 +114,25 @@ set(CMAKE_POLICY_VERSION_MINIMUM 3.5)
 FetchContent_MakeAvailable(tinygltf)
 unset(CMAKE_POLICY_VERSION_MINIMUM)
 
+# --- meshoptimizer (decodes EXT_meshopt_compression bufferViews) ---
+FetchContent_Declare(meshoptimizer
+  GIT_REPOSITORY https://github.com/zeux/meshoptimizer.git
+  GIT_TAG v0.22)
+set(MESHOPT_BUILD_DEMO OFF CACHE BOOL "" FORCE)
+set(MESHOPT_BUILD_TOOLS OFF CACHE BOOL "" FORCE)
+set(CMAKE_POLICY_VERSION_MINIMUM 3.5)
+FetchContent_MakeAvailable(meshoptimizer)
+unset(CMAKE_POLICY_VERSION_MINIMUM)
+
+# --- draco (KHR_draco_mesh_compression; tinygltf decodes it when enabled) ---
+FetchContent_Declare(draco
+  GIT_REPOSITORY https://github.com/google/draco.git
+  GIT_TAG 1.5.7)
+set(DRACO_TRANSCODER_SUPPORTED OFF CACHE BOOL "" FORCE)
+set(CMAKE_POLICY_VERSION_MINIMUM 3.5)
+FetchContent_MakeAvailable(draco)
+unset(CMAKE_POLICY_VERSION_MINIMUM)
+
 find_package(OpenGL REQUIRED)
 
 # --- UI third-party static lib: ImGui + backends + node editor ---
@@ -163,9 +182,11 @@ set(APP_SOURCES
 
 # --- Application executable ---
 add_executable(shader_streamer src/main.cpp ${APP_SOURCES})
-target_include_directories(shader_streamer PRIVATE src ${libsoundio_SOURCE_DIR} ${rtmidi_SOURCE_DIR} ${tinygltf_SOURCE_DIR})
-target_compile_definitions(shader_streamer PRIVATE GLFW_INCLUDE_NONE)
-target_link_libraries(shader_streamer PRIVATE ui_thirdparty glad_gl41 glm::glm libsoundio_static rtmidi tinyobjloader)
+target_include_directories(shader_streamer PRIVATE src ${libsoundio_SOURCE_DIR} ${rtmidi_SOURCE_DIR}
+  ${tinygltf_SOURCE_DIR} ${meshoptimizer_SOURCE_DIR}/src ${draco_SOURCE_DIR}/src ${CMAKE_BINARY_DIR})
+target_compile_definitions(shader_streamer PRIVATE GLFW_INCLUDE_NONE TINYGLTF_ENABLE_DRACO)
+target_link_libraries(shader_streamer PRIVATE ui_thirdparty glad_gl41 glm::glm libsoundio_static rtmidi
+  tinyobjloader meshoptimizer draco_static)
 
 # --- Tests (GL-free core only) ---
 enable_testing()
@@ -210,9 +231,10 @@ add_executable(gl_smoke
   src/audio/FFT.cpp
   src/audio/SignalGenerator.cpp
 )
-target_include_directories(gl_smoke PRIVATE src ${tinygltf_SOURCE_DIR})
-target_compile_definitions(gl_smoke PRIVATE GLFW_INCLUDE_NONE)
-target_link_libraries(gl_smoke PRIVATE glad_gl41 glfw glm::glm OpenGL::GL tinyobjloader)
+target_include_directories(gl_smoke PRIVATE src ${tinygltf_SOURCE_DIR}
+  ${meshoptimizer_SOURCE_DIR}/src ${draco_SOURCE_DIR}/src ${CMAKE_BINARY_DIR})
+target_compile_definitions(gl_smoke PRIVATE GLFW_INCLUDE_NONE TINYGLTF_ENABLE_DRACO)
+target_link_libraries(gl_smoke PRIVATE glad_gl41 glfw glm::glm OpenGL::GL tinyobjloader meshoptimizer draco_static)
 add_test(NAME gl_smoke COMMAND gl_smoke WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
 
 # Copy shaders next to the executable so the app can be run from the build dir too

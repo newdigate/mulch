@@ -13,9 +13,10 @@ together and watch textures and audio stream through the graph in real time.
 - **Spectrograph** — audio -> FFT -> texture, plus a second vertex-buffer output of the
   spectrum as a 3D line strip (synthesizes a test signal when its audio input is unconnected)
 - **Mix** — two textures + a float factor -> blended texture
-- **Mesh Loader** — loads a .obj or .gltf/.glb file on a worker thread and streams it as
-  two geometry outputs: wireframe edges and shaded triangles (with normals). Shows its
-  load status under the node name (loading / loaded N triangles / load failed: reason)
+- **Mesh Loader** — loads a .obj or .gltf/.glb file (incl. Draco- and meshopt-compressed
+  glTF) on a worker thread and streams it as two geometry outputs: wireframe edges and
+  shaded triangles (with normals). Shows its load status under the node name (loading /
+  loaded N triangles / load failed: reason)
 - **Wireframe** — a streamed vertex buffer (line strip or mesh edges) -> a wireframe
   texture, drawn through a slowly rotating 3D camera
 - **Shaded Render** — a streamed triangle buffer (with normals) -> a solid, diffuse-lit
@@ -47,8 +48,9 @@ cmake --build build -j
 
 The first configure downloads pinned dependencies via CMake FetchContent (network
 required): GLFW, glad (GL 4.1 core), Dear ImGui, imgui-node-editor, glm, doctest,
-libsoundio (audio I/O; CoreAudio on macOS), RtMidi (MIDI I/O; CoreMIDI on macOS), and
-tinyobjloader + tinygltf (mesh loading).
+libsoundio (audio I/O; CoreAudio on macOS), RtMidi (MIDI I/O; CoreMIDI on macOS),
+tinyobjloader + tinygltf (mesh loading), and draco + meshoptimizer (glTF compression).
+draco is a sizable build, so the first configure/build takes noticeably longer.
 
 ## Run
 
