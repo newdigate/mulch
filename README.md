@@ -13,10 +13,12 @@ together and watch textures and audio stream through the graph in real time.
 - **Spectrograph** — audio -> FFT -> texture, plus a second vertex-buffer output of the
   spectrum as a 3D line strip (synthesizes a test signal when its audio input is unconnected)
 - **Mix** — two textures + a float factor -> blended texture
-- **Mesh Loader** — loads a .obj or .gltf/.glb file and streams its triangle edges as a
-  vertex buffer (wire into Wireframe to view the model)
+- **Mesh Loader** — loads a .obj or .gltf/.glb file on a worker thread and streams it as
+  two geometry outputs: wireframe edges and shaded triangles (with normals)
 - **Wireframe** — a streamed vertex buffer (line strip or mesh edges) -> a wireframe
   texture, drawn through a slowly rotating 3D camera
+- **Shaded Render** — a streamed triangle buffer (with normals) -> a solid, diffuse-lit
+  texture with a colour input, drawn through a slowly rotating 3D camera
 - **Output** — displays a texture in the Viewer
 - **Audio Out** — plays its audio input through the system's default output device
 - **MIDI In** — receives from a hardware or virtual MIDI input port -> midi
@@ -65,8 +67,9 @@ several Step Seq voices through **MIDI Merge** for a full kit (each MIDI node op
 or a virtual port if none exist). Wire the
 **Spectrograph**'s geometry output into **Wireframe -> Output** to see the spectrum as a
 rotating 3D line strip, or load a 3D model with **Mesh Loader** (type a .obj/.gltf path in
-its file field) and wire it into **Wireframe** to view it as a rotating wireframe. Select a
-node or link and press Delete or Backspace to remove it.
+its file field) and wire its wireframe output into **Wireframe**, or its shaded output into
+**Shaded Render**, for a rotating wireframe or lit view. Select a node or link and press
+Delete or Backspace to remove it.
 
 ## Test
 
@@ -86,8 +89,8 @@ ctest --test-dir build --output-on-failure
 - `src/gfx/` — OpenGL helpers (shader/program, framebuffer, fullscreen pass, ShaderNode base)
 - `src/audio/` — FFT, the synthesized signal generator, and the SPSC ring buffer
 - `src/modules/` — the example nodes (Colour, Sine, Audio In, Audio Mix, Spectrograph,
-  Mix, Mesh Loader, Wireframe, Output, Audio Out, MIDI In, Step Seq, Arpeggiator,
-  MIDI Merge, MIDI Out)
+  Mix, Mesh Loader, Wireframe, Shaded Render, Output, Audio Out, MIDI In, Step Seq,
+  Arpeggiator, MIDI Merge, MIDI Out)
 - `src/gfx/MeshEdges.h`, `src/gfx/MeshLoader.{h,cpp}` — mesh edge expansion and .obj/.gltf loading
 - `src/ui/` — imgui-node-editor panel and inline port widgets
 - `shaders/` — fragment shaders

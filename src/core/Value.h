@@ -34,13 +34,23 @@ inline MidiEvent midiNoteOff(int note, int channel = 0) {
     return { (unsigned char)(0x80u | (channel & 0x0F)), (unsigned char)note, 0 };
 }
 
-// How a VertexRef's vec3 positions are assembled when drawn.
+// How a VertexRef's vertices are assembled when drawn.
 enum class Primitive { LineStrip, Lines, Triangles };
 
-// A handle to a GL vertex buffer (VBO) a node produced, with its vertex count
-// and primitive type. `vbo` is a plain GL name so this header stays GL-free,
-// like TexRef. The buffer holds tightly-packed vec3 positions.
-struct VertexRef { unsigned int vbo = 0; int count = 0; Primitive primitive = Primitive::LineStrip; };
+// The per-vertex layout of a VertexRef's buffer:
+//   Pos3        - 3 floats: position (stride 12)
+//   Pos3Normal3 - 6 floats: position + normal (stride 24, normal at offset 12)
+enum class VertexFormat { Pos3, Pos3Normal3 };
+
+// A handle to a GL vertex buffer (VBO) a node produced, with its vertex count,
+// primitive, and per-vertex format. `vbo` is a plain GL name so this header
+// stays GL-free, like TexRef.
+struct VertexRef {
+    unsigned int vbo       = 0;
+    int          count     = 0;
+    Primitive    primitive = Primitive::LineStrip;
+    VertexFormat format    = VertexFormat::Pos3;
+};
 
 // Each alternative corresponds to a PortType value (mapped type-safely by typeOf).
 using Value = std::variant<float, bool, glm::vec4, std::string, TexRef, AudioRef, MidiRef, VertexRef>;

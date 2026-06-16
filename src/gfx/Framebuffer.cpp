@@ -4,11 +4,12 @@
 namespace oss {
 
 Framebuffer::~Framebuffer() {
-    if (tex_) glDeleteTextures(1, &tex_);
-    if (fbo_) glDeleteFramebuffers(1, &fbo_);
+    if (tex_)   glDeleteTextures(1, &tex_);
+    if (depth_) glDeleteRenderbuffers(1, &depth_);
+    if (fbo_)   glDeleteFramebuffers(1, &fbo_);
 }
 
-void Framebuffer::create(int w, int h) {
+void Framebuffer::create(int w, int h, bool depth) {
     w_ = w; h_ = h;
     glGenTextures(1, &tex_);
     glBindTexture(GL_TEXTURE_2D, tex_);
@@ -21,6 +22,13 @@ void Framebuffer::create(int w, int h) {
     glGenFramebuffers(1, &fbo_);
     glBindFramebuffer(GL_FRAMEBUFFER, fbo_);
     glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, tex_, 0);
+    if (depth) {
+        glGenRenderbuffers(1, &depth_);
+        glBindRenderbuffer(GL_RENDERBUFFER, depth_);
+        glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH_COMPONENT24, w, h);
+        glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_RENDERBUFFER, depth_);
+        glBindRenderbuffer(GL_RENDERBUFFER, 0);
+    }
     if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE)
         std::fprintf(stderr, "[Framebuffer] incomplete\n");
     glBindFramebuffer(GL_FRAMEBUFFER, 0);

@@ -118,16 +118,19 @@ void normalize(std::vector<float>& pos, float scale) {
 
 } // namespace
 
-bool loadMeshLineList(const std::string& path, float scale, std::vector<float>& outLines) {
+MeshData loadMeshData(const std::string& path, float scale) {
+    MeshData data;
     std::vector<float> pos;
     std::vector<unsigned int> idx;
-    bool ok = endsWith(path, ".obj")  ? loadObj(path, pos, idx)
-            : (endsWith(path, ".gltf") || endsWith(path, ".glb")) ? loadGltf(path, pos, idx)
-            : false;
-    if (!ok) return false;
+    bool parsed = endsWith(path, ".obj")  ? loadObj(path, pos, idx)
+                : (endsWith(path, ".gltf") || endsWith(path, ".glb")) ? loadGltf(path, pos, idx)
+                : false;
+    if (!parsed) return data;
     normalize(pos, scale);
-    outLines = trianglesToLineList(pos, idx);
-    return !outLines.empty();
+    data.lines = trianglesToLineList(pos, idx);
+    data.tris  = trianglesToShadedList(pos, idx);
+    data.ok = !data.lines.empty() || !data.tris.empty();
+    return data;
 }
 
 } // namespace oss

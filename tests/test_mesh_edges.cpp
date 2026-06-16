@@ -35,3 +35,23 @@ TEST_CASE("a trailing partial triangle is ignored") {
     std::vector<unsigned int> idx = {0,1,2, 0};        // dangling index
     CHECK(trianglesToLineList(pos, idx).size() == 6 * 3);
 }
+
+TEST_CASE("shaded expansion yields 3 vertices each with the face normal") {
+    std::vector<float> pos = {0,0,0, 1,0,0, 0,1,0};    // CCW in the XY plane
+    std::vector<unsigned int> idx = {0, 1, 2};
+    auto s = trianglesToShadedList(pos, idx);
+    REQUIRE(s.size() == 3 * 6);                         // 3 verts x (pos3 + normal3)
+    // vertex 0: position (0,0,0), normal (0,0,1)
+    CHECK(s[0] == 0); CHECK(s[1] == 0); CHECK(s[2] == 0);
+    CHECK(s[3] == doctest::Approx(0));
+    CHECK(s[4] == doctest::Approx(0));
+    CHECK(s[5] == doctest::Approx(1));
+    // vertex 1's normal matches the same face
+    CHECK(s[11] == doctest::Approx(1));
+}
+
+TEST_CASE("shaded expansion skips degenerate/out-of-range triangles") {
+    std::vector<float> pos = {0,0,0, 1,0,0, 0,1,0};
+    std::vector<unsigned int> idx = {0,1,2, 0,1,99};
+    CHECK(trianglesToShadedList(pos, idx).size() == 3 * 6);
+}

@@ -1,4 +1,5 @@
 #pragma once
+#include <cmath>
 #include <cstddef>
 #include <vector>
 
@@ -26,6 +27,32 @@ inline std::vector<float> trianglesToLineList(const std::vector<float>& position
         emit(a); emit(b);   // edge a-b
         emit(b); emit(c);   // edge b-c
         emit(c); emit(a);   // edge c-a
+    }
+    return out;
+}
+
+// Expand an indexed triangle mesh into a flat, interleaved vertex array of
+// position + flat face-normal (6 floats per vertex, 18 per triangle), suitable
+// for shaded GL_TRIANGLES rendering. Normals are computed per face as
+// normalize((b-a) x (c-a)). Out-of-range/partial triangles are skipped. GL-free.
+inline std::vector<float> trianglesToShadedList(const std::vector<float>& positions,
+                                                const std::vector<unsigned int>& indices) {
+    std::vector<float> out;
+    out.reserve(indices.size() * 6);
+    const std::size_t vertCount = positions.size() / 3;
+    auto P = [&](unsigned int v, int k) { return positions[(std::size_t)v * 3 + k]; };
+    for (std::size_t t = 0; t + 2 < indices.size(); t += 3) {
+        unsigned int a = indices[t], b = indices[t + 1], c = indices[t + 2];
+        if (a >= vertCount || b >= vertCount || c >= vertCount) continue;
+        float ux = P(b,0)-P(a,0), uy = P(b,1)-P(a,1), uz = P(b,2)-P(a,2);
+        float vx = P(c,0)-P(a,0), vy = P(c,1)-P(a,1), vz = P(c,2)-P(a,2);
+        float nx = uy*vz - uz*vy, ny = uz*vx - ux*vz, nz = ux*vy - uy*vx;
+        float len = std::sqrt(nx*nx + ny*ny + nz*nz);
+        if (len > 1e-12f) { nx /= len; ny /= len; nz /= len; } else { nx = 0; ny = 0; nz = 1; }
+        for (unsigned int v : {a, b, c}) {
+            out.push_back(P(v,0)); out.push_back(P(v,1)); out.push_back(P(v,2));
+            out.push_back(nx);     out.push_back(ny);     out.push_back(nz);
+        }
     }
     return out;
 }

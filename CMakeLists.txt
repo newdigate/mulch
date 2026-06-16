@@ -153,6 +153,7 @@ set(APP_SOURCES
   src/modules/MidiInputNode.cpp
   src/modules/MidiOutputNode.cpp
   src/modules/MeshLoaderNode.cpp
+  src/modules/ShadedRenderNode.cpp
   src/modules/SpectrographNode.cpp
   src/modules/WireframeNode.cpp
   src/ui/NodeEditorPanel.cpp
@@ -203,6 +204,7 @@ add_executable(gl_smoke
   src/gfx/ShaderNode.cpp
   src/gfx/MeshLoader.cpp
   src/modules/MeshLoaderNode.cpp
+  src/modules/ShadedRenderNode.cpp
   src/modules/SpectrographNode.cpp
   src/modules/WireframeNode.cpp
   src/audio/FFT.cpp
