@@ -21,7 +21,8 @@ void main() { FragColor = vec4(0.12, 0.95, 0.45, 1.0); }
 
 WireframeNode::WireframeNode() : Node("Wireframe") {
     addInput("geometry", PortType::Vertex, VertexRef{});
-    addInput("spin", PortType::Float, 0.5f, 0.0f, 2.0f);   // rotation speed (rad/s)
+    addInput("spin", PortType::Float, 0.5f, 0.0f, 2.0f);   // self-rotation speed (rad/s)
+    addInput("transform", PortType::Transform, Transform{});   // shared world transform (overrides spin)
     addOutput("out", PortType::Texture);
 }
 
@@ -38,7 +39,13 @@ void WireframeNode::initGL() {
 
 void WireframeNode::evaluate(EvalContext& ctx) {
     VertexRef geo = ctx.in<VertexRef>(0);
-    angle_ += ctx.dt * ctx.in<float>(1);
+
+    // A connected World Transform overrides the node's own spin so several
+    // renderers share one rotation and stay aligned.
+    Transform tf = ctx.in<Transform>(2);
+    float angle;
+    if (tf.active) { angle = tf.angle; }
+    else { angle_ += ctx.dt * ctx.in<float>(1); angle = angle_; }
 
     fbo_.bind();
     glClearColor(0.03f, 0.03f, 0.05f, 1.0f);
@@ -47,11 +54,12 @@ void WireframeNode::evaluate(EvalContext& ctx) {
     if (geo.vbo != 0 && geo.count > 0) {
         glUseProgram(program_);
         float aspect = fbo_.height() ? (float)fbo_.width() / (float)fbo_.height() : 1.7778f;
+        // Camera matches Shaded Render so the two views register when blended.
         glm::mat4 proj = glm::perspective(glm::radians(45.0f), aspect, 0.1f, 100.0f);
-        glm::mat4 view = glm::lookAt(glm::vec3(0.0f, 0.4f, 2.6f),
-                                     glm::vec3(0.0f, 0.2f, 0.0f),
+        glm::mat4 view = glm::lookAt(glm::vec3(0.0f, 0.4f, 2.8f),
+                                     glm::vec3(0.0f, 0.0f, 0.0f),
                                      glm::vec3(0.0f, 1.0f, 0.0f));
-        glm::mat4 model = glm::rotate(glm::mat4(1.0f), angle_, glm::vec3(0.0f, 1.0f, 0.0f));
+        glm::mat4 model = glm::rotate(glm::mat4(1.0f), angle, glm::vec3(0.0f, 1.0f, 0.0f));
         glm::mat4 mvp = proj * view * model;
         glUniformMatrix4fv(glGetUniformLocation(program_, "uMVP"), 1, GL_FALSE,
                            glm::value_ptr(mvp));

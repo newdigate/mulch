@@ -18,6 +18,7 @@
 #include "modules/SpectrographNode.h"
 #include "modules/StepSequencerNode.h"
 #include "modules/TextNode.h"
+#include "modules/WorldTransformNode.h"
 #include "modules/VideoPlayerNode.h"
 #include "modules/WireframeNode.h"
 #include "ui/TransportBar.h"
@@ -36,6 +37,7 @@ std::unique_ptr<Node> makeNode(const std::string& type) {
     if (type == "Mesh Loader") return std::make_unique<MeshLoaderNode>();
     if (type == "Text 2D")     return std::make_unique<Text2DNode>();
     if (type == "Text 3D")     return std::make_unique<Text3DNode>();
+    if (type == "World Transform") return std::make_unique<WorldTransformNode>();
     if (type == "Wireframe")   return std::make_unique<WireframeNode>();
     if (type == "Shaded Render") return std::make_unique<ShadedRenderNode>();
     if (type == "Recorder")    return std::make_unique<RecorderNode>();
@@ -55,7 +57,7 @@ const std::vector<NodeCategory>& nodeCategories() {
         { "Texture", { "Colour", "Video", "Mix", "Recorder", "Output" } },
         { "Audio",   { "Sine", "Audio File", "Audio In", "Audio Mix", "Spectrograph", "Audio Out" } },
         { "MIDI",    { "MIDI In", "Step Seq", "Arpeggiator", "MIDI Merge", "MIDI Out" } },
-        { "3D",      { "Mesh Loader", "Text 2D", "Text 3D", "Wireframe", "Shaded Render" } },
+        { "3D",      { "Mesh Loader", "Text 2D", "Text 3D", "World Transform", "Wireframe", "Shaded Render" } },
         { "Control", { "Automation" } },
     };
     return cats;

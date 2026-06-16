@@ -7,7 +7,7 @@
 
 namespace oss {
 
-enum class PortType { Texture, Colour, Float, Bool, Audio, String, Midi, Vertex };
+enum class PortType { Texture, Colour, Float, Bool, Audio, String, Midi, Vertex, Transform };
 
 // Reference to a GL texture produced by a node. `id` is a GL texture name kept
 // as a plain unsigned int so this header (and all of core/) stays GL-free.
@@ -61,8 +61,17 @@ struct VertexRef {
     VertexFormat format    = VertexFormat::Pos3;
 };
 
+// A shared world transform so several 3D renderers can be aligned. Currently a
+// single rotation about Y (radians). `active` distinguishes a real transform
+// (from a World Transform node) from the default an unconnected input carries, so
+// a renderer can fall back to rotating itself when nothing is connected.
+struct Transform {
+    float angle  = 0.0f;
+    bool  active = false;
+};
+
 // Each alternative corresponds to a PortType value (mapped type-safely by typeOf).
-using Value = std::variant<float, bool, glm::vec4, std::string, TexRef, AudioRef, MidiRef, VertexRef>;
+using Value = std::variant<float, bool, glm::vec4, std::string, TexRef, AudioRef, MidiRef, VertexRef, Transform>;
 
 inline PortType typeOf(const Value& v) {
     return std::visit([](auto&& arg) -> PortType {
@@ -74,7 +83,8 @@ inline PortType typeOf(const Value& v) {
         else if constexpr (std::is_same_v<T, TexRef>)      return PortType::Texture;
         else if constexpr (std::is_same_v<T, AudioRef>)    return PortType::Audio;
         else if constexpr (std::is_same_v<T, MidiRef>)     return PortType::Midi;
-        else                                                return PortType::Vertex;
+        else if constexpr (std::is_same_v<T, VertexRef>)   return PortType::Vertex;
+        else                                                return PortType::Transform;
     }, v);
 }
 
@@ -88,6 +98,7 @@ inline const char* portTypeName(PortType t) {
         case PortType::String:  return "String";
         case PortType::Midi:    return "Midi";
         case PortType::Vertex:  return "Vertex";
+        case PortType::Transform: return "Transform";
     }
     return "?";
 }

@@ -25,6 +25,7 @@
 #include "modules/TextNode.h"
 #include "modules/VideoPlayerNode.h"
 #include "modules/WireframeNode.h"
+#include "modules/WorldTransformNode.h"
 #include "gfx/VideoDecoder.h"
 #include "gfx/VideoEncoder.h"
 #include "gfx/TextGeometry.h"
@@ -737,6 +738,74 @@ int main() {
         if (!(after < before)) { glfwTerminate(); return fail("audio playhead did not move backwards on reverse"); }
         std::fprintf(stderr, "gl_smoke OK: Audio File played stereo, advanced %.2fs then reversed %.2f->%.2f\n",
                      fwd, before, after);
+    }
+
+    // --- Scenario 14: a shared World Transform aligns two renderers ---
+    // The same triangle is streamed as lines to Wireframe and as triangles to
+    // Shaded Render, both driven by one World Transform. With a shared rotation
+    // and matching cameras the two views register: the wireframe outline's centroid
+    // lands inside the shaded fill's bounding box.
+    {
+        const float tris[] = {
+            -0.6f, -0.4f, 0.0f,  0,0,1,
+             0.6f, -0.4f, 0.0f,  0,0,1,
+             0.0f,  0.7f, 0.0f,  0,0,1,
+        };
+        const float lines[] = {
+            -0.6f,-0.4f,0,  0.6f,-0.4f,0,
+             0.6f,-0.4f,0,  0.0f, 0.7f,0,
+             0.0f, 0.7f,0, -0.6f,-0.4f,0,
+        };
+        GLuint trisVbo = 0, linesVbo = 0;
+        glGenBuffers(1, &trisVbo);  glBindBuffer(GL_ARRAY_BUFFER, trisVbo);  glBufferData(GL_ARRAY_BUFFER, sizeof(tris),  tris,  GL_STATIC_DRAW);
+        glGenBuffers(1, &linesVbo); glBindBuffer(GL_ARRAY_BUFFER, linesVbo); glBufferData(GL_ARRAY_BUFFER, sizeof(lines), lines, GL_STATIC_DRAW);
+        glBindBuffer(GL_ARRAY_BUFFER, 0);
+
+        Graph g;
+        auto wt = std::make_unique<WorldTransformNode>();
+        wt->inputDefault(0) = 0.0f;     // rate 0 -> angle stays 0 (deterministic)
+        auto wire = std::make_unique<WireframeNode>();
+        wire->inputDefault(0) = VertexRef{linesVbo, 6, Primitive::Lines, VertexFormat::Pos3};
+        auto shade = std::make_unique<ShadedRenderNode>();
+        shade->inputDefault(0) = VertexRef{trisVbo, 3, Primitive::Triangles, VertexFormat::Pos3Normal3};
+        auto outW = std::make_unique<OutputNode>();
+        auto outS = std::make_unique<OutputNode>();
+        wire->initGL(); shade->initGL(); outW->initGL(); outS->initGL();
+        int wtId = g.addNode(std::move(wt));
+        int wId  = g.addNode(std::move(wire));
+        int sId  = g.addNode(std::move(shade));
+        int owId = g.addNode(std::move(outW));
+        int osId = g.addNode(std::move(outS));
+        if (!g.connect(wtId, 0, wId, 2) || !g.connect(wtId, 0, sId, 3) ||   // shared transform
+            !g.connect(wId, 0, owId, 0) || !g.connect(sId, 0, osId, 0)) {
+            glfwTerminate(); return fail("connect shared-transform graph");
+        }
+        g.evaluate(1.0f / 60.0f);
+
+        TexRef tw = dynamic_cast<OutputNode*>(g.findNode(owId))->current();
+        TexRef ts = dynamic_cast<OutputNode*>(g.findNode(osId))->current();
+        std::vector<unsigned char> pw((size_t)tw.w * tw.h * 4), ps((size_t)ts.w * ts.h * 4);
+        glBindTexture(GL_TEXTURE_2D, tw.id); glGetTexImage(GL_TEXTURE_2D, 0, GL_RGBA, GL_UNSIGNED_BYTE, pw.data());
+        glBindTexture(GL_TEXTURE_2D, ts.id); glGetTexImage(GL_TEXTURE_2D, 0, GL_RGBA, GL_UNSIGNED_BYTE, ps.data());
+
+        double gsx = 0, gsy = 0; long gn = 0;                         // wireframe green centroid
+        int litMinX = 1e9, litMinY = 1e9, litMaxX = -1, litMaxY = -1; // shaded lit bbox
+        long ln = 0;
+        for (int y = 0; y < tw.h; ++y) for (int x = 0; x < tw.w; ++x) {
+            size_t i = ((size_t)y * tw.w + x) * 4;
+            if (pw[i+1] > 200 && pw[i] < 120 && pw[i+2] < 170) { gsx += x; gsy += y; ++gn; }
+            int r = ps[i], gg = ps[i+1], b = ps[i+2];
+            if (b > 60 && b > r && gg > r) { litMinX = std::min(litMinX,x); litMaxX = std::max(litMaxX,x);
+                                             litMinY = std::min(litMinY,y); litMaxY = std::max(litMaxY,y); ++ln; }
+        }
+        if (gn == 0) { glfwTerminate(); return fail("shared-transform wireframe drew nothing"); }
+        if (ln == 0) { glfwTerminate(); return fail("shared-transform shaded drew nothing"); }
+        double gcx = gsx / gn, gcy = gsy / gn;
+        bool aligned = gcx >= litMinX - 5 && gcx <= litMaxX + 5 && gcy >= litMinY - 5 && gcy <= litMaxY + 5;
+        if (!aligned) { glfwTerminate(); return fail("renderers not aligned: wireframe centroid outside shaded bbox"); }
+        std::fprintf(stderr, "gl_smoke OK: shared World Transform aligns Wireframe + Shaded (centroid %.0f,%.0f in bbox)\n", gcx, gcy);
+
+        glDeleteBuffers(1, &trisVbo); glDeleteBuffers(1, &linesVbo);
     }
 
     glfwDestroyWindow(win);

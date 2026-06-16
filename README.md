@@ -56,7 +56,8 @@ to see it; or `Mesh Loader → Shaded Render → Output` to spin a 3D model.
 | **MIDI Merge** | up to four MIDI streams → one |
 | **Mesh Loader** | load .obj/.gltf/.glb (incl. Draco/meshopt) on a worker thread → geometry |
 | **Text 2D / Text 3D** | type a string → vertex buffers: flat filled letters / extruded solid 3D letters (stb_truetype + earcut) |
-| **Wireframe / Shaded Render** | a vertex buffer → a rotating wireframe / lit texture |
+| **World Transform** | a single rotation rate → a shared transform; wire it into several renderers' `transform` input so they rotate together and stay aligned |
+| **Wireframe / Shaded Render** | a vertex buffer → a rotating wireframe / lit texture; their `transform` input takes a shared World Transform (else each self-rotates via `spin`) |
 | **Recorder** | inline tap: passes video + audio through unchanged while recording them to a movie file (H.264/AAC mp4, mono or stereo per the input); toggle `record`, set `file` |
 | **Output** | marks the texture shown in the Output window |
 | **Automation** | 4 float channels, each a mouse-drawn curve over song time (bars), sampled at the transport position → sequences any Float parameter. Edited in the **Automation** window |

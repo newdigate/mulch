@@ -32,6 +32,9 @@ CMake 4.x, it's relaxed with `CMAKE_POLICY_VERSION_MINIMUM 3.5` around its
   Connections only join ports of equal `PortType`. Audio is interleaved float in
   `AudioRef` (`channels` = 1 mono or 2 stereo L,R,L,R; `count` = total samples,
   `frames()` = per-channel) — nodes upmix/downmix at the boundaries as needed.
+  `Transform` carries a shared rotation with an `active` flag, so a renderer can
+  tell a connected World Transform from the inactive default and fall back to
+  self-rotation when nothing is wired in.
 - **Per-frame forward evaluation.** `Graph::evaluate(dt)` runs nodes in topological
   order. Each node gets an `EvalContext` with resolved `inputs`, writable `outputs`,
   and `dt`. Read inputs with `ctx.in<T>(i)`, write outputs with `ctx.out(i, v)`.

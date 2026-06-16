@@ -249,6 +249,7 @@ add_executable(core_tests
   tests/test_mesh_edges.cpp
   tests/test_transport.cpp
   tests/test_automation.cpp
+  tests/test_world_transform.cpp
   src/core/Node.cpp
   src/core/Graph.cpp
   src/audio/FFT.cpp
