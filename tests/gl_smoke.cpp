@@ -18,15 +18,39 @@
 #include "modules/ShadedRenderNode.h"
 #include "modules/SineWaveNode.h"
 #include "modules/SpectrographNode.h"
+#include "modules/TextNode.h"
 #include "modules/VideoPlayerNode.h"
 #include "modules/WireframeNode.h"
 #include "gfx/VideoDecoder.h"
+#include "gfx/TextGeometry.h"
 #include <chrono>
+#include <cmath>
 #include <thread>
 
 using namespace oss;
 
 static int fail(const char* msg) { std::fprintf(stderr, "gl_smoke FAIL: %s\n", msg); return 1; }
+
+// 2D point-in-triangle (sign-of-cross-products).
+static bool pointInTri(float px, float py, float ax, float ay,
+                       float bx, float by, float cx, float cy) {
+    float d1 = (px-bx)*(ay-by) - (ax-bx)*(py-by);
+    float d2 = (px-cx)*(by-cy) - (bx-cx)*(py-cy);
+    float d3 = (px-ax)*(cy-ay) - (cx-ax)*(py-ay);
+    bool neg = (d1 < 0) || (d2 < 0) || (d3 < 0);
+    bool pos = (d1 > 0) || (d2 > 0) || (d3 > 0);
+    return !(neg && pos);
+}
+// Is (x,y) covered by any front-facing (normal.z>0) triangle of the text mesh?
+static bool coveredByFront(const TextGeometry& g, float x, float y) {
+    for (size_t i = 0; i + 17 < g.tris.size(); i += 18) {   // 3 verts * 6 floats
+        if (g.tris[i + 5] <= 0.0f) continue;                // front faces only
+        if (pointInTri(x, y, g.tris[i], g.tris[i+1],
+                       g.tris[i+6], g.tris[i+7], g.tris[i+12], g.tris[i+13]))
+            return true;
+    }
+    return false;
+}
 
 static void readCentre(TexRef tex, int& r, int& g, int& b, int& a) {
     std::vector<unsigned char> px((size_t)tex.w * tex.h * 4);
@@ -408,6 +432,110 @@ int main() {
         if (!(after < before)) { glfwTerminate(); return fail("playhead did not move backwards on reverse play"); }
         std::fprintf(stderr, "gl_smoke OK: VideoPlayer rendered + audio, advanced to %.2fs, reversed %.2f->%.2f\n",
                      fwd, before, after);
+    }
+
+    // --- Scenario 11: Text 2D / Text 3D -> geometry -> renderers ---
+    // buildTextGeometry turns a string into filled glyph triangles (+ outline
+    // lines); flat text faces +Z, extruded text adds back/side faces with other
+    // normals. Then the Text nodes stream those buffers into Shaded Render and
+    // Wireframe, which must produce lit and green-line pixels respectively.
+    {
+        TextGeometry flat = buildTextGeometry("A", OSS_DEFAULT_FONT, 1.0f, 0.0f);
+        if (!flat.ok || flat.tris.empty() || flat.lines.empty()) {
+            glfwTerminate(); return fail("flat text geometry is empty");
+        }
+        bool flatAllFront = true;
+        for (size_t i = 0; i + 5 < flat.tris.size(); i += 6)
+            if (flat.tris[i + 5] < 0.9f) { flatAllFront = false; break; }   // normal.z
+        if (!flatAllFront) { glfwTerminate(); return fail("flat text normals should all face +Z"); }
+
+        TextGeometry solid = buildTextGeometry("A", OSS_DEFAULT_FONT, 1.0f, 0.3f);
+        if (!solid.ok || solid.tris.size() <= flat.tris.size()) {
+            glfwTerminate(); return fail("extruded text should add geometry over flat");
+        }
+        bool sawBackOrSide = false;
+        for (size_t i = 0; i + 5 < solid.tris.size(); i += 6) {
+            float nx = solid.tris[i + 3], ny = solid.tris[i + 4], nz = solid.tris[i + 5];
+            if (nz < -0.5f || std::fabs(nx) + std::fabs(ny) > 0.5f) { sawBackOrSide = true; break; }
+        }
+        if (!sawBackOrSide) { glfwTerminate(); return fail("extruded text has no back/side faces"); }
+        std::fprintf(stderr, "gl_smoke OK: text geometry flat=%zu tris, solid=%zu tris\n",
+                     flat.tris.size() / 18, solid.tris.size() / 18);
+
+        // Holes must actually be cut: the centre of 'o' (its counter) stays empty,
+        // while the centre of 'I' (a solid bar) is filled. Both are centred on the
+        // origin, so (0,0) is the glyph centre.
+        TextGeometry o = buildTextGeometry("o", OSS_DEFAULT_FONT, 1.0f, 0.0f);
+        TextGeometry bar = buildTextGeometry("I", OSS_DEFAULT_FONT, 1.0f, 0.0f);
+        if (!o.ok || !bar.ok) { glfwTerminate(); return fail("text geometry for o/I failed"); }
+        if (coveredByFront(o, 0.0f, 0.0f))   { glfwTerminate(); return fail("'o' centre should be a hole, not filled"); }
+        if (!coveredByFront(bar, 0.0f, 0.0f)) { glfwTerminate(); return fail("'I' centre should be filled"); }
+        std::fprintf(stderr, "gl_smoke OK: glyph holes are cut ('o' counter empty, 'I' filled)\n");
+
+        // Text 3D -> Shaded Render -> Output: a lit (bluish) surface.
+        {
+            Graph g;
+            auto txt = std::make_unique<Text3DNode>();
+            txt->inputDefault(0) = std::string("3D");
+            auto shade = std::make_unique<ShadedRenderNode>();
+            auto out = std::make_unique<OutputNode>();
+            txt->initGL(); shade->initGL(); out->initGL();
+            int tId = g.addNode(std::move(txt));
+            int sId = g.addNode(std::move(shade));
+            int oId = g.addNode(std::move(out));
+            if (!g.connect(tId, 1, sId, 0) || !g.connect(sId, 0, oId, 0)) {
+                glfwTerminate(); return fail("connect Text3D->Shaded->Output");
+            }
+            auto* on = dynamic_cast<OutputNode*>(g.findNode(oId));
+            bool lit = false;
+            for (int f = 0; f < 5 && !lit; ++f) {
+                g.evaluate(1.0f / 60.0f);
+                TexRef t = on->current();
+                if (t.id) {
+                    std::vector<unsigned char> px((size_t)t.w * t.h * 4);
+                    glBindTexture(GL_TEXTURE_2D, t.id);
+                    glGetTexImage(GL_TEXTURE_2D, 0, GL_RGBA, GL_UNSIGNED_BYTE, px.data());
+                    for (size_t i = 0; i < px.size(); i += 4) {
+                        int r = px[i], gg = px[i+1], b = px[i+2];
+                        if (b > 60 && b > r && gg > r) { lit = true; break; }
+                    }
+                }
+            }
+            if (!lit) { glfwTerminate(); return fail("Text 3D did not render a lit surface"); }
+        }
+
+        // Text 2D -> Wireframe -> Output: green outline lines.
+        {
+            Graph g;
+            auto txt = std::make_unique<Text2DNode>();
+            txt->inputDefault(0) = std::string("2D");
+            auto wire = std::make_unique<WireframeNode>();
+            auto out = std::make_unique<OutputNode>();
+            txt->initGL(); wire->initGL(); out->initGL();
+            int tId = g.addNode(std::move(txt));
+            int wId = g.addNode(std::move(wire));
+            int oId = g.addNode(std::move(out));
+            if (!g.connect(tId, 0, wId, 0) || !g.connect(wId, 0, oId, 0)) {
+                glfwTerminate(); return fail("connect Text2D->Wireframe->Output");
+            }
+            auto* on = dynamic_cast<OutputNode*>(g.findNode(oId));
+            bool green = false;
+            for (int f = 0; f < 5 && !green; ++f) {
+                g.evaluate(1.0f / 60.0f);
+                TexRef t = on->current();
+                if (t.id) {
+                    std::vector<unsigned char> px((size_t)t.w * t.h * 4);
+                    glBindTexture(GL_TEXTURE_2D, t.id);
+                    glGetTexImage(GL_TEXTURE_2D, 0, GL_RGBA, GL_UNSIGNED_BYTE, px.data());
+                    for (size_t i = 0; i < px.size(); i += 4) {
+                        int r = px[i], gg = px[i+1], b = px[i+2];
+                        if (gg > 200 && r < 120 && b < 170) { green = true; break; }
+                    }
+                }
+            }
+            if (!green) { glfwTerminate(); return fail("Text 2D did not render outline lines"); }
+        }
+        std::fprintf(stderr, "gl_smoke OK: Text 2D (wireframe) + Text 3D (shaded) rendered\n");
     }
 
     glfwDestroyWindow(win);

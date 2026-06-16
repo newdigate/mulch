@@ -59,6 +59,12 @@ CMake 4.x, it's relaxed with `CMAKE_POLICY_VERSION_MINIMUM 3.5` around its
   mesh loading (`std::async`) run off the graph thread; they hand data back via a
   lock-free SPSC ring buffer (`src/audio/SpscRingBuffer.h`) or `AsyncLoader`
   (`src/core/AsyncLoader.h`). GL uploads always happen on the main thread.
+- **Text geometry** (`src/gfx/TextGeometry.{h,cpp}`, GL-free): turns a string into
+  vertex buffers via `stb_truetype` (glyph outlines) + `earcut` (triangulation) —
+  filled flat letters or extruded solid 3D, mirroring Mesh Loader's wireframe+shaded
+  outputs. `Text2DNode`/`Text3DNode` (`src/modules/TextNode.cpp`) own the VBOs. The
+  default font is one of ImGui's bundled TTFs, baked in by absolute path via the
+  `OSS_DEFAULT_FONT` compile definition (no font file ships); the `font` input overrides it.
 - **`VideoDecoder` (`src/gfx/VideoDecoder.{h,cpp}`) is a GL-free FFmpeg wrapper** —
   it produces CPU RGBA frames (bottom-up) + 48 kHz mono float audio; FFmpeg headers
   are confined to its `.cpp`. The `VideoPlayerNode` decodes synchronously on the

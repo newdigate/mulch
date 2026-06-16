@@ -46,6 +46,7 @@ to see it; or `Mesh Loader → Shaded Render → Output` to spin a 3D model.
 | **Arpeggiator** | held notes → a stepped sequence |
 | **MIDI Merge** | up to four MIDI streams → one |
 | **Mesh Loader** | load .obj/.gltf/.glb (incl. Draco/meshopt) on a worker thread → geometry |
+| **Text 2D / Text 3D** | type a string → vertex buffers: flat filled letters / extruded solid 3D letters (stb_truetype + earcut) |
 | **Wireframe / Shaded Render** | a vertex buffer → a rotating wireframe / lit texture |
 | **Output** | marks the texture shown in the Output window |
 

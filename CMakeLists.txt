@@ -133,6 +133,28 @@ set(CMAKE_POLICY_VERSION_MINIMUM 3.5)
 FetchContent_MakeAvailable(draco)
 unset(CMAKE_POLICY_VERSION_MINIMUM)
 
+# --- stb (stb_truetype: glyph outlines for the Text nodes; header-only) ---
+FetchContent_Declare(stb
+  GIT_REPOSITORY https://github.com/nothings/stb.git
+  GIT_TAG 31c1ad37456438565541f4919958214b6e762fb4)  # pinned: master @ 2024
+FetchContent_MakeAvailable(stb)   # no CMakeLists -> populate only
+
+# --- earcut.hpp (polygon triangulation for filled/extruded glyphs; header-only) ---
+FetchContent_Declare(earcut
+  GIT_REPOSITORY https://github.com/mapbox/earcut.hpp.git
+  GIT_TAG v2.2.4)
+set(EARCUT_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+set(EARCUT_BUILD_BENCH OFF CACHE BOOL "" FORCE)
+set(EARCUT_BUILD_VIZ   OFF CACHE BOOL "" FORCE)
+set(CMAKE_POLICY_VERSION_MINIMUM 3.5)
+FetchContent_MakeAvailable(earcut)
+unset(CMAKE_POLICY_VERSION_MINIMUM)
+
+# The Text nodes' default font: one of Dear ImGui's bundled, permissively-licensed
+# TTFs (Roboto-Medium, Apache-2.0), referenced by absolute path so no font file
+# needs to ship or be embedded. Override per-node via the "font" input.
+set(OSS_DEFAULT_FONT "${imgui_SOURCE_DIR}/misc/fonts/Roboto-Medium.ttf")
+
 find_package(OpenGL REQUIRED)
 
 # --- FFmpeg (video/audio decoding for the Video Player node) ---
@@ -177,7 +199,9 @@ set(APP_SOURCES
   src/gfx/ShaderNode.cpp
   src/gfx/MeshLoader.cpp
   src/gfx/VideoDecoder.cpp
+  src/gfx/TextGeometry.cpp
   src/modules/AudioInputNode.cpp
+  src/modules/TextNode.cpp
   src/modules/VideoPlayerNode.cpp
   src/modules/AudioOutputNode.cpp
   src/modules/MidiInputNode.cpp
@@ -195,8 +219,10 @@ set(APP_SOURCES
 # --- Application executable ---
 add_executable(shader_streamer src/main.cpp ${APP_SOURCES})
 target_include_directories(shader_streamer PRIVATE src ${libsoundio_SOURCE_DIR} ${rtmidi_SOURCE_DIR}
-  ${tinygltf_SOURCE_DIR} ${meshoptimizer_SOURCE_DIR}/src ${draco_SOURCE_DIR}/src ${CMAKE_BINARY_DIR})
-target_compile_definitions(shader_streamer PRIVATE GLFW_INCLUDE_NONE TINYGLTF_ENABLE_DRACO)
+  ${tinygltf_SOURCE_DIR} ${meshoptimizer_SOURCE_DIR}/src ${draco_SOURCE_DIR}/src
+  ${stb_SOURCE_DIR} ${earcut_SOURCE_DIR}/include ${CMAKE_BINARY_DIR})
+target_compile_definitions(shader_streamer PRIVATE GLFW_INCLUDE_NONE TINYGLTF_ENABLE_DRACO
+  OSS_DEFAULT_FONT="${OSS_DEFAULT_FONT}")
 target_link_libraries(shader_streamer PRIVATE ui_thirdparty glad_gl41 glm::glm libsoundio_static rtmidi
   tinyobjloader meshoptimizer draco_static PkgConfig::FFMPEG)
 
@@ -238,17 +264,21 @@ add_executable(gl_smoke
   src/gfx/ShaderNode.cpp
   src/gfx/MeshLoader.cpp
   src/gfx/VideoDecoder.cpp
+  src/gfx/TextGeometry.cpp
   src/modules/MeshLoaderNode.cpp
   src/modules/ShadedRenderNode.cpp
   src/modules/SpectrographNode.cpp
+  src/modules/TextNode.cpp
   src/modules/VideoPlayerNode.cpp
   src/modules/WireframeNode.cpp
   src/audio/FFT.cpp
   src/audio/SignalGenerator.cpp
 )
 target_include_directories(gl_smoke PRIVATE src ${tinygltf_SOURCE_DIR}
-  ${meshoptimizer_SOURCE_DIR}/src ${draco_SOURCE_DIR}/src ${CMAKE_BINARY_DIR})
-target_compile_definitions(gl_smoke PRIVATE GLFW_INCLUDE_NONE TINYGLTF_ENABLE_DRACO)
+  ${meshoptimizer_SOURCE_DIR}/src ${draco_SOURCE_DIR}/src
+  ${stb_SOURCE_DIR} ${earcut_SOURCE_DIR}/include ${CMAKE_BINARY_DIR})
+target_compile_definitions(gl_smoke PRIVATE GLFW_INCLUDE_NONE TINYGLTF_ENABLE_DRACO
+  OSS_DEFAULT_FONT="${OSS_DEFAULT_FONT}")
 target_link_libraries(gl_smoke PRIVATE glad_gl41 glfw glm::glm OpenGL::GL tinyobjloader meshoptimizer draco_static PkgConfig::FFMPEG)
 add_test(NAME gl_smoke COMMAND gl_smoke WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
 
