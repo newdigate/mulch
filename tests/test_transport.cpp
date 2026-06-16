@@ -74,6 +74,47 @@ TEST_CASE("a zero tempo never divides by zero") {
     CHECK(t.beats() == doctest::Approx(2.0));     // falls back to 120 BPM
 }
 
+TEST_CASE("looping wraps from the loop end back to the loop start") {
+    Transport t;
+    t.bpm = 120.0;                 // 2 s per bar
+    t.looping = true;
+    t.loopStartBar = 1.0;          // 2 s
+    t.loopEndBar   = 3.0;          // 6 s -> loop length 4 s
+    t.play();
+    t.seconds = 5.9;
+    t.advance(0.2);                // 6.1 >= 6.0 -> 2 + fmod(6.1-2, 4) = 2.1
+    CHECK(t.seconds == doctest::Approx(2.1));
+}
+
+TEST_CASE("looping does nothing when the toggle is off") {
+    Transport t;
+    t.bpm = 120.0;
+    t.loopStartBar = 0.0; t.loopEndBar = 2.0;
+    t.play();
+    t.seconds = 10.0;
+    t.advance(0.1);
+    CHECK(t.seconds == doctest::Approx(10.1));   // keeps advancing past the would-be loop
+}
+
+TEST_CASE("an inverted loop (end <= start) never wraps") {
+    Transport t;
+    t.bpm = 120.0; t.looping = true;
+    t.loopStartBar = 4.0; t.loopEndBar = 2.0;
+    t.play(); t.seconds = 20.0;
+    t.advance(0.1);
+    CHECK(t.seconds == doctest::Approx(20.1));
+}
+
+TEST_CASE("a paused transport does not loop-wrap") {
+    Transport t;
+    t.bpm = 120.0; t.looping = true;
+    t.loopStartBar = 0.0; t.loopEndBar = 2.0;   // ends at 4 s
+    t.pause();
+    t.seconds = 10.0;                            // parked past the loop while paused
+    t.advance(0.1);
+    CHECK(t.seconds == doctest::Approx(10.0));   // stays put
+}
+
 namespace {
 // Records the transport it was handed during evaluation.
 struct TransportProbe : Node {

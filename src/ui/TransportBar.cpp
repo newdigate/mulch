@@ -27,8 +27,22 @@ void drawTransportBar(Transport& t) {
     // Position: bars.beats (musical), beats, and clock time with milliseconds.
     int    mins = (int)(t.seconds / 60.0);
     double rem  = t.seconds - mins * 60.0;
-    ImGui::Text("   Bar %d.%d   |   %.2f beats   |   %d:%06.3f   (%.0f ms)",
+    ImGui::Text("   Bar %d.%d   |   %.2f beats   |   %d:%06.3f   (%.0f ms)   |  ",
                 t.barNumber(), t.beatInBar(), t.beats(), mins, rem, t.millis());
+
+    // Loop: a toggle button (highlighted when on) and editable start/end in bars.
+    if (t.looping) ImGui::PushStyleColor(ImGuiCol_Button, (ImU32)IM_COL32(170, 110, 40, 255));
+    if (ImGui::Button("Loop")) t.toggleLoop();
+    if (t.looping) ImGui::PopStyleColor();
+
+    ImGui::SetNextItemWidth(46.0f);
+    float ls = (float)t.loopStartBar;
+    if (ImGui::InputFloat("##loopStart", &ls, 0.0f, 0.0f, "%.2f")) t.loopStartBar = std::max(0.0f, ls);
+    ImGui::TextUnformatted("-");
+    ImGui::SetNextItemWidth(46.0f);
+    float le = (float)t.loopEndBar;
+    if (ImGui::InputFloat("##loopEnd", &le, 0.0f, 0.0f, "%.2f")) t.loopEndBar = le;
+    ImGui::TextUnformatted("bars");
 
     ImGui::EndMainMenuBar();
 }

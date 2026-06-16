@@ -23,9 +23,11 @@ nodes, drag between pins to connect, and select a node or link and press
 **Delete**/**Backspace** to remove it. Unconnected inputs show inline editors.
 
 A **transport toolbar** runs along the top of the Graph window — an editable
-decimal tempo, Play / Stop / Rewind / Fast-forward, and the song position shown as
-bars·beats, beats, and minutes:seconds.milliseconds. It's a global clock the whole
-graph shares, advanced each frame while playing; nodes can read it to sync to the beat.
+decimal tempo, Play / Stop / Rewind / Fast-forward, the song position shown as
+bars·beats, beats, and minutes:seconds.milliseconds, and a **Loop** toggle with
+editable start/end (in bars) that wraps the position back to the loop start when it
+reaches the end. It's a global clock the whole graph shares, advanced each frame
+while playing; nodes can read it to sync to the beat.
 
 The **Automation** window holds a scrollable timeline: add an **Automation** node,
 then draw breakpoint curves with the mouse (click to add, drag to move, right-click

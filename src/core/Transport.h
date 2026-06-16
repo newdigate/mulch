@@ -1,5 +1,6 @@
 #pragma once
 #include <algorithm>
+#include <cmath>
 
 namespace oss {
 
@@ -13,11 +14,27 @@ struct Transport {
     double seconds     = 0.0;     // song position in seconds (never negative)
     int    beatsPerBar = 4;       // time-signature numerator (assumes 4/4)
 
-    // Advance the position by `dt` seconds when playing. Clamped at zero.
+    // Looping: when enabled, the position wraps from the loop end back to the loop
+    // start. Loop bounds are in bars (musical, so they survive tempo changes).
+    bool   looping     = false;
+    double loopStartBar = 0.0;
+    double loopEndBar   = 4.0;
+
+    // Advance the position by `dt` seconds when playing. Clamped at zero. While
+    // playing and looping, wraps back into [loopStart, loopEnd) on reaching the end
+    // (carrying the overshoot, so it stays smooth across the seam).
     void advance(double dt) {
         if (playing) seconds += dt;
         if (seconds < 0.0) seconds = 0.0;
+        if (playing && looping) {
+            double spb    = secondsPerBeat() * beatsPerBar;
+            double startS = loopStartBar * spb;
+            double endS   = loopEndBar   * spb;
+            if (endS > startS && seconds >= endS)
+                seconds = startS + std::fmod(seconds - startS, endS - startS);
+        }
     }
+    void toggleLoop() { looping = !looping; }
 
     // Tempo-derived conversions. Guard against a zero/negative tempo so the
     // toolbar can never divide by zero mid-edit.
