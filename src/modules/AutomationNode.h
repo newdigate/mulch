@@ -12,6 +12,12 @@ namespace oss {
 // One automation breakpoint: a value in [0, 1] at a song position (in bars).
 struct AutoPoint { float bar = 0.0f; float value = 0.0f; };
 
+// What kind of thing a channel automates. StreamParam drives a module parameter
+// (e.g. the World Transform rate). UiControl is a pot/slider whose movements will
+// be recordable from the UI (recording is a later step). Both currently play back
+// the same way -- by sampling the channel's curve.
+enum class AutoCategory { StreamParam, UiControl };
+
 // Parameter automation: kChannels float-output channels, each a piecewise-linear
 // curve of breakpoints over song time (bars). Every frame each channel is sampled
 // at the global transport's bar position (clamped to the song length) and emitted
@@ -29,6 +35,7 @@ public:
             addOutput("ch " + std::to_string(c + 1), PortType::Float);
             outMin_[c] = 0.0f;
             outMax_[c] = 1.0f;
+            cat_[c]    = AutoCategory::StreamParam;
         }
     }
 
@@ -51,6 +58,8 @@ public:
     float outMin(int c) const { return outMin_[c]; }
     float outMax(int c) const { return outMax_[c]; }
     void  setOutRange(int c, float lo, float hi) { outMin_[c] = lo; outMax_[c] = hi; }
+    AutoCategory category(int c) const { return cat_[c]; }
+    void  setCategory(int c, AutoCategory cat) { cat_[c] = cat; }
     float currentBar() const { return currentBar_; }   // last sampled position (playhead)
 
     // Sample channel c's normalised curve at bar position b -> [0,1].
@@ -71,8 +80,9 @@ public:
 
 private:
     std::vector<AutoPoint> ch_[kChannels];
-    float outMin_[kChannels];
-    float outMax_[kChannels];
+    float        outMin_[kChannels];
+    float        outMax_[kChannels];
+    AutoCategory cat_[kChannels];
     float lengthBars_ = 8.0f;
     float currentBar_ = 0.0f;
 };

@@ -24,6 +24,14 @@ TEST_CASE("a piecewise-linear curve interpolates and holds at the ends") {
     CHECK(a.sample(0, -1.0f) == doctest::Approx(0.0f));  // before the start -> hold first
 }
 
+TEST_CASE("channels default to the stream-parameter category") {
+    AutomationNode a;
+    CHECK(a.category(0) == AutoCategory::StreamParam);
+    a.setCategory(0, AutoCategory::UiControl);
+    CHECK(a.category(0) == AutoCategory::UiControl);
+    CHECK(a.category(1) == AutoCategory::StreamParam);   // others unaffected
+}
+
 TEST_CASE("setLengthBars never goes below one bar") {
     AutomationNode a;
     a.setLengthBars(0.0f);

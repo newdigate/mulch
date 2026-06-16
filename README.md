@@ -29,11 +29,13 @@ editable start/end (in bars) that wraps the position back to the loop start when
 reaches the end. It's a global clock the whole graph shares, advanced each frame
 while playing; nodes can read it to sync to the beat.
 
-The **Automation** window holds a scrollable timeline: add an **Automation** node,
-then draw breakpoint curves with the mouse (click to add, drag to move, right-click
-to delete) over the song length in bars. Each of its 4 channels is sampled at the
-transport position and output as a Float, so wiring a channel into any parameter
-sequences it over time as the transport plays.
+The **Automation** window is a grid — a reserved top row plus one row per channel
+over a shared, horizontally-scrollable time axis. Each row's left header carries the
+channel's category (stream / ui), its output range, and a clear button; draw
+breakpoint curves with the mouse in the lane (click to add, drag to move, right-click
+to delete). Each of an **Automation** node's 4 channels is sampled at the transport
+position and output as a Float, so wiring a channel into any parameter sequences it
+over time as the transport plays.
 
 Try it: wire `Sine → Audio Out` to hear a tone and `Sine → Spectrograph → Output`
 to see it; or `Mesh Loader → Shaded Render → Output` to spin a 3D model.
