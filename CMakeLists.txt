@@ -135,6 +135,15 @@ unset(CMAKE_POLICY_VERSION_MINIMUM)
 
 find_package(OpenGL REQUIRED)
 
+# --- FFmpeg (video/audio decoding for the Video Player node) ---
+# The one system dependency: FFmpeg doesn't FetchContent cleanly (it's not a
+# CMake project), so we find the brew/system dev libraries via pkg-config.
+# Install with `brew install ffmpeg` (macOS) or your distro's libav*-dev packages.
+find_package(PkgConfig REQUIRED)
+pkg_check_modules(FFMPEG REQUIRED IMPORTED_TARGET
+  libavformat libavcodec libavutil libswscale libswresample)
+message(STATUS "FFmpeg: libavcodec ${FFMPEG_libavcodec_VERSION}")
+
 # --- UI third-party static lib: ImGui + backends + node editor ---
 add_library(ui_thirdparty STATIC
   ${imgui_SOURCE_DIR}/imgui.cpp
@@ -167,7 +176,9 @@ set(APP_SOURCES
   src/gfx/FullscreenPass.cpp
   src/gfx/ShaderNode.cpp
   src/gfx/MeshLoader.cpp
+  src/gfx/VideoDecoder.cpp
   src/modules/AudioInputNode.cpp
+  src/modules/VideoPlayerNode.cpp
   src/modules/AudioOutputNode.cpp
   src/modules/MidiInputNode.cpp
   src/modules/MidiOutputNode.cpp
@@ -186,7 +197,7 @@ target_include_directories(shader_streamer PRIVATE src ${libsoundio_SOURCE_DIR} 
   ${tinygltf_SOURCE_DIR} ${meshoptimizer_SOURCE_DIR}/src ${draco_SOURCE_DIR}/src ${CMAKE_BINARY_DIR})
 target_compile_definitions(shader_streamer PRIVATE GLFW_INCLUDE_NONE TINYGLTF_ENABLE_DRACO)
 target_link_libraries(shader_streamer PRIVATE ui_thirdparty glad_gl41 glm::glm libsoundio_static rtmidi
-  tinyobjloader meshoptimizer draco_static)
+  tinyobjloader meshoptimizer draco_static PkgConfig::FFMPEG)
 
 # --- Tests (GL-free core only) ---
 enable_testing()
@@ -224,9 +235,11 @@ add_executable(gl_smoke
   src/gfx/FullscreenPass.cpp
   src/gfx/ShaderNode.cpp
   src/gfx/MeshLoader.cpp
+  src/gfx/VideoDecoder.cpp
   src/modules/MeshLoaderNode.cpp
   src/modules/ShadedRenderNode.cpp
   src/modules/SpectrographNode.cpp
+  src/modules/VideoPlayerNode.cpp
   src/modules/WireframeNode.cpp
   src/audio/FFT.cpp
   src/audio/SignalGenerator.cpp
@@ -234,7 +247,7 @@ add_executable(gl_smoke
 target_include_directories(gl_smoke PRIVATE src ${tinygltf_SOURCE_DIR}
   ${meshoptimizer_SOURCE_DIR}/src ${draco_SOURCE_DIR}/src ${CMAKE_BINARY_DIR})
 target_compile_definitions(gl_smoke PRIVATE GLFW_INCLUDE_NONE TINYGLTF_ENABLE_DRACO)
-target_link_libraries(gl_smoke PRIVATE glad_gl41 glfw glm::glm OpenGL::GL tinyobjloader meshoptimizer draco_static)
+target_link_libraries(gl_smoke PRIVATE glad_gl41 glfw glm::glm OpenGL::GL tinyobjloader meshoptimizer draco_static PkgConfig::FFMPEG)
 add_test(NAME gl_smoke COMMAND gl_smoke WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
 
 # Copy shaders next to the executable so the app can be run from the build dir too

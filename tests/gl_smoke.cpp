@@ -18,7 +18,9 @@
 #include "modules/ShadedRenderNode.h"
 #include "modules/SineWaveNode.h"
 #include "modules/SpectrographNode.h"
+#include "modules/VideoPlayerNode.h"
 #include "modules/WireframeNode.h"
+#include "gfx/VideoDecoder.h"
 #include <chrono>
 #include <thread>
 
@@ -332,6 +334,80 @@ int main() {
         if (!d.ok || d.tris.size() != 4 * 18) { glfwTerminate(); return fail("Draco-compressed gltf did not decode to 4 triangles"); }
         std::fprintf(stderr, "gl_smoke OK: KHR_draco_mesh_compression gltf decoded to %d triangles\n",
                      (int)(d.tris.size() / 18));
+    }
+
+    // --- Scenario 10: Video Player decodes a file to texture + audio ---
+    // Decodes tests/assets/test.mp4 (a 128x96 colour pattern with a 330 Hz tone),
+    // first through the bare VideoDecoder, then through the VideoPlayerNode wired
+    // to an Output -- checking the picture becomes a non-black texture, the node
+    // emits non-silent audio, the playhead advances forward, and a negative rate
+    // walks it backwards (reverse playback).
+    {
+        // (a) VideoDecoder produces video frames and resampled audio directly.
+        VideoDecoder dec;
+        std::string err;
+        if (!dec.open("tests/assets/test.mp4", err)) {
+            glfwTerminate(); return fail(("video open failed: " + err).c_str());
+        }
+        if (dec.width() != 128 || dec.height() != 96) { glfwTerminate(); return fail("video dimensions wrong"); }
+        if (!dec.hasAudio()) { glfwTerminate(); return fail("test video should have an audio track"); }
+
+        VideoFrame vf;
+        std::vector<float> audio; double aStart = 0.0; bool aValid = false;
+        int frames = 0;
+        while (frames < 8 && dec.decodeFrame(vf, audio, aStart, aValid)) ++frames;
+        if (frames == 0) { glfwTerminate(); return fail("decoded no video frames"); }
+        bool audioNonZero = false;
+        for (float s : audio) if (s > 0.01f || s < -0.01f) { audioNonZero = true; break; }
+        if (audio.empty() || !audioNonZero) { glfwTerminate(); return fail("decoded no (non-silent) audio"); }
+        std::fprintf(stderr, "gl_smoke OK: VideoDecoder decoded %d frames + %zu audio samples\n",
+                     frames, audio.size());
+
+        // (b) VideoPlayerNode -> Output: forward play, non-black texture + audio.
+        Graph g;
+        auto vid = std::make_unique<VideoPlayerNode>();
+        vid->inputDefault(0) = std::string("tests/assets/test.mp4");   // file
+        vid->inputDefault(3) = false;                                   // loop off (deterministic)
+        auto out = std::make_unique<OutputNode>();
+        vid->initGL(); out->initGL();
+        int vId = g.addNode(std::move(vid));
+        int oId = g.addNode(std::move(out));
+        if (!g.connect(vId, 0, oId, 0)) { glfwTerminate(); return fail("connect Video->Output"); }
+        auto* outNode = dynamic_cast<OutputNode*>(g.findNode(oId));
+        auto* vidNode = dynamic_cast<VideoPlayerNode*>(g.findNode(vId));
+
+        // Traverse most of the clip so the sliding window has to extend forward
+        // across several keyframes, accumulating "did we ever see picture/audio".
+        bool sawColour = false, sawNodeAudio = false;
+        for (int f = 0; f < 12; ++f) {
+            g.evaluate(1.0f / 10.0f);   // ~10 fps clip, 12 frames ~= 1.2s
+            AudioRef na = vidNode->audioOut();
+            for (std::size_t i = 0; i < na.count; ++i)
+                if (na.samples[i] > 0.01f || na.samples[i] < -0.01f) { sawNodeAudio = true; break; }
+            TexRef t = outNode->current();
+            if (t.id) {
+                std::vector<unsigned char> px((size_t)t.w * t.h * 4);
+                glBindTexture(GL_TEXTURE_2D, t.id);
+                glGetTexImage(GL_TEXTURE_2D, 0, GL_RGBA, GL_UNSIGNED_BYTE, px.data());
+                for (size_t i = 0; i < px.size(); i += 4)
+                    if (px[i] > 30 || px[i+1] > 30 || px[i+2] > 30) { sawColour = true; break; }
+            }
+        }
+        if (!sawColour)    { glfwTerminate(); return fail("video produced no visible texture"); }
+        if (!sawNodeAudio) { glfwTerminate(); return fail("video node emitted no audio"); }
+
+        double fwd = vidNode->playhead();
+        if (!(fwd > 0.5)) { glfwTerminate(); return fail("playhead did not advance through the clip on forward play"); }
+
+        // (c) reverse: a negative rate walks the playhead backwards, forcing the
+        // window to re-seek to an earlier keyframe and rebuild.
+        vidNode->inputDefault(1) = -1.0f;   // rate
+        double before = vidNode->playhead();
+        for (int f = 0; f < 5; ++f) g.evaluate(1.0f / 10.0f);
+        double after = vidNode->playhead();
+        if (!(after < before)) { glfwTerminate(); return fail("playhead did not move backwards on reverse play"); }
+        std::fprintf(stderr, "gl_smoke OK: VideoPlayer rendered + audio, advanced to %.2fs, reversed %.2f->%.2f\n",
+                     fwd, before, after);
     }
 
     glfwDestroyWindow(win);

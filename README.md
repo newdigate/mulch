@@ -12,8 +12,10 @@ cmake --build build -j
 ./build/shader_streamer   # run from the repo root
 ```
 
-Dependencies are fetched and pinned by CMake — no system packages to install (a
-network connection is needed the first time).
+Most dependencies are fetched and pinned by CMake. The one system package is
+**FFmpeg** (for the Video node) — install it first: `brew install ffmpeg` on
+macOS, or your distro's `libav*-dev` packages. A network connection is needed the
+first time for the fetched dependencies.
 
 Two windows open, sharing one GL context: a **Graph** window (the node editor) and
 an **Output** window showing the result fullscreen. Right-click the canvas to add
@@ -28,6 +30,7 @@ to see it; or `Mesh Loader → Shaded Render → Output` to spin a 3D model.
 | | |
 |---|---|
 | **Colour** | colour parameter → texture |
+| **Video** | play a video file → texture + audio; signed `rate` (negative = reverse), variable speed, loop |
 | **Mix** | blend two textures by a factor |
 | **Spectrograph** | audio → FFT → texture (and a 3D line-strip vertex buffer) |
 | **Sine** | pure sine-wave audio source |

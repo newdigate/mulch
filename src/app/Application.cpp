@@ -14,12 +14,14 @@
 #include "modules/SineWaveNode.h"
 #include "modules/SpectrographNode.h"
 #include "modules/StepSequencerNode.h"
+#include "modules/VideoPlayerNode.h"
 #include "modules/WireframeNode.h"
 
 namespace oss {
 
 std::unique_ptr<Node> makeNode(const std::string& type) {
     if (type == "Colour")      return std::make_unique<ColourNode>();
+    if (type == "Video")       return std::make_unique<VideoPlayerNode>();
     if (type == "Sine")        return std::make_unique<SineWaveNode>();
     if (type == "Audio In")    return std::make_unique<AudioInputNode>();
     if (type == "Audio Mix")   return std::make_unique<AudioMixerNode>();
@@ -40,7 +42,7 @@ std::unique_ptr<Node> makeNode(const std::string& type) {
 
 const std::vector<NodeCategory>& nodeCategories() {
     static const std::vector<NodeCategory> cats = {
-        { "Texture", { "Colour", "Mix", "Output" } },
+        { "Texture", { "Colour", "Video", "Mix", "Output" } },
         { "Audio",   { "Sine", "Audio In", "Audio Mix", "Spectrograph", "Audio Out" } },
         { "MIDI",    { "MIDI In", "Step Seq", "Arpeggiator", "MIDI Merge", "MIDI Out" } },
         { "3D",      { "Mesh Loader", "Wireframe", "Shaded Render" } },

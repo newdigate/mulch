@@ -18,9 +18,11 @@ cmake --build build -j
 ctest --test-dir build --output-on-failure
 ```
 
-Deps are pinned via CMake FetchContent — no system packages needed (network is).
-When a fetched dep's bundled CMake is too old for CMake 4.x, it's relaxed with
-`CMAKE_POLICY_VERSION_MINIMUM 3.5` around its `FetchContent_MakeAvailable`.
+Deps are pinned via CMake FetchContent, with one exception: **FFmpeg** (the Video
+node's decoder) is a system package found via pkg-config (`brew install ffmpeg`) —
+it doesn't FetchContent cleanly. When a fetched dep's bundled CMake is too old for
+CMake 4.x, it's relaxed with `CMAKE_POLICY_VERSION_MINIMUM 3.5` around its
+`FetchContent_MakeAvailable`.
 
 ## Architecture
 
@@ -52,6 +54,11 @@ When a fetched dep's bundled CMake is too old for CMake 4.x, it's relaxed with
   mesh loading (`std::async`) run off the graph thread; they hand data back via a
   lock-free SPSC ring buffer (`src/audio/SpscRingBuffer.h`) or `AsyncLoader`
   (`src/core/AsyncLoader.h`). GL uploads always happen on the main thread.
+- **`VideoDecoder` (`src/gfx/VideoDecoder.{h,cpp}`) is a GL-free FFmpeg wrapper** —
+  it produces CPU RGBA frames (bottom-up) + 48 kHz mono float audio; FFmpeg headers
+  are confined to its `.cpp`. The `VideoPlayerNode` decodes synchronously on the
+  graph thread and keeps a sliding keyframe-window frame cache to play forward,
+  reverse, and at variable `rate` off a forward-only decoder.
 
 ## Adding a node
 
