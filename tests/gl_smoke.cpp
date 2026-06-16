@@ -324,6 +324,16 @@ int main() {
         std::fprintf(stderr, "gl_smoke OK: EXT_meshopt_compression gltf decoded to %d triangles\n", (int)(m.tris.size() / 18));
     }
 
+    // --- Scenario 9: a Draco-compressed gltf decodes (KHR_draco_mesh_compression) ---
+    // tetra.drc was produced by draco_encoder from tetra.obj; tinygltf decodes it
+    // via the linked draco library (TINYGLTF_ENABLE_DRACO).
+    {
+        MeshData d = loadMeshData("tests/assets/tetra_draco.gltf", 1.0f);
+        if (!d.ok || d.tris.size() != 4 * 18) { glfwTerminate(); return fail("Draco-compressed gltf did not decode to 4 triangles"); }
+        std::fprintf(stderr, "gl_smoke OK: KHR_draco_mesh_compression gltf decoded to %d triangles\n",
+                     (int)(d.tris.size() / 18));
+    }
+
     glfwDestroyWindow(win);
     glfwTerminate();
     return 0;

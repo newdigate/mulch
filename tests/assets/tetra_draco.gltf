@@ -1,0 +1,17 @@
+{
+  "asset": { "version": "2.0" },
+  "buffers": [ { "uri": "tetra.drc", "byteLength": 88 } ],
+  "bufferViews": [ { "buffer": 0, "byteOffset": 0, "byteLength": 88 } ],
+  "accessors": [
+    { "componentType": 5126, "count": 4, "type": "VEC3", "min": [-1,-1,-1], "max": [1,1,1] },
+    { "componentType": 5125, "count": 12, "type": "SCALAR" }
+  ],
+  "meshes": [ { "primitives": [ {
+    "attributes": { "POSITION": 0 },
+    "indices": 1,
+    "mode": 4,
+    "extensions": { "KHR_draco_mesh_compression": { "bufferView": 0, "attributes": { "POSITION": 0 } } }
+  } ] } ],
+  "extensionsUsed": [ "KHR_draco_mesh_compression" ],
+  "extensionsRequired": [ "KHR_draco_mesh_compression" ]
+}
