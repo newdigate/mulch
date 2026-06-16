@@ -1,0 +1,37 @@
+#include <doctest/doctest.h>
+#include "gfx/MeshEdges.h"
+#include <vector>
+
+using namespace oss;
+
+TEST_CASE("a single triangle expands to three edges (6 vertices)") {
+    std::vector<float> pos = {0,0,0,  1,0,0,  0,1,0};
+    std::vector<unsigned int> idx = {0, 1, 2};
+    auto lines = trianglesToLineList(pos, idx);
+    REQUIRE(lines.size() == 6 * 3);                  // 6 vertices x 3 floats
+
+    // edge a-b: (0,0,0) -> (1,0,0)
+    CHECK(lines[0] == 0); CHECK(lines[3] == 1);
+    // edge b-c: (1,0,0) -> (0,1,0)
+    CHECK(lines[6] == 1); CHECK(lines[10] == 1);
+    // edge c-a: (0,1,0) -> (0,0,0)
+    CHECK(lines[13] == 1); CHECK(lines[15] == 0);
+}
+
+TEST_CASE("two triangles expand to twelve line vertices") {
+    std::vector<float> pos = {0,0,0, 1,0,0, 0,1,0, 1,1,0};
+    std::vector<unsigned int> idx = {0,1,2, 1,3,2};
+    CHECK(trianglesToLineList(pos, idx).size() == 12 * 3);
+}
+
+TEST_CASE("triangles with out-of-range indices are skipped") {
+    std::vector<float> pos = {0,0,0, 1,0,0, 0,1,0};
+    std::vector<unsigned int> idx = {0,1,2, 0,1,99};   // 2nd triangle invalid
+    CHECK(trianglesToLineList(pos, idx).size() == 6 * 3);
+}
+
+TEST_CASE("a trailing partial triangle is ignored") {
+    std::vector<float> pos = {0,0,0, 1,0,0, 0,1,0};
+    std::vector<unsigned int> idx = {0,1,2, 0};        // dangling index
+    CHECK(trianglesToLineList(pos, idx).size() == 6 * 3);
+}

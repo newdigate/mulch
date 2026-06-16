@@ -61,7 +61,10 @@ void WireframeNode::evaluate(EvalContext& ctx) {
         glBindBuffer(GL_ARRAY_BUFFER, geo.vbo);
         glEnableVertexAttribArray(0);
         glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 3 * sizeof(float), (void*)0);
-        glDrawArrays(GL_LINE_STRIP, 0, geo.count);
+        GLenum prim = geo.primitive == Primitive::Lines     ? GL_LINES
+                    : geo.primitive == Primitive::Triangles ? GL_TRIANGLES
+                                                            : GL_LINE_STRIP;
+        glDrawArrays(prim, 0, geo.count);
         glBindBuffer(GL_ARRAY_BUFFER, 0);
         glBindVertexArray(0);
     }

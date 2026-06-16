@@ -5,6 +5,7 @@
 #include "modules/AudioInputNode.h"
 #include "modules/AudioMixerNode.h"
 #include "modules/AudioOutputNode.h"
+#include "modules/MeshLoaderNode.h"
 #include "modules/MidiInputNode.h"
 #include "modules/MidiMergeNode.h"
 #include "modules/MidiOutputNode.h"
@@ -24,6 +25,7 @@ std::unique_ptr<Node> makeNode(const std::string& type) {
     if (type == "Audio Mix")   return std::make_unique<AudioMixerNode>();
     if (type == "Spectrograph") return std::make_unique<SpectrographNode>();
     if (type == "Mix")         return std::make_unique<MixNode>();
+    if (type == "Mesh Loader") return std::make_unique<MeshLoaderNode>();
     if (type == "Wireframe")   return std::make_unique<WireframeNode>();
     if (type == "Output")      return std::make_unique<OutputNode>();
     if (type == "Audio Out")   return std::make_unique<AudioOutputNode>();
@@ -37,7 +39,8 @@ std::unique_ptr<Node> makeNode(const std::string& type) {
 
 const std::vector<std::string>& nodeTypeNames() {
     static const std::vector<std::string> names = {
-        "Colour", "Sine", "Audio In", "Audio Mix", "Spectrograph", "Mix", "Wireframe", "Output",
+        "Colour", "Sine", "Audio In", "Audio Mix", "Spectrograph", "Mix", "Mesh Loader",
+        "Wireframe", "Output",
         "Audio Out", "MIDI In", "Step Seq", "Arpeggiator", "MIDI Merge", "MIDI Out" };
     return names;
 }

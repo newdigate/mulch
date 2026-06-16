@@ -95,6 +95,25 @@ set(CMAKE_POLICY_VERSION_MINIMUM 3.5)
 FetchContent_MakeAvailable(rtmidi)
 unset(CMAKE_POLICY_VERSION_MINIMUM)
 
+# --- tinyobjloader (.obj mesh loading) ---
+FetchContent_Declare(tinyobjloader
+  GIT_REPOSITORY https://github.com/tinyobjloader/tinyobjloader.git
+  GIT_TAG v1.0.6)
+set(CMAKE_POLICY_VERSION_MINIMUM 3.5)
+FetchContent_MakeAvailable(tinyobjloader)
+unset(CMAKE_POLICY_VERSION_MINIMUM)
+
+# --- tinygltf (.gltf mesh loading; header-only, geometry only) ---
+FetchContent_Declare(tinygltf
+  GIT_REPOSITORY https://github.com/syoyo/tinygltf.git
+  GIT_TAG v2.9.3)
+set(TINYGLTF_HEADER_ONLY ON CACHE BOOL "" FORCE)
+set(TINYGLTF_INSTALL OFF CACHE BOOL "" FORCE)
+set(TINYGLTF_BUILD_LOADER_EXAMPLE OFF CACHE BOOL "" FORCE)
+set(CMAKE_POLICY_VERSION_MINIMUM 3.5)
+FetchContent_MakeAvailable(tinygltf)
+unset(CMAKE_POLICY_VERSION_MINIMUM)
+
 find_package(OpenGL REQUIRED)
 
 # --- UI third-party static lib: ImGui + backends + node editor ---
@@ -128,10 +147,12 @@ set(APP_SOURCES
   src/gfx/Framebuffer.cpp
   src/gfx/FullscreenPass.cpp
   src/gfx/ShaderNode.cpp
+  src/gfx/MeshLoader.cpp
   src/modules/AudioInputNode.cpp
   src/modules/AudioOutputNode.cpp
   src/modules/MidiInputNode.cpp
   src/modules/MidiOutputNode.cpp
+  src/modules/MeshLoaderNode.cpp
   src/modules/SpectrographNode.cpp
   src/modules/WireframeNode.cpp
   src/ui/NodeEditorPanel.cpp
@@ -141,9 +162,9 @@ set(APP_SOURCES
 
 # --- Application executable ---
 add_executable(shader_streamer src/main.cpp ${APP_SOURCES})
-target_include_directories(shader_streamer PRIVATE src ${libsoundio_SOURCE_DIR} ${rtmidi_SOURCE_DIR})
+target_include_directories(shader_streamer PRIVATE src ${libsoundio_SOURCE_DIR} ${rtmidi_SOURCE_DIR} ${tinygltf_SOURCE_DIR})
 target_compile_definitions(shader_streamer PRIVATE GLFW_INCLUDE_NONE)
-target_link_libraries(shader_streamer PRIVATE ui_thirdparty glad_gl41 glm::glm libsoundio_static rtmidi)
+target_link_libraries(shader_streamer PRIVATE ui_thirdparty glad_gl41 glm::glm libsoundio_static rtmidi tinyobjloader)
 
 # --- Tests (GL-free core only) ---
 enable_testing()
@@ -160,6 +181,7 @@ add_executable(core_tests
   tests/test_arpeggiator.cpp
   tests/test_step_sequencer.cpp
   tests/test_midi_merge.cpp
+  tests/test_mesh_edges.cpp
   src/core/Node.cpp
   src/core/Graph.cpp
   src/audio/FFT.cpp
@@ -179,14 +201,16 @@ add_executable(gl_smoke
   src/gfx/Framebuffer.cpp
   src/gfx/FullscreenPass.cpp
   src/gfx/ShaderNode.cpp
+  src/gfx/MeshLoader.cpp
+  src/modules/MeshLoaderNode.cpp
   src/modules/SpectrographNode.cpp
   src/modules/WireframeNode.cpp
   src/audio/FFT.cpp
   src/audio/SignalGenerator.cpp
 )
-target_include_directories(gl_smoke PRIVATE src)
+target_include_directories(gl_smoke PRIVATE src ${tinygltf_SOURCE_DIR})
 target_compile_definitions(gl_smoke PRIVATE GLFW_INCLUDE_NONE)
-target_link_libraries(gl_smoke PRIVATE glad_gl41 glfw glm::glm OpenGL::GL)
+target_link_libraries(gl_smoke PRIVATE glad_gl41 glfw glm::glm OpenGL::GL tinyobjloader)
 add_test(NAME gl_smoke COMMAND gl_smoke WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
 
 # Copy shaders next to the executable so the app can be run from the build dir too

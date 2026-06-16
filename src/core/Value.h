@@ -34,10 +34,13 @@ inline MidiEvent midiNoteOff(int note, int channel = 0) {
     return { (unsigned char)(0x80u | (channel & 0x0F)), (unsigned char)note, 0 };
 }
 
-// A handle to a GL vertex buffer (VBO) a node produced, plus its vertex count.
-// `vbo` is a plain GL name so this header stays GL-free, like TexRef. By
-// convention the buffer holds tightly-packed vec3 positions (a line strip).
-struct VertexRef { unsigned int vbo = 0; int count = 0; };
+// How a VertexRef's vec3 positions are assembled when drawn.
+enum class Primitive { LineStrip, Lines, Triangles };
+
+// A handle to a GL vertex buffer (VBO) a node produced, with its vertex count
+// and primitive type. `vbo` is a plain GL name so this header stays GL-free,
+// like TexRef. The buffer holds tightly-packed vec3 positions.
+struct VertexRef { unsigned int vbo = 0; int count = 0; Primitive primitive = Primitive::LineStrip; };
 
 // Each alternative corresponds to a PortType value (mapped type-safely by typeOf).
 using Value = std::variant<float, bool, glm::vec4, std::string, TexRef, AudioRef, MidiRef, VertexRef>;

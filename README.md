@@ -13,8 +13,10 @@ together and watch textures and audio stream through the graph in real time.
 - **Spectrograph** — audio -> FFT -> texture, plus a second vertex-buffer output of the
   spectrum as a 3D line strip (synthesizes a test signal when its audio input is unconnected)
 - **Mix** — two textures + a float factor -> blended texture
-- **Wireframe** — a streamed vertex buffer (3D line strip) -> a wireframe texture, drawn
-  through a slowly rotating 3D camera
+- **Mesh Loader** — loads a .obj or .gltf/.glb file and streams its triangle edges as a
+  vertex buffer (wire into Wireframe to view the model)
+- **Wireframe** — a streamed vertex buffer (line strip or mesh edges) -> a wireframe
+  texture, drawn through a slowly rotating 3D camera
 - **Output** — displays a texture in the Viewer
 - **Audio Out** — plays its audio input through the system's default output device
 - **MIDI In** — receives from a hardware or virtual MIDI input port -> midi
@@ -42,7 +44,8 @@ cmake --build build -j
 
 The first configure downloads pinned dependencies via CMake FetchContent (network
 required): GLFW, glad (GL 4.1 core), Dear ImGui, imgui-node-editor, glm, doctest,
-libsoundio (audio I/O; CoreAudio on macOS), and RtMidi (MIDI I/O; CoreMIDI on macOS).
+libsoundio (audio I/O; CoreAudio on macOS), RtMidi (MIDI I/O; CoreMIDI on macOS), and
+tinyobjloader + tinygltf (mesh loading).
 
 ## Run
 
@@ -61,7 +64,9 @@ out to a synth, or wire **Step Seq -> MIDI Out** for a 16-step drum pattern -- c
 several Step Seq voices through **MIDI Merge** for a full kit (each MIDI node opens port 0,
 or a virtual port if none exist). Wire the
 **Spectrograph**'s geometry output into **Wireframe -> Output** to see the spectrum as a
-rotating 3D line strip. Select a node or link and press Delete or Backspace to remove it.
+rotating 3D line strip, or load a 3D model with **Mesh Loader** (type a .obj/.gltf path in
+its file field) and wire it into **Wireframe** to view it as a rotating wireframe. Select a
+node or link and press Delete or Backspace to remove it.
 
 ## Test
 
@@ -81,7 +86,9 @@ ctest --test-dir build --output-on-failure
 - `src/gfx/` — OpenGL helpers (shader/program, framebuffer, fullscreen pass, ShaderNode base)
 - `src/audio/` — FFT, the synthesized signal generator, and the SPSC ring buffer
 - `src/modules/` — the example nodes (Colour, Sine, Audio In, Audio Mix, Spectrograph,
-  Mix, Wireframe, Output, Audio Out, MIDI In, Step Seq, Arpeggiator, MIDI Merge, MIDI Out)
+  Mix, Mesh Loader, Wireframe, Output, Audio Out, MIDI In, Step Seq, Arpeggiator,
+  MIDI Merge, MIDI Out)
+- `src/gfx/MeshEdges.h`, `src/gfx/MeshLoader.{h,cpp}` — mesh edge expansion and .obj/.gltf loading
 - `src/ui/` — imgui-node-editor panel and inline port widgets
 - `shaders/` — fragment shaders
 - `docs/superpowers/` — design spec and implementation plan

@@ -12,6 +12,7 @@
 #include "modules/ColourNode.h"
 #include "modules/MixNode.h"
 #include "modules/OutputNode.h"
+#include "modules/MeshLoaderNode.h"
 #include "modules/SineWaveNode.h"
 #include "modules/SpectrographNode.h"
 #include "modules/WireframeNode.h"
@@ -210,6 +211,38 @@ int main() {
         if (!sawBg)   { glfwTerminate(); return fail("wireframe background not rendered"); }
         if (!sawLine) { glfwTerminate(); return fail("wireframe line strip not rendered"); }
         std::fprintf(stderr, "gl_smoke OK: Spectrograph geometry streamed to Wireframe and rendered\n");
+    }
+
+    // --- Scenario 6: Mesh Loader -> Wireframe -> Output (.obj and .gltf) ---
+    // Loads a mesh file, streams its triangle edges as a GL_LINES vertex buffer,
+    // and renders it through the Wireframe node. Asserts bright-green line pixels
+    // appear, proving the file parsed, the buffer streamed, and it drew.
+    {
+        auto renders = [](const char* path) -> bool {
+            Graph g;
+            auto mesh = std::make_unique<MeshLoaderNode>();
+            mesh->inputDefault(0) = std::string(path);   // file path (String input)
+            auto wire = std::make_unique<WireframeNode>();
+            auto out  = std::make_unique<OutputNode>();
+            mesh->initGL(); wire->initGL(); out->initGL();
+            int mId = g.addNode(std::move(mesh));
+            int wId = g.addNode(std::move(wire));
+            int oId = g.addNode(std::move(out));
+            if (!g.connect(mId, 0, wId, 0) || !g.connect(wId, 0, oId, 0)) return false;
+            for (int f = 0; f < 4; ++f) g.evaluate(1.0f / 60.0f);
+            TexRef t = dynamic_cast<OutputNode*>(g.findNode(oId))->current();
+            if (!t.id) return false;
+            std::vector<unsigned char> px((size_t)t.w * t.h * 4);
+            glBindTexture(GL_TEXTURE_2D, t.id);
+            glGetTexImage(GL_TEXTURE_2D, 0, GL_RGBA, GL_UNSIGNED_BYTE, px.data());
+            for (size_t i = 0; i < px.size(); i += 4)
+                if (px[i+1] > 200 && px[i] < 120 && px[i+2] < 170) return true;   // green line
+            return false;
+        };
+        if (!renders("tests/assets/tetra.obj"))     { glfwTerminate(); return fail(".obj mesh did not render a wireframe"); }
+        std::fprintf(stderr, "gl_smoke OK: .obj mesh loaded and rendered as wireframe\n");
+        if (!renders("tests/assets/triangle.gltf")) { glfwTerminate(); return fail(".gltf mesh did not render a wireframe"); }
+        std::fprintf(stderr, "gl_smoke OK: .gltf mesh loaded and rendered as wireframe\n");
     }
 
     glfwDestroyWindow(win);
