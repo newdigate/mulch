@@ -38,12 +38,14 @@ std::unique_ptr<Node> makeNode(const std::string& type) {
     return nullptr;
 }
 
-const std::vector<std::string>& nodeTypeNames() {
-    static const std::vector<std::string> names = {
-        "Colour", "Sine", "Audio In", "Audio Mix", "Spectrograph", "Mix", "Mesh Loader",
-        "Wireframe", "Shaded Render", "Output",
-        "Audio Out", "MIDI In", "Step Seq", "Arpeggiator", "MIDI Merge", "MIDI Out" };
-    return names;
+const std::vector<NodeCategory>& nodeCategories() {
+    static const std::vector<NodeCategory> cats = {
+        { "Texture", { "Colour", "Mix", "Output" } },
+        { "Audio",   { "Sine", "Audio In", "Audio Mix", "Spectrograph", "Audio Out" } },
+        { "MIDI",    { "MIDI In", "Step Seq", "Arpeggiator", "MIDI Merge", "MIDI Out" } },
+        { "3D",      { "Mesh Loader", "Wireframe", "Shaded Render" } },
+    };
+    return cats;
 }
 
 Application::Application(GLFWwindow* window) : window_(window) {

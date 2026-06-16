@@ -1,6 +1,6 @@
 #include "ui/NodeEditorPanel.h"
 #include "ui/PortWidgets.h"
-#include "app/Application.h"   // for nodeTypeNames()
+#include "app/Application.h"   // for nodeCategories()
 #include <imgui.h>
 #include <imgui_node_editor.h>
 #include <set>
@@ -169,10 +169,16 @@ void NodeEditorPanel::draw(Graph& graph,
     if (ed::ShowBackgroundContextMenu()) ImGui::OpenPopup("AddNode");
     if (ImGui::BeginPopup("AddNode")) {
         ImVec2 mouse = ImGui::GetMousePosOnOpeningCurrentPopup();
-        for (auto& type : nodeTypeNames()) {
-            if (ImGui::MenuItem(type.c_str())) {
-                ImVec2 canvas = ed::ScreenToCanvas(mouse);
-                addNodeOfType(type, glm::vec2(canvas.x, canvas.y));
+        ImVec2 canvas = ed::ScreenToCanvas(mouse);
+        // One submenu per category (Texture / Audio / MIDI / 3D) so the list
+        // stays readable as nodes are added.
+        for (auto& cat : nodeCategories()) {
+            if (ImGui::BeginMenu(cat.name.c_str())) {
+                for (auto& type : cat.types) {
+                    if (ImGui::MenuItem(type.c_str()))
+                        addNodeOfType(type, glm::vec2(canvas.x, canvas.y));
+                }
+                ImGui::EndMenu();
             }
         }
         ImGui::EndPopup();

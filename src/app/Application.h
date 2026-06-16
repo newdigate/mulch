@@ -28,8 +28,12 @@ private:
     NodeEditorPanel editor_;
 };
 
-// Factory used by the app and (later) the add-node menu.
+// Factory used by the app and the add-node menu.
 std::unique_ptr<Node> makeNode(const std::string& type);
-const std::vector<std::string>& nodeTypeNames();
+
+// A named group of node-type labels, used to lay out the add-node menu as
+// submenus (Texture / Audio / MIDI / 3D) instead of one long flat list.
+struct NodeCategory { std::string name; std::vector<std::string> types; };
+const std::vector<NodeCategory>& nodeCategories();
 
 } // namespace oss
