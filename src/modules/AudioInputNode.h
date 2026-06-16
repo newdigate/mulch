@@ -12,9 +12,9 @@ struct SoundIoInStream;
 
 namespace oss {
 
-// Audio source: captures mono audio from the system's default input device
-// (microphone) via libsoundio and publishes it as an AudioRef on output 0.
-// GL-free.
+// Audio source: captures audio from the system's default input device
+// (microphone / line-in) via libsoundio and publishes it as an AudioRef on
+// output 0 -- stereo when the device has two or more channels, else mono. GL-free.
 //
 // Threading: libsoundio's real-time read callback pushes captured samples into a
 // lock-free ring buffer; the graph (main thread) drains them each evaluate().
@@ -40,6 +40,7 @@ private:
     std::vector<float>    block_;           // per-frame output buffer (main thread only)
 
     int  sampleRate_ = 48000;
+    int  channels_   = 1;        // captured channel count (1 or 2)
     LazyInit lazy_;
 };
 

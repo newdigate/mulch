@@ -55,14 +55,16 @@ void RecorderNode::start(const std::string& file, const TexRef& vin, const Audio
 
     enc_ = std::make_unique<VideoEncoder>();
     encW_ = vin.w; encH_ = vin.h;
-    int arate = (ain.samples && ain.sampleRate > 0) ? ain.sampleRate : 0;   // 0 -> no audio track
+    bool haveAudio = ain.samples && ain.sampleRate > 0;
+    int arate = haveAudio ? ain.sampleRate : 0;            // 0 -> no audio track
+    int achan = haveAudio ? (ain.channels > 1 ? 2 : 1) : 0;
 
     std::string err;
-    if (enc_->open(file, encW_, encH_, 60, arate, err)) {
+    if (enc_->open(file, encW_, encH_, 60, arate, achan, err)) {
         recording_ = true; recordTime_ = 0.0; frames_ = 0; file_ = file;
         status_ = "recording...";
-        std::fprintf(stderr, "[Recorder] recording %s (%dx%d, %s)\n",
-                     file.c_str(), encW_, encH_, arate > 0 ? "with audio" : "video only");
+        std::fprintf(stderr, "[Recorder] recording %s (%dx%d, %s)\n", file.c_str(), encW_, encH_,
+                     achan == 2 ? "stereo" : (achan == 1 ? "mono" : "video only"));
     } else {
         status_ = "record failed: " + err;
         std::fprintf(stderr, "[Recorder] %s\n", status_.c_str());

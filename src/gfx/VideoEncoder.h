@@ -25,10 +25,10 @@ public:
     VideoEncoder& operator=(const VideoEncoder&) = delete;
 
     // Open `path` for writing `width`x`height` video at a nominal `fps`. If
-    // `audioRate` > 0 an AAC mono audio stream is added at that sample rate.
-    // Returns false and fills `err` on failure.
+    // `audioRate` > 0 an AAC audio stream is added at that sample rate with
+    // `audioChannels` channels (1 = mono, 2 = stereo). Returns false on failure.
     bool open(const std::string& path, int width, int height, int fps,
-              int audioRate, std::string& err);
+              int audioRate, int audioChannels, std::string& err);
     bool isOpen() const { return opened_; }
 
     // Append one video frame. `rgba` is width*height*4 bytes, bottom row first
@@ -36,8 +36,9 @@ public:
     // frame's presentation time (the recording elapsed time).
     bool addVideoFrame(const std::uint8_t* rgba, double tSeconds);
 
-    // Append mono float audio samples at the rate passed to open(). Buffered and
-    // encoded in codec-sized frames. No-op if the file has no audio stream.
+    // Append interleaved float audio at the rate/channels passed to open()
+    // (`count` = total floats = frames * channels). Buffered and encoded in
+    // codec-sized frames. No-op if the file has no audio stream.
     bool addAudio(const float* samples, int count);
 
     // Flush the encoders, write the trailer, and close the file. Idempotent.
@@ -58,7 +59,7 @@ private:
     AVPacket*        pkt_    = nullptr;
 
     int     width_ = 0, height_ = 0;
-    int     audioRate_ = 0, audioFrameSize_ = 0;
+    int     audioRate_ = 0, audioChannels_ = 0, audioFrameSize_ = 0;
     int64_t lastVpts_ = -1;          // last video pts (codec time base = 1/fps)
     int64_t aCount_   = 0;           // audio samples written (audio pts)
     std::vector<float> afifo_;       // pending mono float samples

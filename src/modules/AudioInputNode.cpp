@@ -22,9 +22,11 @@ void AudioInputNode::evaluate(EvalContext& ctx) {
     if (!ensureStarted()) { ctx.out<AudioRef>(0, AudioRef{}); return; }   // silence
     soundio_flush_events(soundio_);
 
-    // Drain whatever the capture thread has buffered, up to one block.
+    // Drain whatever the capture thread has buffered, up to one block. `block_`
+    // holds interleaved samples; trim to a whole number of frames.
     std::size_t n = ring_.pop(block_.data(), block_.size());
-    ctx.out<AudioRef>(0, AudioRef{block_.data(), n, sampleRate_});
+    n -= n % (std::size_t)channels_;
+    ctx.out<AudioRef>(0, AudioRef{block_.data(), n, sampleRate_, channels_});
 }
 
 bool AudioInputNode::ensureStarted() {
@@ -60,12 +62,14 @@ bool AudioInputNode::openDevice() {
         std::fprintf(stderr, "[AudioIn] open failed: %s\n", soundio_strerror(err));
         return false;
     }
+    channels_ = instream_->layout.channel_count >= 2 ? 2 : 1;   // capture up to stereo
     if (int err = soundio_instream_start(instream_)) {
         std::fprintf(stderr, "[AudioIn] start failed (mic access denied?): %s\n",
                      soundio_strerror(err));
         return false;
     }
-    std::fprintf(stderr, "[AudioIn] capturing from default device: %d Hz\n", sampleRate_);
+    std::fprintf(stderr, "[AudioIn] capturing from default device: %d Hz, %d ch\n",
+                 sampleRate_, channels_);
     return true;
 }
 
@@ -81,19 +85,21 @@ void AudioInputNode::readCallback(SoundIoInStream* is, int /*frameMin*/, int fra
         if (frameCount <= 0) break;
 
         // areas == NULL means an overflow hole (dropped frames); skip its body
-        // but still end_read to advance past it. Otherwise downmix to mono by
-        // taking channel 0 and push into the ring buffer in stack-sized chunks.
+        // but still end_read to advance past it. Otherwise interleave the first
+        // `channels_` channels and push into the ring buffer in stack-sized chunks.
         if (areas) {
+            int ch = self->channels_;
             int done = 0;
             while (done < frameCount) {
                 int chunk = frameCount - done;
-                if (chunk > 1024) chunk = 1024;
+                if (chunk > 512) chunk = 512;                // <= 512 frames -> <= 1024 floats
                 float tmp[1024];
-                for (int i = 0; i < chunk; ++i) {
-                    const char* src = areas[0].ptr + (std::ptrdiff_t)areas[0].step * (done + i);
-                    std::memcpy(&tmp[i], src, sizeof(float));
-                }
-                self->ring_.push(tmp, (std::size_t)chunk);   // drops on overflow
+                for (int i = 0; i < chunk; ++i)
+                    for (int c = 0; c < ch; ++c) {
+                        const char* src = areas[c].ptr + (std::ptrdiff_t)areas[c].step * (done + i);
+                        std::memcpy(&tmp[i * ch + c], src, sizeof(float));
+                    }
+                self->ring_.push(tmp, (std::size_t)chunk * ch);   // drops on overflow
                 done += chunk;
             }
         }

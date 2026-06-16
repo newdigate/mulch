@@ -39,8 +39,8 @@ to see it; or `Mesh Loader → Shaded Render → Output` to spin a 3D model.
 | **Mix** | blend two textures by a factor |
 | **Spectrograph** | audio → FFT → texture (and a 3D line-strip vertex buffer) |
 | **Sine** | pure sine-wave audio source |
-| **Audio In / Out** | capture the mic / play to the default device (libsoundio) |
-| **Audio Mix** | four audio inputs → one mix |
+| **Audio In / Out** | capture the mic/line-in (stereo if available) / play to the default device, in stereo (libsoundio) |
+| **Audio Mix** | four inputs, each with gain + pan → one stereo mix (pan mono sources into the stereo field) |
 | **MIDI In / Out** | hardware or virtual MIDI ports (RtMidi) |
 | **Step Seq** | 16-step drum sequencer → MIDI |
 | **Arpeggiator** | held notes → a stepped sequence |
@@ -48,7 +48,7 @@ to see it; or `Mesh Loader → Shaded Render → Output` to spin a 3D model.
 | **Mesh Loader** | load .obj/.gltf/.glb (incl. Draco/meshopt) on a worker thread → geometry |
 | **Text 2D / Text 3D** | type a string → vertex buffers: flat filled letters / extruded solid 3D letters (stb_truetype + earcut) |
 | **Wireframe / Shaded Render** | a vertex buffer → a rotating wireframe / lit texture |
-| **Recorder** | inline tap: passes video + audio through unchanged while recording them to a movie file (H.264/AAC mp4); toggle `record`, set `file` |
+| **Recorder** | inline tap: passes video + audio through unchanged while recording them to a movie file (H.264/AAC mp4, mono or stereo per the input); toggle `record`, set `file` |
 | **Output** | marks the texture shown in the Output window |
 
 Texture nodes render a fragment shader into their own framebuffer; audio and MIDI

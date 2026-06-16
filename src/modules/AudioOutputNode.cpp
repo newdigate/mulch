@@ -24,8 +24,21 @@ void AudioOutputNode::evaluate(EvalContext& ctx) {
     soundio_flush_events(soundio_);        // pump device events (non-blocking)
 
     AudioRef a = ctx.in<AudioRef>(0);
-    if (a.samples && a.count > 0)
-        ring_.push(a.samples, a.count);    // overflow is dropped, never blocks
+    if (a.samples && a.count > 0) {
+        // The ring carries interleaved stereo. Stereo input goes in as-is; mono is
+        // upmixed (L = R) so the RT callback always reads two floats per frame.
+        if (a.channels == 2) {
+            ring_.push(a.samples, a.count);          // already L,R,L,R
+        } else {
+            std::size_t fr = a.frames();
+            stereoScratch_.resize(fr * 2);
+            for (std::size_t i = 0; i < fr; ++i) {
+                stereoScratch_[i * 2]     = a.samples[i];
+                stereoScratch_[i * 2 + 1] = a.samples[i];
+            }
+            ring_.push(stereoScratch_.data(), fr * 2);   // overflow dropped, never blocks
+        }
+    }
 }
 
 bool AudioOutputNode::ensureStarted() {
@@ -85,22 +98,27 @@ void AudioOutputNode::writeCallback(SoundIoOutStream* os, int /*frameMin*/, int 
         if (soundio_outstream_begin_write(os, &areas, &frameCount) != 0) return;
         if (frameCount <= 0) break;
 
-        // Pull mono samples from the ring buffer in scratch-sized chunks and fan
-        // each one out to every channel. An empty ring yields silence.
+        // Pull interleaved stereo frames from the ring in scratch-sized chunks and
+        // map L/R onto the device channels (ch0=L, ch1=R, extra channels = mix).
+        // An empty ring yields silence.
+        const int scratchFrames = (int)self->scratch_.size() / 2;
         int filled = 0;
         while (filled < frameCount) {
-            int chunk = frameCount - filled;
-            if (chunk > (int)self->scratch_.size()) chunk = (int)self->scratch_.size();
-            std::size_t got = self->ring_.pop(self->scratch_.data(), (std::size_t)chunk);
-            for (int i = 0; i < chunk; ++i) {
-                float s = (i < (int)got) ? self->scratch_[i] : 0.0f;
+            int want = frameCount - filled;
+            if (want > scratchFrames) want = scratchFrames;
+            std::size_t got = self->ring_.pop(self->scratch_.data(), (std::size_t)want * 2);
+            int gotFrames = (int)(got / 2);
+            for (int i = 0; i < want; ++i) {
+                float L = (i < gotFrames) ? self->scratch_[i * 2]     : 0.0f;
+                float R = (i < gotFrames) ? self->scratch_[i * 2 + 1] : 0.0f;
                 int frame = filled + i;
                 for (int ch = 0; ch < layout->channel_count; ++ch) {
+                    float v = (ch == 0) ? L : (ch == 1) ? R : 0.5f * (L + R);
                     char* dst = areas[ch].ptr + (std::ptrdiff_t)areas[ch].step * frame;
-                    std::memcpy(dst, &s, sizeof(float));
+                    std::memcpy(dst, &v, sizeof(float));
                 }
             }
-            filled += chunk;
+            filled += want;
         }
         soundio_outstream_end_write(os);
         framesLeft -= frameCount;

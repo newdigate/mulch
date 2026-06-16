@@ -17,6 +17,7 @@
 #include "modules/MeshLoaderNode.h"
 #include "modules/ShadedRenderNode.h"
 #include "modules/SineWaveNode.h"
+#include "modules/AudioMixerNode.h"
 #include "modules/RecorderNode.h"
 #include "modules/SpectrographNode.h"
 #include "modules/TextNode.h"
@@ -549,7 +550,7 @@ int main() {
         {
             VideoEncoder enc;
             std::string err;
-            if (!enc.open(path, W, H, FPS, SR, err)) {
+            if (!enc.open(path, W, H, FPS, SR, 1, err)) {   // mono
                 glfwTerminate(); return fail(("encoder open failed: " + err).c_str());
             }
             std::vector<unsigned char> frame((size_t)W * H * 4, 0);
@@ -574,12 +575,38 @@ int main() {
         if (!dec.open(path, err)) { glfwTerminate(); return fail(("decode encoded file failed: " + err).c_str()); }
         if (dec.width() != W || dec.height() != H) { glfwTerminate(); return fail("encoded video has wrong dimensions"); }
         if (!dec.hasAudio()) { glfwTerminate(); return fail("encoded file has no audio stream"); }
+        if (dec.audioChannels() != 1) { glfwTerminate(); return fail("mono encode should yield a 1-channel file"); }
         VideoFrame vf; std::vector<float> audio; double aS = 0; bool aV = false; int got = 0;
         while (got < 5 && dec.decodeFrame(vf, audio, aS, aV)) ++got;
         if (got == 0) { glfwTerminate(); return fail("encoded file decoded no frames"); }
         bool nz = false; for (float s : audio) if (s > 0.01f || s < -0.01f) { nz = true; break; }
         if (!nz) { glfwTerminate(); return fail("encoded audio is silent"); }
-        std::fprintf(stderr, "gl_smoke OK: VideoEncoder round-trip (%d frames, audio) decodes\n", got);
+        std::fprintf(stderr, "gl_smoke OK: VideoEncoder mono round-trip (%d frames, audio) decodes\n", got);
+
+        // Stereo round-trip: encode interleaved L/R and confirm the file is 2-channel.
+        {
+            const char* sp = "build/_rec_stereo.mp4";
+            {
+                VideoEncoder enc; std::string e;
+                if (!enc.open(sp, W, H, FPS, SR, 2, e)) { glfwTerminate(); return fail(("stereo encoder open: " + e).c_str()); }
+                std::vector<unsigned char> frame((size_t)W * H * 4, 200);
+                std::vector<float> st((SR / FPS) * 2);
+                double pl = 0, pr = 0;
+                for (int f = 0; f < 15; ++f) {
+                    enc.addVideoFrame(frame.data(), f / (double)FPS);
+                    for (size_t i = 0; i < st.size(); i += 2) {
+                        st[i]   = 0.5f * std::sin((float)pl); pl += 2*3.14159265f*440.0f/SR;   // L
+                        st[i+1] = 0.5f * std::sin((float)pr); pr += 2*3.14159265f*880.0f/SR;   // R
+                    }
+                    enc.addAudio(st.data(), (int)st.size());
+                }
+                std::string e2; enc.close(e2);
+            }
+            VideoDecoder ds; std::string e;
+            if (!ds.open(sp, e)) { glfwTerminate(); return fail(("decode stereo file: " + e).c_str()); }
+            if (ds.audioChannels() != 2) { glfwTerminate(); return fail("stereo encode should yield a 2-channel file"); }
+            std::fprintf(stderr, "gl_smoke OK: VideoEncoder stereo round-trip yields a 2-channel file\n");
+        }
 
         // (b) RecorderNode: passes video through unchanged, and records a file.
         Graph g;
@@ -619,6 +646,43 @@ int main() {
         while (got2 < 3 && dec2.decodeFrame(vf2, au2, s2, v2)) ++got2;
         if (got2 == 0) { glfwTerminate(); return fail("recorded file decoded no frames"); }
         std::fprintf(stderr, "gl_smoke OK: Recorder passed video through and wrote a decodable %dx%d mp4\n", vw, vh);
+
+        // (c) Stereo end-to-end: two sines panned hard L/R through the Mixer feed
+        // the Recorder's audio; the recorded file must be a 2-channel movie.
+        {
+            Graph gs;
+            auto col2 = std::make_unique<ColourNode>();
+            auto s1 = std::make_unique<SineWaveNode>(); s1->inputDefault(0) = 300.0f;
+            auto s2 = std::make_unique<SineWaveNode>(); s2->inputDefault(0) = 600.0f;
+            auto mix = std::make_unique<AudioMixerNode>();
+            mix->inputDefault(2) = -1.0f;   // pan 1 -> hard left
+            mix->inputDefault(5) =  1.0f;   // pan 2 -> hard right
+            auto rec2 = std::make_unique<RecorderNode>();
+            rec2->inputDefault(3) = std::string("build/_rec_stereo_node.mp4");
+            col2->initGL(); s1->initGL(); s2->initGL(); mix->initGL(); rec2->initGL();
+            int cId2 = gs.addNode(std::move(col2));
+            int s1Id = gs.addNode(std::move(s1));
+            int s2Id = gs.addNode(std::move(s2));
+            int mId  = gs.addNode(std::move(mix));
+            int r2Id = gs.addNode(std::move(rec2));
+            if (!gs.connect(s1Id, 0, mId, 0) || !gs.connect(s2Id, 0, mId, 3) ||
+                !gs.connect(cId2, 0, r2Id, 0) || !gs.connect(mId, 0, r2Id, 1)) {
+                glfwTerminate(); return fail("connect stereo record graph");
+            }
+            auto* rn2 = dynamic_cast<RecorderNode*>(gs.findNode(r2Id));
+            rn2->inputDefault(2) = true;                          // record on
+            for (int f = 0; f < 16; ++f) gs.evaluate(1.0f / 60.0f);
+            rn2->inputDefault(2) = false;                        // record off -> finalise
+            gs.evaluate(1.0f / 60.0f);
+
+            VideoDecoder d3; std::string e3;
+            if (!d3.open("build/_rec_stereo_node.mp4", e3)) { glfwTerminate(); return fail(("stereo recording did not open: " + e3).c_str()); }
+            if (!d3.hasAudio() || d3.audioChannels() != 2) { glfwTerminate(); return fail("graph recording should be stereo (2 channels)"); }
+            VideoFrame vf3; std::vector<float> au3; double s3 = 0; bool v3 = false; int got3 = 0;
+            while (got3 < 3 && d3.decodeFrame(vf3, au3, s3, v3)) ++got3;
+            if (got3 == 0) { glfwTerminate(); return fail("stereo recording decoded no frames"); }
+            std::fprintf(stderr, "gl_smoke OK: Sine->Mixer(pan)->Recorder wrote a stereo movie\n");
+        }
     }
 
     glfwDestroyWindow(win);

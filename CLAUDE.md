@@ -29,7 +29,9 @@ CMake 4.x, it's relaxed with `CMAKE_POLICY_VERSION_MINIMUM 3.5` around its
 - **`Value`** (`src/core/Value.h`) is the one currency on every edge:
   `std::variant<float, bool, glm::vec4, std::string, TexRef, AudioRef, MidiRef, VertexRef>`.
   `PortType` enumerates the same set; `typeOf(Value)` maps variant → PortType.
-  Connections only join ports of equal `PortType`.
+  Connections only join ports of equal `PortType`. Audio is interleaved float in
+  `AudioRef` (`channels` = 1 mono or 2 stereo L,R,L,R; `count` = total samples,
+  `frames()` = per-channel) — nodes upmix/downmix at the boundaries as needed.
 - **Per-frame forward evaluation.** `Graph::evaluate(dt)` runs nodes in topological
   order. Each node gets an `EvalContext` with resolved `inputs`, writable `outputs`,
   and `dt`. Read inputs with `ctx.in<T>(i)`, write outputs with `ctx.out(i, v)`.
@@ -71,9 +73,10 @@ CMake 4.x, it's relaxed with `CMAKE_POLICY_VERSION_MINIMUM 3.5` around its
   graph thread and keeps a sliding keyframe-window frame cache to play forward,
   reverse, and at variable `rate` off a forward-only decoder.
 - **`VideoEncoder` (`src/gfx/VideoEncoder.{h,cpp}`) is its mirror** — a GL-free
-  FFmpeg muxer writing RGBA frames + mono float audio to an H.264/AAC mp4. The
-  `RecorderNode` is a pass-through tap (video/audio in → same out) that reads back
-  the input texture and feeds the encoder while its `record` toggle is on.
+  FFmpeg muxer writing RGBA frames + interleaved float audio (mono or stereo) to
+  an H.264/AAC mp4. The `RecorderNode` is a pass-through tap (video/audio in → same
+  out) that reads back the input texture and feeds the encoder while `record` is on,
+  capturing whatever channel count the input audio carries.
 
 ## Adding a node
 

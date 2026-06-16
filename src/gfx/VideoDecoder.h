@@ -48,6 +48,7 @@ public:
     double duration() const { return duration_; }      // seconds (0 if unknown)
     bool   hasAudio() const { return astream_ >= 0; }
     int    audioRate() const { return kOutRate; }      // we always resample to this
+    int    audioChannels() const { return audioChannels_; }  // source channels (before our mono downmix)
     static constexpr int kOutRate = 48000;             // 48 kHz mono float out
 
     // Seek so the next decodeFrame() resumes at the keyframe at or before time
@@ -80,6 +81,7 @@ private:
     int    width_   = 0;
     int    height_  = 0;
     double duration_   = 0.0;
+    int    audioChannels_ = 0;  // source audio channel count (0 if no audio)
     double vTimeBase_  = 0.0;   // seconds per video stream tick
     double aTimeBase_  = 0.0;   // seconds per audio stream tick
     bool   eof_        = false; // hit end of input; still draining buffered frames

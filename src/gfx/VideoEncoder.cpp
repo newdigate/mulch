@@ -33,9 +33,11 @@ void VideoEncoder::freeAll() {
 }
 
 bool VideoEncoder::open(const std::string& path, int width, int height, int fps,
-                        int audioRate, std::string& err) {
+                        int audioRate, int audioChannels, std::string& err) {
     width_ = width; height_ = height;
     if (fps <= 0) fps = 60;
+    if (audioChannels < 1) audioChannels = 1;
+    if (audioChannels > 2) audioChannels = 2;
 
     avformat_alloc_output_context2(&oc_, nullptr, nullptr, path.c_str());
     if (!oc_) { err = "could not allocate output for " + path; return false; }
@@ -84,19 +86,20 @@ bool VideoEncoder::open(const std::string& path, int width, int height, int fps,
             actx_->sample_fmt  = AV_SAMPLE_FMT_FLTP;
             actx_->sample_rate = audioRate;
             actx_->bit_rate    = 128000;
-            av_channel_layout_default(&actx_->ch_layout, 1);   // mono
+            av_channel_layout_default(&actx_->ch_layout, audioChannels);   // mono or stereo
             actx_->time_base   = AVRational{1, audioRate};
             if (oc_->oformat->flags & AVFMT_GLOBALHEADER) actx_->flags |= AV_CODEC_FLAG_GLOBAL_HEADER;
             if (avcodec_open2(actx_, ac, nullptr) == 0) {
                 avcodec_parameters_from_context(ast_->codecpar, actx_);
                 ast_->time_base = actx_->time_base;
                 audioRate_      = audioRate;
+                audioChannels_  = audioChannels;
                 audioFrameSize_ = actx_->frame_size > 0 ? actx_->frame_size : 1024;
                 aframe_ = av_frame_alloc();
                 aframe_->format      = AV_SAMPLE_FMT_FLTP;
                 aframe_->sample_rate = audioRate;
                 aframe_->nb_samples  = audioFrameSize_;
-                av_channel_layout_default(&aframe_->ch_layout, 1);
+                av_channel_layout_default(&aframe_->ch_layout, audioChannels);
                 if (av_frame_get_buffer(aframe_, 0) < 0) { av_frame_free(&aframe_); avcodec_free_context(&actx_); ast_ = nullptr; }
             } else {
                 avcodec_free_context(&actx_); ast_ = nullptr;
@@ -152,14 +155,19 @@ bool VideoEncoder::addVideoFrame(const std::uint8_t* rgba, double tSeconds) {
 bool VideoEncoder::addAudio(const float* samples, int count) {
     if (!opened_ || !actx_ || count <= 0) return true;   // no audio stream -> ignore
     afifo_.insert(afifo_.end(), samples, samples + count);
-    while ((int)afifo_.size() >= audioFrameSize_) {
+    const int ch    = audioChannels_;
+    const int chunk = audioFrameSize_ * ch;              // interleaved floats per frame
+    while ((int)afifo_.size() >= chunk) {
         if (av_frame_make_writable(aframe_) < 0) return false;
-        std::copy(afifo_.begin(), afifo_.begin() + audioFrameSize_,
-                  reinterpret_cast<float*>(aframe_->data[0]));   // FLTP mono = one plane
+        // Deinterleave the interleaved input into AAC's planar (FLTP) channels.
+        for (int c = 0; c < ch; ++c) {
+            float* plane = reinterpret_cast<float*>(aframe_->data[c]);
+            for (int i = 0; i < audioFrameSize_; ++i) plane[i] = afifo_[(std::size_t)i * ch + c];
+        }
         aframe_->pts = aCount_;
         aCount_ += audioFrameSize_;
         encodeWrite(actx_, ast_, aframe_);
-        afifo_.erase(afifo_.begin(), afifo_.begin() + audioFrameSize_);
+        afifo_.erase(afifo_.begin(), afifo_.begin() + chunk);
     }
     return true;
 }

@@ -23,6 +23,7 @@ void VideoDecoder::close() {
     if (fmt_)   avformat_close_input(&fmt_);
     vstream_ = astream_ = -1;
     width_ = height_ = 0;
+    audioChannels_ = 0;
     duration_ = vTimeBase_ = aTimeBase_ = 0.0;
     eof_ = false;
 }
@@ -71,6 +72,7 @@ bool VideoDecoder::open(const std::string& path, std::string& err) {
             avcodec_parameters_to_context(actx_, as->codecpar);
             if (avcodec_open2(actx_, acodec, nullptr) == 0) {
                 aTimeBase_ = av_q2d(as->time_base);
+                audioChannels_ = as->codecpar->ch_layout.nb_channels;
             } else {
                 avcodec_free_context(&actx_); actx_ = nullptr; astream_ = -1;
             }
