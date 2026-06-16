@@ -32,24 +32,34 @@ inline std::vector<float> trianglesToLineList(const std::vector<float>& position
 }
 
 // Expand an indexed triangle mesh into a flat, interleaved vertex array of
-// position + flat face-normal (6 floats per vertex, 18 per triangle), suitable
-// for shaded GL_TRIANGLES rendering. Normals are computed per face as
-// normalize((b-a) x (c-a)). Out-of-range/partial triangles are skipped. GL-free.
+// position + normal (6 floats per vertex, 18 per triangle), for shaded
+// GL_TRIANGLES rendering. If `normals` is supplied (per-vertex, parallel to
+// `positions`), each vertex uses its own normal -> smooth shading; where it is
+// absent or degenerate (or `normals` is empty) a flat per-face normal,
+// normalize((b-a) x (c-a)), is used instead. Bad/partial triangles are skipped.
+// GL-free.
 inline std::vector<float> trianglesToShadedList(const std::vector<float>& positions,
-                                                const std::vector<unsigned int>& indices) {
+                                                const std::vector<unsigned int>& indices,
+                                                const std::vector<float>& normals = {}) {
     std::vector<float> out;
     out.reserve(indices.size() * 6);
     const std::size_t vertCount = positions.size() / 3;
+    const bool haveNormals = normals.size() == positions.size();
     auto P = [&](unsigned int v, int k) { return positions[(std::size_t)v * 3 + k]; };
     for (std::size_t t = 0; t + 2 < indices.size(); t += 3) {
         unsigned int a = indices[t], b = indices[t + 1], c = indices[t + 2];
         if (a >= vertCount || b >= vertCount || c >= vertCount) continue;
         float ux = P(b,0)-P(a,0), uy = P(b,1)-P(a,1), uz = P(b,2)-P(a,2);
         float vx = P(c,0)-P(a,0), vy = P(c,1)-P(a,1), vz = P(c,2)-P(a,2);
-        float nx = uy*vz - uz*vy, ny = uz*vx - ux*vz, nz = ux*vy - uy*vx;
-        float len = std::sqrt(nx*nx + ny*ny + nz*nz);
-        if (len > 1e-12f) { nx /= len; ny /= len; nz /= len; } else { nx = 0; ny = 0; nz = 1; }
+        float fnx = uy*vz - uz*vy, fny = uz*vx - ux*vz, fnz = ux*vy - uy*vx;
+        float fl = std::sqrt(fnx*fnx + fny*fny + fnz*fnz);
+        if (fl > 1e-12f) { fnx /= fl; fny /= fl; fnz /= fl; } else { fnx = 0; fny = 0; fnz = 1; }
         for (unsigned int v : {a, b, c}) {
+            float nx = fnx, ny = fny, nz = fnz;
+            if (haveNormals) {
+                float gx = normals[(std::size_t)v*3+0], gy = normals[(std::size_t)v*3+1], gz = normals[(std::size_t)v*3+2];
+                if (gx*gx + gy*gy + gz*gz > 1e-12f) { nx = gx; ny = gy; nz = gz; }  // else keep face normal
+            }
             out.push_back(P(v,0)); out.push_back(P(v,1)); out.push_back(P(v,2));
             out.push_back(nx);     out.push_back(ny);     out.push_back(nz);
         }

@@ -29,7 +29,7 @@ bool endsWith(const std::string& s, const std::string& suffix) {
 }
 
 bool loadObj(const std::string& path, std::vector<float>& pos,
-             std::vector<unsigned int>& idx, std::string& err) {
+             std::vector<unsigned int>& idx, std::vector<float>& normals, std::string& err) {
     tinyobj::attrib_t attrib;
     std::vector<tinyobj::shape_t> shapes;
     std::vector<tinyobj::material_t> materials;
@@ -41,6 +41,20 @@ bool loadObj(const std::string& path, std::vector<float>& pos,
         for (const auto& corner : shape.mesh.indices)
             idx.push_back((unsigned int)corner.vertex_index);
     if (pos.empty() || idx.empty()) { err = "no triangle geometry in .obj"; return false; }
+
+    // Map the file's per-corner normals onto per-vertex slots (parallel to pos).
+    if (!attrib.normals.empty()) {
+        normals.assign(pos.size(), 0.0f);
+        for (const auto& shape : shapes)
+            for (const auto& c : shape.mesh.indices)
+                if (c.normal_index >= 0 &&
+                    (size_t)(c.normal_index * 3 + 2) < attrib.normals.size() &&
+                    (size_t)(c.vertex_index * 3 + 2) < normals.size()) {
+                    normals[c.vertex_index*3+0] = attrib.normals[c.normal_index*3+0];
+                    normals[c.vertex_index*3+1] = attrib.normals[c.normal_index*3+1];
+                    normals[c.vertex_index*3+2] = attrib.normals[c.normal_index*3+2];
+                }
+    }
     return true;
 }
 
@@ -92,7 +106,7 @@ bool decodeMeshopt(tinygltf::Model& model, std::string& err) {
 }
 
 bool loadGltf(const std::string& path, std::vector<float>& pos,
-              std::vector<unsigned int>& idx, std::string& err) {
+              std::vector<unsigned int>& idx, std::vector<float>& normals, std::string& err) {
     tinygltf::TinyGLTF loader;
     tinygltf::Model model;
     std::string warn;
@@ -137,6 +151,26 @@ bool loadGltf(const std::string& path, std::vector<float>& pos,
             for (size_t v = 0; v < pa.count; ++v) {
                 const float* f = reinterpret_cast<const float*>(pd + v * (size_t)pstride);
                 pos.push_back(f[0]); pos.push_back(f[1]); pos.push_back(f[2]);
+            }
+
+            // Read matching per-vertex NORMALs (for smooth shading); push zeros
+            // when absent so the shaded builder falls back to a face normal.
+            auto nit = prim.attributes.find("NORMAL");
+            if (nit != prim.attributes.end() && model.accessors[nit->second].bufferView >= 0) {
+                const tinygltf::Accessor&   na = model.accessors[nit->second];
+                const tinygltf::BufferView& nv = model.bufferViews[na.bufferView];
+                const tinygltf::Buffer&     nb = model.buffers[nv.buffer];
+                int nstride = na.ByteStride(nv);
+                if (nstride <= 0) nstride = (int)(3 * sizeof(float));
+                const unsigned char* nd = nb.data.data() + nv.byteOffset + na.byteOffset;
+                size_t n = std::min(na.count, pa.count);
+                for (size_t v = 0; v < n; ++v) {
+                    const float* f = reinterpret_cast<const float*>(nd + v * (size_t)nstride);
+                    normals.push_back(f[0]); normals.push_back(f[1]); normals.push_back(f[2]);
+                }
+                for (size_t v = n; v < pa.count; ++v) { normals.push_back(0); normals.push_back(0); normals.push_back(0); }
+            } else {
+                for (size_t v = 0; v < pa.count; ++v) { normals.push_back(0); normals.push_back(0); normals.push_back(0); }
             }
 
             // Gather this primitive's index sequence (or 0..count-1 if non-indexed).
@@ -211,20 +245,20 @@ void normalize(std::vector<float>& pos, float scale) {
 
 MeshData loadMeshData(const std::string& path, float scale) {
     MeshData data;
-    std::vector<float> pos;
+    std::vector<float> pos, normals;
     std::vector<unsigned int> idx;
     std::string err;
     bool parsed;
     if (endsWith(path, ".obj"))
-        parsed = loadObj(path, pos, idx, err);
+        parsed = loadObj(path, pos, idx, normals, err);
     else if (endsWith(path, ".gltf") || endsWith(path, ".glb"))
-        parsed = loadGltf(path, pos, idx, err);
+        parsed = loadGltf(path, pos, idx, normals, err);
     else { data.error = "unsupported file type (use .obj, .gltf or .glb)"; return data; }
 
     if (!parsed) { data.error = err.empty() ? "could not read file" : err; return data; }
-    normalize(pos, scale);
+    normalize(pos, scale);   // uniform scale + translate; leaves normal directions intact
     data.lines = trianglesToLineList(pos, idx);
-    data.tris  = trianglesToShadedList(pos, idx);
+    data.tris  = trianglesToShadedList(pos, idx, normals);
     data.ok = !data.lines.empty() || !data.tris.empty();
     if (!data.ok) data.error = "no triangle geometry";
     return data;

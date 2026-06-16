@@ -55,3 +55,23 @@ TEST_CASE("shaded expansion skips degenerate/out-of-range triangles") {
     std::vector<unsigned int> idx = {0,1,2, 0,1,99};
     CHECK(trianglesToShadedList(pos, idx).size() == 3 * 6);
 }
+
+TEST_CASE("shaded expansion uses supplied per-vertex normals (smooth shading)") {
+    std::vector<float> pos = {0,0,0, 1,0,0, 0,1,0};   // face normal is +Z
+    std::vector<unsigned int> idx = {0, 1, 2};
+    std::vector<float> nrm = {0,1,0,  0,1,0,  0,1,0};  // supplied normals are +Y
+    auto s = trianglesToShadedList(pos, idx, nrm);
+    REQUIRE(s.size() == 3 * 6);
+    CHECK(s[3] == doctest::Approx(0));   // vertex 0 normal.x
+    CHECK(s[4] == doctest::Approx(1));   // vertex 0 normal.y (supplied, not the face's)
+    CHECK(s[5] == doctest::Approx(0));   // vertex 0 normal.z
+}
+
+TEST_CASE("shaded expansion falls back to the face normal for a degenerate supplied normal") {
+    std::vector<float> pos = {0,0,0, 1,0,0, 0,1,0};
+    std::vector<unsigned int> idx = {0, 1, 2};
+    std::vector<float> nrm = {0,0,0,  0,0,0,  0,0,0};  // all zero -> use face normal (+Z)
+    auto s = trianglesToShadedList(pos, idx, nrm);
+    REQUIRE(s.size() == 3 * 6);
+    CHECK(s[5] == doctest::Approx(1));   // fell back to face normal.z
+}
