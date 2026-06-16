@@ -48,6 +48,7 @@ to see it; or `Mesh Loader → Shaded Render → Output` to spin a 3D model.
 | **Mesh Loader** | load .obj/.gltf/.glb (incl. Draco/meshopt) on a worker thread → geometry |
 | **Text 2D / Text 3D** | type a string → vertex buffers: flat filled letters / extruded solid 3D letters (stb_truetype + earcut) |
 | **Wireframe / Shaded Render** | a vertex buffer → a rotating wireframe / lit texture |
+| **Recorder** | inline tap: passes video + audio through unchanged while recording them to a movie file (H.264/AAC mp4); toggle `record`, set `file` |
 | **Output** | marks the texture shown in the Output window |
 
 Texture nodes render a fragment shader into their own framebuffer; audio and MIDI

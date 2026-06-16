@@ -70,6 +70,10 @@ CMake 4.x, it's relaxed with `CMAKE_POLICY_VERSION_MINIMUM 3.5` around its
   are confined to its `.cpp`. The `VideoPlayerNode` decodes synchronously on the
   graph thread and keeps a sliding keyframe-window frame cache to play forward,
   reverse, and at variable `rate` off a forward-only decoder.
+- **`VideoEncoder` (`src/gfx/VideoEncoder.{h,cpp}`) is its mirror** — a GL-free
+  FFmpeg muxer writing RGBA frames + mono float audio to an H.264/AAC mp4. The
+  `RecorderNode` is a pass-through tap (video/audio in → same out) that reads back
+  the input texture and feeds the encoder while its `record` toggle is on.
 
 ## Adding a node
 

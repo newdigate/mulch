@@ -199,8 +199,10 @@ set(APP_SOURCES
   src/gfx/ShaderNode.cpp
   src/gfx/MeshLoader.cpp
   src/gfx/VideoDecoder.cpp
+  src/gfx/VideoEncoder.cpp
   src/gfx/TextGeometry.cpp
   src/modules/AudioInputNode.cpp
+  src/modules/RecorderNode.cpp
   src/modules/TextNode.cpp
   src/modules/VideoPlayerNode.cpp
   src/modules/AudioOutputNode.cpp
@@ -264,8 +266,10 @@ add_executable(gl_smoke
   src/gfx/ShaderNode.cpp
   src/gfx/MeshLoader.cpp
   src/gfx/VideoDecoder.cpp
+  src/gfx/VideoEncoder.cpp
   src/gfx/TextGeometry.cpp
   src/modules/MeshLoaderNode.cpp
+  src/modules/RecorderNode.cpp
   src/modules/ShadedRenderNode.cpp
   src/modules/SpectrographNode.cpp
   src/modules/TextNode.cpp

@@ -17,11 +17,13 @@
 #include "modules/MeshLoaderNode.h"
 #include "modules/ShadedRenderNode.h"
 #include "modules/SineWaveNode.h"
+#include "modules/RecorderNode.h"
 #include "modules/SpectrographNode.h"
 #include "modules/TextNode.h"
 #include "modules/VideoPlayerNode.h"
 #include "modules/WireframeNode.h"
 #include "gfx/VideoDecoder.h"
+#include "gfx/VideoEncoder.h"
 #include "gfx/TextGeometry.h"
 #include <chrono>
 #include <cmath>
@@ -536,6 +538,87 @@ int main() {
             if (!green) { glfwTerminate(); return fail("Text 2D did not render outline lines"); }
         }
         std::fprintf(stderr, "gl_smoke OK: Text 2D (wireframe) + Text 3D (shaded) rendered\n");
+    }
+
+    // --- Scenario 12: Recorder / VideoEncoder write a decodable movie ---
+    {
+        // (a) VideoEncoder round-trip: encode synthetic frames + a tone, then
+        // decode the file back with VideoDecoder and confirm it round-trips.
+        const char* path = "build/_rec_rt.mp4";
+        const int W = 64, H = 48, FPS = 30, SR = 48000;
+        {
+            VideoEncoder enc;
+            std::string err;
+            if (!enc.open(path, W, H, FPS, SR, err)) {
+                glfwTerminate(); return fail(("encoder open failed: " + err).c_str());
+            }
+            std::vector<unsigned char> frame((size_t)W * H * 4, 0);
+            std::vector<float> aud(SR / FPS);
+            double phase = 0.0;
+            for (int f = 0; f < 15; ++f) {
+                for (int y = 0; y < H; ++y) for (int x = 0; x < W; ++x) {
+                    size_t i = ((size_t)y * W + x) * 4;
+                    frame[i]   = (unsigned char)((x * 4 + f * 8) & 255);
+                    frame[i+1] = (unsigned char)((y * 5) & 255);
+                    frame[i+2] = (unsigned char)((f * 15) & 255);
+                    frame[i+3] = 255;
+                }
+                enc.addVideoFrame(frame.data(), f / (double)FPS);
+                for (float& s : aud) { s = 0.5f * std::sin((float)phase); phase += 2*3.14159265f*440.0f/SR; }
+                enc.addAudio(aud.data(), (int)aud.size());
+            }
+            std::string e2; enc.close(e2);
+        }
+        VideoDecoder dec;
+        std::string err;
+        if (!dec.open(path, err)) { glfwTerminate(); return fail(("decode encoded file failed: " + err).c_str()); }
+        if (dec.width() != W || dec.height() != H) { glfwTerminate(); return fail("encoded video has wrong dimensions"); }
+        if (!dec.hasAudio()) { glfwTerminate(); return fail("encoded file has no audio stream"); }
+        VideoFrame vf; std::vector<float> audio; double aS = 0; bool aV = false; int got = 0;
+        while (got < 5 && dec.decodeFrame(vf, audio, aS, aV)) ++got;
+        if (got == 0) { glfwTerminate(); return fail("encoded file decoded no frames"); }
+        bool nz = false; for (float s : audio) if (s > 0.01f || s < -0.01f) { nz = true; break; }
+        if (!nz) { glfwTerminate(); return fail("encoded audio is silent"); }
+        std::fprintf(stderr, "gl_smoke OK: VideoEncoder round-trip (%d frames, audio) decodes\n", got);
+
+        // (b) RecorderNode: passes video through unchanged, and records a file.
+        Graph g;
+        auto col = std::make_unique<ColourNode>();
+        auto recN = std::make_unique<RecorderNode>();
+        recN->inputDefault(3) = std::string("build/_rec_node.mp4");   // file
+        auto out = std::make_unique<OutputNode>();
+        col->initGL(); recN->initGL(); out->initGL();
+        int cId = g.addNode(std::move(col));
+        int rId = g.addNode(std::move(recN));
+        int oId = g.addNode(std::move(out));
+        if (!g.connect(cId, 0, rId, 0) || !g.connect(rId, 0, oId, 0)) {
+            glfwTerminate(); return fail("connect Colour->Recorder->Output");
+        }
+        auto* on = dynamic_cast<OutputNode*>(g.findNode(oId));
+        auto* rn = dynamic_cast<RecorderNode*>(g.findNode(rId));
+
+        g.evaluate(1.0f / 60.0f);   // not recording -> pure pass-through
+        TexRef passed = on->current();
+        if (!passed.id) { glfwTerminate(); return fail("recorder did not pass video through"); }
+        int r, gg, b, a; readCentre(passed, r, gg, b, a);
+        if (!(near(r,255) && near(gg,128) && near(b,25))) {
+            glfwTerminate(); return fail("passed-through texture is not the Colour output");
+        }
+        int vw = passed.w, vh = passed.h;
+
+        rn->inputDefault(2) = true;                          // record on
+        for (int f = 0; f < 12; ++f) g.evaluate(1.0f / 60.0f);
+        rn->inputDefault(2) = false;                         // record off -> finalise file
+        g.evaluate(1.0f / 60.0f);
+
+        VideoDecoder dec2;
+        std::string err2;
+        if (!dec2.open("build/_rec_node.mp4", err2)) { glfwTerminate(); return fail(("recorded file did not open: " + err2).c_str()); }
+        if (dec2.width() != vw || dec2.height() != vh) { glfwTerminate(); return fail("recorded video has wrong dimensions"); }
+        VideoFrame vf2; std::vector<float> au2; double s2 = 0; bool v2 = false; int got2 = 0;
+        while (got2 < 3 && dec2.decodeFrame(vf2, au2, s2, v2)) ++got2;
+        if (got2 == 0) { glfwTerminate(); return fail("recorded file decoded no frames"); }
+        std::fprintf(stderr, "gl_smoke OK: Recorder passed video through and wrote a decodable %dx%d mp4\n", vw, vh);
     }
 
     glfwDestroyWindow(win);
