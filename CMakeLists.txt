@@ -82,6 +82,19 @@ if(TARGET libsoundio_static)
   endif()
 endif()
 
+# --- RtMidi (cross-platform MIDI I/O) ---
+FetchContent_Declare(rtmidi
+  GIT_REPOSITORY https://github.com/thestk/rtmidi.git
+  GIT_TAG 6.0.0)
+set(RTMIDI_BUILD_TESTING OFF CACHE BOOL "" FORCE)
+set(RTMIDI_BUILD_STATIC_LIBS ON CACHE BOOL "" FORCE)
+set(BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)   # rtmidi has no deps after it
+# Avoid a target-name clash: GLFW already defines an "uninstall" target.
+set(RTMIDI_TARGETNAME_UNINSTALL "rtmidi_uninstall" CACHE STRING "" FORCE)
+set(CMAKE_POLICY_VERSION_MINIMUM 3.5)
+FetchContent_MakeAvailable(rtmidi)
+unset(CMAKE_POLICY_VERSION_MINIMUM)
+
 find_package(OpenGL REQUIRED)
 
 # --- UI third-party static lib: ImGui + backends + node editor ---
@@ -117,6 +130,8 @@ set(APP_SOURCES
   src/gfx/ShaderNode.cpp
   src/modules/AudioInputNode.cpp
   src/modules/AudioOutputNode.cpp
+  src/modules/MidiInputNode.cpp
+  src/modules/MidiOutputNode.cpp
   src/modules/SpectrographNode.cpp
   src/ui/NodeEditorPanel.cpp
   src/ui/PortWidgets.cpp
@@ -125,9 +140,9 @@ set(APP_SOURCES
 
 # --- Application executable ---
 add_executable(shader_streamer src/main.cpp ${APP_SOURCES})
-target_include_directories(shader_streamer PRIVATE src ${libsoundio_SOURCE_DIR})
+target_include_directories(shader_streamer PRIVATE src ${libsoundio_SOURCE_DIR} ${rtmidi_SOURCE_DIR})
 target_compile_definitions(shader_streamer PRIVATE GLFW_INCLUDE_NONE)
-target_link_libraries(shader_streamer PRIVATE ui_thirdparty glad_gl41 glm::glm libsoundio_static)
+target_link_libraries(shader_streamer PRIVATE ui_thirdparty glad_gl41 glm::glm libsoundio_static rtmidi)
 
 # --- Tests (GL-free core only) ---
 enable_testing()
@@ -141,6 +156,7 @@ add_executable(core_tests
   tests/test_sine_wave.cpp
   tests/test_ring_buffer.cpp
   tests/test_audio_mixer.cpp
+  tests/test_arpeggiator.cpp
   src/core/Node.cpp
   src/core/Graph.cpp
   src/audio/FFT.cpp

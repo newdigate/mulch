@@ -15,12 +15,16 @@ together and watch textures and audio stream through the graph in real time.
 - **Mix** — two textures + a float factor -> blended texture
 - **Output** — displays a texture in the Viewer
 - **Audio Out** — plays its audio input through the system's default output device
+- **MIDI In** — receives from a hardware or virtual MIDI input port -> midi
+- **Arpeggiator** — held MIDI notes -> a stepped note sequence (rate / gate / octaves / mode)
+- **MIDI Out** — sends its MIDI input to a hardware or virtual MIDI output port
 
-Most nodes render a fragment shader into their own framebuffer and publish the result
-as a texture; **Sine**, **Audio In**, **Audio Mix**, and **Audio Out** are audio-only.
-The graph is evaluated once per frame in topological order. Audio flows between nodes as
-blocks of samples; **Audio In**/**Audio Out** bridge libsoundio's real-time callback
-thread to the graph thread through a lock-free ring buffer.
+Texture nodes render a fragment shader into their own framebuffer and publish the result
+as a texture; the audio and MIDI nodes carry samples and events instead. The graph is
+evaluated once per frame in topological order. Audio flows between nodes as blocks of
+samples and MIDI as batches of events; **Audio In**/**Audio Out** bridge libsoundio's
+real-time callback thread to the graph thread through a lock-free ring buffer, while the
+**MIDI In**/**MIDI Out** ports are polled/sent synchronously via RtMidi.
 
 ## Build
 
@@ -30,8 +34,8 @@ cmake --build build -j
 ```
 
 The first configure downloads pinned dependencies via CMake FetchContent (network
-required): GLFW, glad (GL 4.1 core), Dear ImGui, imgui-node-editor, glm, doctest, and
-libsoundio (audio output; uses CoreAudio on macOS).
+required): GLFW, glad (GL 4.1 core), Dear ImGui, imgui-node-editor, glm, doctest,
+libsoundio (audio I/O; CoreAudio on macOS), and RtMidi (MIDI I/O; CoreMIDI on macOS).
 
 ## Run
 
@@ -45,7 +49,9 @@ show inline editors (colour picker, slider). Wire `Colour -> Mix.a`,
 **Sine** and **Audio Out** and wire `Sine -> Audio Out` to hear the tone (and
 `Sine -> Spectrograph -> Output` to see it). Combine sources by wiring them into an
 **Audio Mix**, or capture the microphone with **Audio In** (macOS will prompt for mic
-access). Select a node or link and press Delete or Backspace to remove it.
+access). For MIDI, wire **MIDI In -> Arpeggiator -> MIDI Out** to arpeggiate held chords
+out to a synth (each MIDI node opens port 0, or a virtual port if none exist). Select a
+node or link and press Delete or Backspace to remove it.
 
 ## Test
 
@@ -65,7 +71,7 @@ ctest --test-dir build --output-on-failure
 - `src/gfx/` — OpenGL helpers (shader/program, framebuffer, fullscreen pass, ShaderNode base)
 - `src/audio/` — FFT, the synthesized signal generator, and the SPSC ring buffer
 - `src/modules/` — the example nodes (Colour, Sine, Audio In, Audio Mix, Spectrograph,
-  Mix, Output, Audio Out)
+  Mix, Output, Audio Out, MIDI In, Arpeggiator, MIDI Out)
 - `src/ui/` — imgui-node-editor panel and inline port widgets
 - `shaders/` — fragment shaders
 - `docs/superpowers/` — design spec and implementation plan

@@ -1,9 +1,12 @@
 #include "app/Application.h"
 #include <imgui.h>
 #include "modules/ColourNode.h"
+#include "modules/ArpeggiatorNode.h"
 #include "modules/AudioInputNode.h"
 #include "modules/AudioMixerNode.h"
 #include "modules/AudioOutputNode.h"
+#include "modules/MidiInputNode.h"
+#include "modules/MidiOutputNode.h"
 #include "modules/MixNode.h"
 #include "modules/OutputNode.h"
 #include "modules/SineWaveNode.h"
@@ -20,12 +23,16 @@ std::unique_ptr<Node> makeNode(const std::string& type) {
     if (type == "Mix")         return std::make_unique<MixNode>();
     if (type == "Output")      return std::make_unique<OutputNode>();
     if (type == "Audio Out")   return std::make_unique<AudioOutputNode>();
+    if (type == "MIDI In")     return std::make_unique<MidiInputNode>();
+    if (type == "Arpeggiator") return std::make_unique<ArpeggiatorNode>();
+    if (type == "MIDI Out")    return std::make_unique<MidiOutputNode>();
     return nullptr;
 }
 
 const std::vector<std::string>& nodeTypeNames() {
     static const std::vector<std::string> names = {
-        "Colour", "Sine", "Audio In", "Audio Mix", "Spectrograph", "Mix", "Output", "Audio Out" };
+        "Colour", "Sine", "Audio In", "Audio Mix", "Spectrograph", "Mix", "Output", "Audio Out",
+        "MIDI In", "Arpeggiator", "MIDI Out" };
     return names;
 }
 
