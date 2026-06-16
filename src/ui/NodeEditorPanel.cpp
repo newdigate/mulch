@@ -51,6 +51,10 @@ void NodeEditorPanel::draw(Graph& graph,
     for (auto& up : graph.nodes()) {
         Node& n = *up;
         ed::BeginNode(ed::NodeId(n.id()));
+        // imgui-node-editor doesn't scope ImGui IDs per node, so push the node's
+        // id to keep inline-widget IDs unique across nodes -- otherwise a widget
+        // at the same port index on two nodes (e.g. a Float at index 1) collides.
+        ImGui::PushID(n.id());
         ImGui::TextUnformatted(n.name().c_str());
         for (std::size_t i = 0; i < n.inputs().size(); ++i) {
             ed::BeginPin(ed::PinId(pinId(n.id(), (int)i, false)), ed::PinKind::Input);
@@ -66,6 +70,7 @@ void NodeEditorPanel::draw(Graph& graph,
             ImGui::Text("%s ->", n.outputs()[i].name.c_str());
             ed::EndPin();
         }
+        ImGui::PopID();
         ed::EndNode();
 
         // Place each node at its model position the first time it is seen; on
