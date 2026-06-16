@@ -164,22 +164,31 @@ void NodeEditorPanel::draw(Graph& graph,
     }
     ed::EndDelete();
 
-    // Background context menu: add a node of a chosen type.
+    // Background context menu: Add (a node of a chosen type) / View.
     ed::Suspend();
-    if (ed::ShowBackgroundContextMenu()) ImGui::OpenPopup("AddNode");
-    if (ImGui::BeginPopup("AddNode")) {
+    if (ed::ShowBackgroundContextMenu()) ImGui::OpenPopup("BackgroundMenu");
+    if (ImGui::BeginPopup("BackgroundMenu")) {
         ImVec2 mouse = ImGui::GetMousePosOnOpeningCurrentPopup();
         ImVec2 canvas = ed::ScreenToCanvas(mouse);
-        // One submenu per category (Texture / Audio / MIDI / 3D) so the list
-        // stays readable as nodes are added.
-        for (auto& cat : nodeCategories()) {
-            if (ImGui::BeginMenu(cat.name.c_str())) {
-                for (auto& type : cat.types) {
-                    if (ImGui::MenuItem(type.c_str()))
-                        addNodeOfType(type, glm::vec2(canvas.x, canvas.y));
+        if (ImGui::BeginMenu("Add")) {
+            // One submenu per category (Texture / Audio / MIDI / 3D) so the
+            // list stays readable as nodes are added.
+            for (auto& cat : nodeCategories()) {
+                if (ImGui::BeginMenu(cat.name.c_str())) {
+                    for (auto& type : cat.types) {
+                        if (ImGui::MenuItem(type.c_str()))
+                            addNodeOfType(type, glm::vec2(canvas.x, canvas.y));
+                    }
+                    ImGui::EndMenu();
                 }
-                ImGui::EndMenu();
             }
+            ImGui::EndMenu();
+        }
+        if (ImGui::BeginMenu("View")) {
+            // Reset zoom/pan by fitting all nodes in view -- the way back when a
+            // stray scroll has zoomed the canvas too far in or out to recover.
+            if (ImGui::MenuItem("Reset View (fit all)")) ed::NavigateToContent();
+            ImGui::EndMenu();
         }
         ImGui::EndPopup();
     }
