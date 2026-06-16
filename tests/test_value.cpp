@@ -10,6 +10,8 @@ TEST_CASE("typeOf maps each Value alternative to its PortType") {
     CHECK(typeOf(Value{std::string("x.wav")}) == PortType::String);
     CHECK(typeOf(Value{TexRef{7, 4, 4}})      == PortType::Texture);
     CHECK(typeOf(Value{AudioRef{}})           == PortType::Audio);
+    CHECK(typeOf(Value{MidiRef{}})            == PortType::Midi);
+    CHECK(typeOf(Value{VertexRef{9, 64}})     == PortType::Vertex);
 }
 
 TEST_CASE("portTypeName is stable") {
@@ -19,4 +21,6 @@ TEST_CASE("portTypeName is stable") {
     CHECK(std::string(portTypeName(PortType::Bool))    == "Bool");
     CHECK(std::string(portTypeName(PortType::Audio))   == "Audio");
     CHECK(std::string(portTypeName(PortType::String))  == "String");
+    CHECK(std::string(portTypeName(PortType::Midi))    == "Midi");
+    CHECK(std::string(portTypeName(PortType::Vertex))  == "Vertex");
 }

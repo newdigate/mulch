@@ -22,7 +22,9 @@ private:
     SignalGenerator     gen_;
     std::vector<float>  window_;    // rolling time-domain window
     std::vector<float>  spectrum_;  // normalized magnitudes (kBins)
+    std::vector<float>  verts_;     // kBins * 3 floats: the spectrum as a vec3 line strip
     GLuint              specTex_ = 0;
+    GLuint              vbo_     = 0;   // vertex buffer streamed on the geometry output
 };
 
 } // namespace oss

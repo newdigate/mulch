@@ -7,7 +7,7 @@
 
 namespace oss {
 
-enum class PortType { Texture, Colour, Float, Bool, Audio, String, Midi };
+enum class PortType { Texture, Colour, Float, Bool, Audio, String, Midi, Vertex };
 
 // Reference to a GL texture produced by a node. `id` is a GL texture name kept
 // as a plain unsigned int so this header (and all of core/) stays GL-free.
@@ -34,8 +34,13 @@ inline MidiEvent midiNoteOff(int note, int channel = 0) {
     return { (unsigned char)(0x80u | (channel & 0x0F)), (unsigned char)note, 0 };
 }
 
+// A handle to a GL vertex buffer (VBO) a node produced, plus its vertex count.
+// `vbo` is a plain GL name so this header stays GL-free, like TexRef. By
+// convention the buffer holds tightly-packed vec3 positions (a line strip).
+struct VertexRef { unsigned int vbo = 0; int count = 0; };
+
 // Each alternative corresponds to a PortType value (mapped type-safely by typeOf).
-using Value = std::variant<float, bool, glm::vec4, std::string, TexRef, AudioRef, MidiRef>;
+using Value = std::variant<float, bool, glm::vec4, std::string, TexRef, AudioRef, MidiRef, VertexRef>;
 
 inline PortType typeOf(const Value& v) {
     return std::visit([](auto&& arg) -> PortType {
@@ -46,7 +51,8 @@ inline PortType typeOf(const Value& v) {
         else if constexpr (std::is_same_v<T, std::string>) return PortType::String;
         else if constexpr (std::is_same_v<T, TexRef>)      return PortType::Texture;
         else if constexpr (std::is_same_v<T, AudioRef>)    return PortType::Audio;
-        else                                                return PortType::Midi;
+        else if constexpr (std::is_same_v<T, MidiRef>)     return PortType::Midi;
+        else                                                return PortType::Vertex;
     }, v);
 }
 
@@ -59,6 +65,7 @@ inline const char* portTypeName(PortType t) {
         case PortType::Audio:   return "Audio";
         case PortType::String:  return "String";
         case PortType::Midi:    return "Midi";
+        case PortType::Vertex:  return "Vertex";
     }
     return "?";
 }

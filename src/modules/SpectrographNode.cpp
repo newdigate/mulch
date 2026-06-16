@@ -10,13 +10,16 @@ SpectrographNode::SpectrographNode()
     : ShaderNode("Spectrograph", "shaders/spectrograph.frag"),
       gen_(48000, 220.0f),
       window_(kWindow, 0.0f),
-      spectrum_(kBins, 0.0f) {
+      spectrum_(kBins, 0.0f),
+      verts_(kBins * 3, 0.0f) {
     addInput("audio", PortType::Audio, AudioRef{});   // unconnected -> internal synth
     addOutput("out", PortType::Texture);
+    addOutput("geometry", PortType::Vertex);          // spectrum as a 3D line strip
 }
 
 SpectrographNode::~SpectrographNode() {
     if (specTex_) glDeleteTextures(1, &specTex_);
+    if (vbo_) glDeleteBuffers(1, &vbo_);
 }
 
 void SpectrographNode::initGL() {
@@ -28,6 +31,7 @@ void SpectrographNode::initGL() {
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    glGenBuffers(1, &vbo_);
 }
 
 void SpectrographNode::evaluate(EvalContext& ctx) {
@@ -58,6 +62,20 @@ void SpectrographNode::evaluate(EvalContext& ctx) {
     for (int i = 0; i < kBins; ++i) spectrum_[i] = mag[i] / maxv;
 
     render(ctx);   // binds program/FBO, calls setUniforms, draws, outputs TexRef
+
+    // Also stream the spectrum as a 3D line strip (vec3 positions) into a VBO:
+    // x = frequency, y = magnitude, z = a gentle bow so it reads as 3D.
+    for (int i = 0; i < kBins; ++i) {
+        float t = (kBins > 1) ? (float)i / (kBins - 1) : 0.0f;
+        verts_[i * 3 + 0] = -1.0f + 2.0f * t;
+        verts_[i * 3 + 1] = spectrum_[i] * 1.5f - 0.4f;
+        verts_[i * 3 + 2] = 0.25f * std::sin(t * 3.14159265f);
+    }
+    glBindBuffer(GL_ARRAY_BUFFER, vbo_);
+    glBufferData(GL_ARRAY_BUFFER, (GLsizeiptr)(verts_.size() * sizeof(float)),
+                 verts_.data(), GL_DYNAMIC_DRAW);
+    glBindBuffer(GL_ARRAY_BUFFER, 0);
+    ctx.out<VertexRef>(1, VertexRef{vbo_, kBins});
 }
 
 void SpectrographNode::setUniforms(EvalContext&) {

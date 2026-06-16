@@ -133,6 +133,7 @@ set(APP_SOURCES
   src/modules/MidiInputNode.cpp
   src/modules/MidiOutputNode.cpp
   src/modules/SpectrographNode.cpp
+  src/modules/WireframeNode.cpp
   src/ui/NodeEditorPanel.cpp
   src/ui/PortWidgets.cpp
   src/app/Application.cpp
@@ -177,6 +178,7 @@ add_executable(gl_smoke
   src/gfx/FullscreenPass.cpp
   src/gfx/ShaderNode.cpp
   src/modules/SpectrographNode.cpp
+  src/modules/WireframeNode.cpp
   src/audio/FFT.cpp
   src/audio/SignalGenerator.cpp
 )

@@ -10,9 +10,11 @@ together and watch textures and audio stream through the graph in real time.
 - **Sine** — a pure sine-wave audio source (frequency / amplitude) -> audio
 - **Audio In** — captures the default input device (microphone) -> audio
 - **Audio Mix** — four audio inputs, each with its own level -> one mixed audio output
-- **Spectrograph** — audio -> FFT -> texture (synthesizes a test signal when its audio
-  input is left unconnected; wire an audio source in to drive it with a live signal)
+- **Spectrograph** — audio -> FFT -> texture, plus a second vertex-buffer output of the
+  spectrum as a 3D line strip (synthesizes a test signal when its audio input is unconnected)
 - **Mix** — two textures + a float factor -> blended texture
+- **Wireframe** — a streamed vertex buffer (3D line strip) -> a wireframe texture, drawn
+  through a slowly rotating 3D camera
 - **Output** — displays a texture in the Viewer
 - **Audio Out** — plays its audio input through the system's default output device
 - **MIDI In** — receives from a hardware or virtual MIDI input port -> midi
@@ -24,7 +26,8 @@ as a texture; the audio and MIDI nodes carry samples and events instead. The gra
 evaluated once per frame in topological order. Audio flows between nodes as blocks of
 samples and MIDI as batches of events; **Audio In**/**Audio Out** bridge libsoundio's
 real-time callback thread to the graph thread through a lock-free ring buffer, while the
-**MIDI In**/**MIDI Out** ports are polled/sent synchronously via RtMidi.
+**MIDI In**/**MIDI Out** ports are polled/sent synchronously via RtMidi. Geometry flows as
+GL vertex-buffer handles: a node uploads a VBO and a downstream node binds and draws it.
 
 ## Build
 
@@ -50,8 +53,9 @@ show inline editors (colour picker, slider). Wire `Colour -> Mix.a`,
 `Sine -> Spectrograph -> Output` to see it). Combine sources by wiring them into an
 **Audio Mix**, or capture the microphone with **Audio In** (macOS will prompt for mic
 access). For MIDI, wire **MIDI In -> Arpeggiator -> MIDI Out** to arpeggiate held chords
-out to a synth (each MIDI node opens port 0, or a virtual port if none exist). Select a
-node or link and press Delete or Backspace to remove it.
+out to a synth (each MIDI node opens port 0, or a virtual port if none exist). Wire the
+**Spectrograph**'s geometry output into **Wireframe -> Output** to see the spectrum as a
+rotating 3D line strip. Select a node or link and press Delete or Backspace to remove it.
 
 ## Test
 
@@ -71,7 +75,7 @@ ctest --test-dir build --output-on-failure
 - `src/gfx/` — OpenGL helpers (shader/program, framebuffer, fullscreen pass, ShaderNode base)
 - `src/audio/` — FFT, the synthesized signal generator, and the SPSC ring buffer
 - `src/modules/` — the example nodes (Colour, Sine, Audio In, Audio Mix, Spectrograph,
-  Mix, Output, Audio Out, MIDI In, Arpeggiator, MIDI Out)
+  Mix, Wireframe, Output, Audio Out, MIDI In, Arpeggiator, MIDI Out)
 - `src/ui/` — imgui-node-editor panel and inline port widgets
 - `shaders/` — fragment shaders
 - `docs/superpowers/` — design spec and implementation plan

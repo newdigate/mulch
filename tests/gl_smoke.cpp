@@ -14,6 +14,7 @@
 #include "modules/OutputNode.h"
 #include "modules/SineWaveNode.h"
 #include "modules/SpectrographNode.h"
+#include "modules/WireframeNode.h"
 
 using namespace oss;
 
@@ -173,6 +174,42 @@ int main() {
         if (!sawBar)  { glfwTerminate(); return fail("sine->spectrograph rendered no bars"); }
         if (!differ)  { glfwTerminate(); return fail("connected sine produced same spectrum as synth (edge not carrying audio)"); }
         std::fprintf(stderr, "gl_smoke OK: SineWave drives Spectrograph through a connection\n");
+    }
+
+    // --- Scenario 5: Spectrograph geometry -> Wireframe -> Output (vertex stream) ---
+    // The spectrograph's 2nd output is a VBO of the spectrum as a 3D line strip;
+    // the Wireframe node binds that buffer and draws it. Asserts the rendered
+    // texture has both the dark background and bright-green line pixels, proving
+    // the vertex buffer streamed across the edge and was drawn.
+    {
+        Graph g5;
+        auto spec = std::make_unique<SpectrographNode>();
+        auto wire = std::make_unique<WireframeNode>();
+        auto out5 = std::make_unique<OutputNode>();
+        spec->initGL(); wire->initGL(); out5->initGL();
+        int spId = g5.addNode(std::move(spec));
+        int wiId = g5.addNode(std::move(wire));
+        int oId5 = g5.addNode(std::move(out5));
+        if (!g5.connect(spId, 1, wiId, 0)) { glfwTerminate(); return fail("connect spectrograph.geometry->wireframe"); }
+        if (!g5.connect(wiId, 0, oId5, 0)) { glfwTerminate(); return fail("connect wireframe->output"); }
+
+        for (int f = 0; f < 8; ++f) g5.evaluate(1.0f / 60.0f);
+
+        TexRef t5 = dynamic_cast<OutputNode*>(g5.findNode(oId5))->current();
+        if (!t5.id) { glfwTerminate(); return fail("wireframe texture not produced"); }
+        std::vector<unsigned char> px((size_t)t5.w * t5.h * 4);
+        glBindTexture(GL_TEXTURE_2D, t5.id);
+        glGetTexImage(GL_TEXTURE_2D, 0, GL_RGBA, GL_UNSIGNED_BYTE, px.data());
+        bool sawBg = false, sawLine = false;
+        for (size_t i = 0; i < px.size() && !(sawBg && sawLine); i += 4) {
+            int r = px[i], g = px[i+1], b = px[i+2];
+            if (r < 25 && g < 25 && b < 30)            sawBg = true;     // dark background
+            if (g > 200 && r < 120 && b < 170)         sawLine = true;   // bright green line
+        }
+        std::fprintf(stderr, "gl_smoke wireframe: sawBg=%d sawLine=%d\n", (int)sawBg, (int)sawLine);
+        if (!sawBg)   { glfwTerminate(); return fail("wireframe background not rendered"); }
+        if (!sawLine) { glfwTerminate(); return fail("wireframe line strip not rendered"); }
+        std::fprintf(stderr, "gl_smoke OK: Spectrograph geometry streamed to Wireframe and rendered\n");
     }
 
     glfwDestroyWindow(win);
