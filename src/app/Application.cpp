@@ -6,6 +6,7 @@
 #include "modules/AudioMixerNode.h"
 #include "modules/AudioOutputNode.h"
 #include "modules/MidiInputNode.h"
+#include "modules/MidiMergeNode.h"
 #include "modules/MidiOutputNode.h"
 #include "modules/MixNode.h"
 #include "modules/OutputNode.h"
@@ -29,6 +30,7 @@ std::unique_ptr<Node> makeNode(const std::string& type) {
     if (type == "MIDI In")     return std::make_unique<MidiInputNode>();
     if (type == "Step Seq")    return std::make_unique<StepSequencerNode>();
     if (type == "Arpeggiator") return std::make_unique<ArpeggiatorNode>();
+    if (type == "MIDI Merge")  return std::make_unique<MidiMergeNode>();
     if (type == "MIDI Out")    return std::make_unique<MidiOutputNode>();
     return nullptr;
 }
@@ -36,7 +38,7 @@ std::unique_ptr<Node> makeNode(const std::string& type) {
 const std::vector<std::string>& nodeTypeNames() {
     static const std::vector<std::string> names = {
         "Colour", "Sine", "Audio In", "Audio Mix", "Spectrograph", "Mix", "Wireframe", "Output",
-        "Audio Out", "MIDI In", "Step Seq", "Arpeggiator", "MIDI Out" };
+        "Audio Out", "MIDI In", "Step Seq", "Arpeggiator", "MIDI Merge", "MIDI Out" };
     return names;
 }
 
