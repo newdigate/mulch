@@ -1,6 +1,8 @@
 #include "app/Application.h"
 #include <imgui.h>
 #include "modules/ColourNode.h"
+#include "modules/AudioInputNode.h"
+#include "modules/AudioMixerNode.h"
 #include "modules/AudioOutputNode.h"
 #include "modules/MixNode.h"
 #include "modules/OutputNode.h"
@@ -12,6 +14,8 @@ namespace oss {
 std::unique_ptr<Node> makeNode(const std::string& type) {
     if (type == "Colour")      return std::make_unique<ColourNode>();
     if (type == "Sine")        return std::make_unique<SineWaveNode>();
+    if (type == "Audio In")    return std::make_unique<AudioInputNode>();
+    if (type == "Audio Mix")   return std::make_unique<AudioMixerNode>();
     if (type == "Spectrograph") return std::make_unique<SpectrographNode>();
     if (type == "Mix")         return std::make_unique<MixNode>();
     if (type == "Output")      return std::make_unique<OutputNode>();
@@ -20,7 +24,8 @@ std::unique_ptr<Node> makeNode(const std::string& type) {
 }
 
 const std::vector<std::string>& nodeTypeNames() {
-    static const std::vector<std::string> names = { "Colour", "Sine", "Spectrograph", "Mix", "Output", "Audio Out" };
+    static const std::vector<std::string> names = {
+        "Colour", "Sine", "Audio In", "Audio Mix", "Spectrograph", "Mix", "Output", "Audio Out" };
     return names;
 }
 

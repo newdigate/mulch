@@ -115,6 +115,7 @@ set(APP_SOURCES
   src/gfx/Framebuffer.cpp
   src/gfx/FullscreenPass.cpp
   src/gfx/ShaderNode.cpp
+  src/modules/AudioInputNode.cpp
   src/modules/AudioOutputNode.cpp
   src/modules/SpectrographNode.cpp
   src/ui/NodeEditorPanel.cpp
@@ -139,6 +140,7 @@ add_executable(core_tests
   tests/test_signal_generator.cpp
   tests/test_sine_wave.cpp
   tests/test_ring_buffer.cpp
+  tests/test_audio_mixer.cpp
   src/core/Node.cpp
   src/core/Graph.cpp
   src/audio/FFT.cpp
