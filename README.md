@@ -18,6 +18,8 @@ together and watch textures and audio stream through the graph in real time.
 - **Output** — displays a texture in the Viewer
 - **Audio Out** — plays its audio input through the system's default output device
 - **MIDI In** — receives from a hardware or virtual MIDI input port -> midi
+- **Step Seq** — a 16-step drum sequencer (a basic TR-909 voice): toggle steps; set tempo /
+  note / channel -> midi
 - **Arpeggiator** — held MIDI notes -> a stepped note sequence (rate / gate / octaves / mode)
 - **MIDI Out** — sends its MIDI input to a hardware or virtual MIDI output port
 
@@ -53,7 +55,8 @@ show inline editors (colour picker, slider). Wire `Colour -> Mix.a`,
 `Sine -> Spectrograph -> Output` to see it). Combine sources by wiring them into an
 **Audio Mix**, or capture the microphone with **Audio In** (macOS will prompt for mic
 access). For MIDI, wire **MIDI In -> Arpeggiator -> MIDI Out** to arpeggiate held chords
-out to a synth (each MIDI node opens port 0, or a virtual port if none exist). Wire the
+out to a synth, or wire **Step Seq -> MIDI Out** for a 16-step drum pattern (each MIDI
+node opens port 0, or a virtual port if none exist). Wire the
 **Spectrograph**'s geometry output into **Wireframe -> Output** to see the spectrum as a
 rotating 3D line strip. Select a node or link and press Delete or Backspace to remove it.
 
@@ -75,7 +78,7 @@ ctest --test-dir build --output-on-failure
 - `src/gfx/` — OpenGL helpers (shader/program, framebuffer, fullscreen pass, ShaderNode base)
 - `src/audio/` — FFT, the synthesized signal generator, and the SPSC ring buffer
 - `src/modules/` — the example nodes (Colour, Sine, Audio In, Audio Mix, Spectrograph,
-  Mix, Wireframe, Output, Audio Out, MIDI In, Arpeggiator, MIDI Out)
+  Mix, Wireframe, Output, Audio Out, MIDI In, Step Seq, Arpeggiator, MIDI Out)
 - `src/ui/` — imgui-node-editor panel and inline port widgets
 - `shaders/` — fragment shaders
 - `docs/superpowers/` — design spec and implementation plan

@@ -158,6 +158,7 @@ add_executable(core_tests
   tests/test_ring_buffer.cpp
   tests/test_audio_mixer.cpp
   tests/test_arpeggiator.cpp
+  tests/test_step_sequencer.cpp
   src/core/Node.cpp
   src/core/Graph.cpp
   src/audio/FFT.cpp

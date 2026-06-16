@@ -11,6 +11,7 @@
 #include "modules/OutputNode.h"
 #include "modules/SineWaveNode.h"
 #include "modules/SpectrographNode.h"
+#include "modules/StepSequencerNode.h"
 #include "modules/WireframeNode.h"
 
 namespace oss {
@@ -26,6 +27,7 @@ std::unique_ptr<Node> makeNode(const std::string& type) {
     if (type == "Output")      return std::make_unique<OutputNode>();
     if (type == "Audio Out")   return std::make_unique<AudioOutputNode>();
     if (type == "MIDI In")     return std::make_unique<MidiInputNode>();
+    if (type == "Step Seq")    return std::make_unique<StepSequencerNode>();
     if (type == "Arpeggiator") return std::make_unique<ArpeggiatorNode>();
     if (type == "MIDI Out")    return std::make_unique<MidiOutputNode>();
     return nullptr;
@@ -34,7 +36,7 @@ std::unique_ptr<Node> makeNode(const std::string& type) {
 const std::vector<std::string>& nodeTypeNames() {
     static const std::vector<std::string> names = {
         "Colour", "Sine", "Audio In", "Audio Mix", "Spectrograph", "Mix", "Wireframe", "Output",
-        "Audio Out", "MIDI In", "Arpeggiator", "MIDI Out" };
+        "Audio Out", "MIDI In", "Step Seq", "Arpeggiator", "MIDI Out" };
     return names;
 }
 
