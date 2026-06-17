@@ -250,6 +250,7 @@ add_executable(core_tests
   tests/test_transport.cpp
   tests/test_automation.cpp
   tests/test_world_transform.cpp
+  tests/test_auto_curve.cpp
   src/core/Node.cpp
   src/core/Graph.cpp
   src/audio/FFT.cpp
