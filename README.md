@@ -73,6 +73,7 @@ to see it; or `Mesh Loader → Shaded Render → Output` to spin a 3D model.
 | **Recorder** | inline tap: passes video + audio through unchanged while recording them to a movie file (H.264/AAC mp4, mono or stereo per the input); toggle `record`, set `file` |
 | **Output** | marks the texture shown in the Output window |
 | **Automation** | 4 stream channels (Float outputs you wire), each a mouse-drawn curve over song time (bars), sampled at the transport position. Plus ui channels created by right-clicking any node's Float parameter — bound directly to that control. Edited in the **Automation** window |
+| **LFO** | low-frequency oscillator → a Float modulation signal: pick a waveform (sine/triangle/square/ramp up/down/sample & hold), run it free (Hz) or BPM-synced (32 bars … 1/64 bar), and map it into a `[min, max]` range. Every control is an input port, so waveform/rate/sync can be driven by another node — chain LFOs. Wire `out` into any Float parameter (e.g. a Sine's `amp`) |
 
 Texture nodes render a fragment shader into their own framebuffer; audio and MIDI
 nodes carry samples and events; geometry flows as GL vertex-buffer handles. The

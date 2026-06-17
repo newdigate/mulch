@@ -59,6 +59,19 @@ protected:
     void addOutput(std::string n, PortType t) {
         outputs_.push_back({std::move(n), Direction::Output, t, Value{}});
     }
+    // A Float input rendered as a dropdown of `labels`; its value is the selected
+    // index (0-based). Used for enum-like parameters (e.g. an LFO waveform).
+    void addChoiceInput(std::string n, std::vector<std::string> labels, int def) {
+        Port p;
+        p.name = std::move(n);
+        p.direction = Direction::Input;
+        p.type = PortType::Float;
+        p.defaultValue = Value((float)def);
+        p.minVal = 0.0f;
+        p.maxVal = labels.empty() ? 0.0f : (float)(labels.size() - 1);
+        p.choices = std::move(labels);
+        inputs_.push_back(std::move(p));
+    }
 
 private:
     friend class Graph;
