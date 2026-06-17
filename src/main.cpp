@@ -66,6 +66,12 @@ static int runScreenshot(const std::string& path) {
             an->channel(1) = { {0.0f, 0.60f}, {4.0f, 0.10f}, {8.0f, 0.70f} };
             an->setOutRange(2, 20.0f, 2000.0f);
         }
+        // A ui-automation channel on a second module, so the captured grid shows
+        // both a stream group and a ui group.
+        int wfId = app.addNodeOfType("Wireframe", glm::vec2(420.0f, 240.0f));
+        if (auto* ch = app.graph().automation().add(app.graph(), wfId, 1)) {  // Wireframe "spin" (Float)
+            ch->curve.points = { {0.0f, 0.30f}, {3.0f, 0.90f}, {8.0f, 0.20f} };
+        }
         app.graph().transport().bpm = 120.0;
         app.graph().transport().seconds = 6.0;   // playhead at bar 3
 
