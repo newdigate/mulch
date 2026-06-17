@@ -66,6 +66,12 @@ CMake 4.x, it's relaxed with `CMAKE_POLICY_VERSION_MINIMUM 3.5` around its
   modulation source that runs free (Hz, integrating `rate*dt`) or transport-synced
   (phase from `transport.bars()`), mapped into a per-node `[min,max]`. All its
   controls are input ports, so LFOs chain.
+- **Transport-synced sequencers** — the **Step Seq** and **Arpeggiator** have a
+  `sync` input that locks their step rate to the global transport: each step is
+  derived statelessly from `transport.bars()` at a `rate sync` division (shared
+  table in `src/core/StepSync.h`), so they follow the project BPM, start/stop with
+  the transport, and stay bar-aligned through loops. With `sync` off they free-run
+  off their own `tempo`/`rate`, unchanged.
 - **Texture nodes** derive from `ShaderNode` (`src/gfx/ShaderNode.h`): render a
   fragment shader into their own FBO and publish a `TexRef` on output 0. `ColourNode`
   is the minimal example — declare ports, override `setUniforms()`, call `render(ctx)`.

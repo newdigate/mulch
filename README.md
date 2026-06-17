@@ -63,8 +63,8 @@ to see it; or `Mesh Loader → Shaded Render → Output` to spin a 3D model.
 | **Audio In / Out** | capture the mic/line-in (stereo if available) / play to the default device, in stereo (libsoundio) |
 | **Audio Mix** | four inputs, each with gain + pan → one stereo mix (pan mono sources into the stereo field) |
 | **MIDI In / Out** | hardware or virtual MIDI ports (RtMidi) |
-| **Step Seq** | 16-step drum sequencer → MIDI |
-| **Arpeggiator** | held notes → a stepped sequence |
+| **Step Seq** | 16-step drum sequencer → MIDI; `sync` toggle locks the step rate to the project BPM over musical divisions (1/4 … 1/32, incl. dotted + triplet), or runs free at its own `tempo` |
+| **Arpeggiator** | held notes → a stepped sequence (up / down / up-down); `sync` toggle locks the step rate to the project BPM, or runs free at `rate` steps/sec |
 | **MIDI Merge** | up to four MIDI streams → one |
 | **Mesh Loader** | load .obj/.gltf/.glb (incl. Draco/meshopt) on a worker thread → geometry |
 | **Text 2D / Text 3D** | type a string → vertex buffers: flat filled letters / extruded solid 3D letters (stb_truetype + earcut) |
