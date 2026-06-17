@@ -192,6 +192,7 @@ set(APP_SOURCES
   src/core/Node.cpp
   src/core/Graph.cpp
   src/core/AutomationStore.cpp
+  src/core/MidiFile.cpp
   src/audio/FFT.cpp
   src/audio/SignalGenerator.cpp
   src/audio/AcidVoice.cpp
@@ -258,9 +259,11 @@ add_executable(core_tests
   tests/test_lfo.cpp
   tests/test_step_sync.cpp
   tests/test_acid_voice.cpp
+  tests/test_midi_file.cpp
   src/core/Node.cpp
   src/core/Graph.cpp
   src/core/AutomationStore.cpp
+  src/core/MidiFile.cpp
   src/audio/FFT.cpp
   src/audio/SignalGenerator.cpp
   src/audio/AcidVoice.cpp
