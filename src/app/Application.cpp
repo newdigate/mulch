@@ -4,6 +4,7 @@
 #include "modules/AutomationNode.h"
 #include "modules/AudioInputNode.h"
 #include "modules/AudioPlayerNode.h"
+#include "modules/AcidNode.h"
 #include "modules/AudioMixerNode.h"
 #include "modules/AudioOutputNode.h"
 #include "modules/MeshLoaderNode.h"
@@ -30,6 +31,7 @@ std::unique_ptr<Node> makeNode(const std::string& type) {
     if (type == "Colour")      return std::make_unique<ColourNode>();
     if (type == "Video")       return std::make_unique<VideoPlayerNode>();
     if (type == "Sine")        return std::make_unique<SineWaveNode>();
+    if (type == "Acid Bass")   return std::make_unique<AcidNode>();
     if (type == "Audio In")    return std::make_unique<AudioInputNode>();
     if (type == "Audio File")  return std::make_unique<AudioPlayerNode>();
     if (type == "Audio Mix")   return std::make_unique<AudioMixerNode>();
@@ -57,7 +59,7 @@ std::unique_ptr<Node> makeNode(const std::string& type) {
 const std::vector<NodeCategory>& nodeCategories() {
     static const std::vector<NodeCategory> cats = {
         { "Texture", { "Colour", "Video", "Mix", "Recorder", "Output" } },
-        { "Audio",   { "Sine", "Audio File", "Audio In", "Audio Mix", "Spectrograph", "Audio Out" } },
+        { "Audio",   { "Sine", "Acid Bass", "Audio File", "Audio In", "Audio Mix", "Spectrograph", "Audio Out" } },
         { "MIDI",    { "MIDI In", "Step Seq", "Arpeggiator", "MIDI Merge", "MIDI Out" } },
         { "3D",      { "Mesh Loader", "Text 2D", "Text 3D", "World Transform", "Wireframe", "Shaded Render" } },
         { "Control", { "Automation", "LFO" } },

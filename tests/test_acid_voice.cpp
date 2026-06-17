@@ -1,7 +1,11 @@
 #include <doctest/doctest.h>
 #include "audio/AcidVoice.h"
+#include "modules/AcidNode.h"
+#include "core/Node.h"
+#include "core/Value.h"
 #include <algorithm>
 #include <cmath>
+#include <variant>
 #include <vector>
 
 using namespace oss;
@@ -169,4 +173,35 @@ TEST_CASE("voice: an out-of-range MIDI note is clamped (no inf/NaN)") {
     std::vector<float> b(480); v.process(b.data(), 480);
     bool ok = true; for (float x : b) if (!std::isfinite(x)) ok = false;
     CHECK(ok);
+}
+
+TEST_CASE("AcidNode renders audio for a MIDI note and decays after note-off") {
+    AcidNode node;
+    auto eval = [&](const std::vector<MidiEvent>& ev, float dt) {
+        std::vector<Value> in(13);
+        in[0]  = MidiRef{ ev.data(), ev.size() };
+        in[1]  = 0.0f;   // waveform (Saw)
+        in[2]  = 800.0f; // cutoff
+        in[3]  = 0.7f;   // resonance
+        in[4]  = 0.6f;   // env mod
+        in[5]  = 0.3f;   // decay
+        in[6]  = 0.4f;   // accent
+        in[7]  = 0.0f;   // sub level
+        in[8]  = 0.0f;   // slide
+        in[9]  = 0.08f;  // slide time
+        in[10] = 0.0f;   // filter FM
+        in[11] = 0.0f;   // key track
+        in[12] = 0.0f;   // distortion
+        std::vector<Value> out(1);
+        EvalContext ctx{ in, out, dt };
+        node.evaluate(ctx);
+        AudioRef a = std::get<AudioRef>(out[0]);
+        return std::vector<float>(a.samples, a.samples + a.count);
+    };
+    auto first = eval({ midiNoteOn(48, 110) }, 0.04f);
+    REQUIRE(first.size() > 0);
+    CHECK(rms(first.data(), (int)first.size()) > 1e-3f);   // audible
+    eval({ midiNoteOff(48) }, 0.04f);                      // release
+    auto tail = eval({}, 0.04f);                           // a block later
+    CHECK(rms(tail.data(), (int)tail.size()) < 1e-3f);     // decayed to ~silence
 }
