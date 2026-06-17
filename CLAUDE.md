@@ -46,14 +46,18 @@ CMake 4.x, it's relaxed with `CMAKE_POLICY_VERSION_MINIMUM 3.5` around its
   it and hands it to every node via `EvalContext::transport` (a `const Transport*`,
   so nodes can sync to the beat). The top toolbar (`src/ui/TransportBar.cpp`) drives
   it. `Graph::transport()` is the accessor.
-- **Automation** (`src/modules/AutomationNode.h`, header-only + GL-free): N float
-  channels, each a piecewise-linear curve of breakpoints over song bars, sampled at
-  the transport's bar position and scaled to a per-channel range. Each channel also
-  has an `AutoCategory` (StreamParam / UiControl) — groundwork for recordable UI
-  controls. The breakpoints are mouse-edited in the `Automation` window
-  (`src/ui/AutomationPanel.cpp`), a grid with a reserved top row and one
-  horizontally-scrollable lane per channel. The Application draws it each frame and
-  exposes a `Control` add-node category.
+- **Automation** — two structurally-distinct channel kinds over one shared,
+  global-length time axis (the `Automation` window, `src/ui/AutomationPanel.cpp`,
+  a collapsible grouped grid). The breakpoint curve is a GL-free
+  `AutoCurve` (`src/core/AutoCurve.h`). **Stream channels** live in
+  `AutomationNode` (`src/modules/AutomationNode.h`, header-only): 4 `AutoCurve`
+  channels sampled at the transport's bar position, scaled per-channel, emitted on
+  Float outputs you wire with edges. **UI channels** live in a GL-free
+  `AutomationStore` (`src/core/AutomationStore.{h,cpp}`) owned by `Graph`: each is
+  bound to one node's Float input control and created by right-clicking the node
+  (`src/ui/NodeEditorPanel.cpp`); `Graph::evaluate` calls `AutomationStore::apply`
+  each frame to write the sampled value straight into the control's input default
+  (skipping connected inputs). A channel's kind is structural — there is no switch.
 - **Texture nodes** derive from `ShaderNode` (`src/gfx/ShaderNode.h`): render a
   fragment shader into their own FBO and publish a `TexRef` on output 0. `ColourNode`
   is the minimal example — declare ports, override `setUniforms()`, call `render(ctx)`.
