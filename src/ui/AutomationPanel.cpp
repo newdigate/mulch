@@ -32,8 +32,8 @@ void AutomationPanel::draw(Graph& graph) {
 
     // --- Toolbar ---
     ImGui::SetNextItemWidth(90.0f);
-    int len = (int)node->lengthBars();
-    if (ImGui::InputInt("Length (bars)", &len)) node->setLengthBars((float)len);
+    int len = (int)graph.automation().lengthBars();
+    if (ImGui::InputInt("Length (bars)", &len)) graph.automation().setLengthBars((float)len);
     ImGui::SameLine();
     ImGui::TextDisabled("one channel per row; top row reserved");
 
@@ -59,12 +59,6 @@ void AutomationPanel::draw(Graph& graph) {
         int c = r - 1;
         ImGui::SetCursorPos(ImVec2(8.0f, yTop + 5.0f));
         ImGui::TextColored(ImColor(channelColour(c)), "ch %d", c + 1);
-        ImGui::SameLine();
-        ImGui::SetNextItemWidth(74.0f);
-        int ci = (int)node->category(c);
-        const char* cats[] = { "stream", "ui" };
-        if (ImGui::Combo(("##cat" + std::to_string(c)).c_str(), &ci, cats, 2))
-            node->setCategory(c, (AutoCategory)ci);
 
         ImGui::SetCursorPos(ImVec2(8.0f, yTop + 28.0f));
         float lo = node->outMin(c), hi = node->outMax(c);
@@ -85,7 +79,7 @@ void AutomationPanel::draw(Graph& graph) {
     // for the horizontal scrollbar so the content rows don't also scroll vertically.
     ImGui::BeginChild("autoLanes", ImVec2(0, totalH + scrollH + 4.0f), true,
                       ImGuiWindowFlags_HorizontalScrollbar);
-    const float contentW = std::max(1.0f, node->lengthBars() * pxPerBar);
+    const float contentW = std::max(1.0f, graph.automation().lengthBars() * pxPerBar);
     ImGui::InvisibleButton("lanes", ImVec2(contentW, totalH));
     const bool   hovered = ImGui::IsItemHovered();
     const ImVec2 o = ImGui::GetItemRectMin();
@@ -103,7 +97,7 @@ void AutomationPanel::draw(Graph& graph) {
                           : (r & 1 ? IM_COL32(22, 24, 30, 255) : IM_COL32(18, 20, 26, 255));
         dl->AddRectFilled(ImVec2(o.x, rowTop(r)), ImVec2(o.x + contentW, rowTop(r) + rowH), bg);
     }
-    for (int b = 0; b <= (int)node->lengthBars(); ++b) {
+    for (int b = 0; b <= (int)graph.automation().lengthBars(); ++b) {
         float x = X((float)b);
         dl->AddLine(ImVec2(x, o.y), ImVec2(x, o.y + totalH), IM_COL32(55, 58, 68, 255));
         char t[8]; std::snprintf(t, sizeof(t), "%d", b);
@@ -127,7 +121,7 @@ void AutomationPanel::draw(Graph& graph) {
     }
 
     // Playhead across all lanes.
-    float phx = X(std::clamp(node->currentBar(), 0.0f, node->lengthBars()));
+    float phx = X(std::clamp((float)graph.transport().bars(), 0.0f, graph.automation().lengthBars()));
     dl->AddLine(ImVec2(phx, o.y), ImVec2(phx, o.y + totalH), IM_COL32(255, 80, 80, 220), 2.0f);
 
     // --- Mouse editing (per row) ---
@@ -152,7 +146,7 @@ void AutomationPanel::draw(Graph& graph) {
         auto& p = node->channel(c);
         if (hit >= 0) { dragChannel_ = c; dragPoint_ = hit; }
         else {
-            AutoPoint np{ std::clamp(toBar(m.x), 0.0f, node->lengthBars()),
+            AutoPoint np{ std::clamp(toBar(m.x), 0.0f, graph.automation().lengthBars()),
                           std::clamp(toVal(hoverRow, m.y), 0.0f, 1.0f) };
             auto it = std::lower_bound(p.begin(), p.end(), np,
                                        [](const AutoPoint& a, const AutoPoint& b) { return a.bar < b.bar; });
@@ -164,7 +158,7 @@ void AutomationPanel::draw(Graph& graph) {
         int c = dragChannel_, r = c + 1;
         auto& p = node->channel(c);
         if (dragPoint_ < (int)p.size()) {
-            float nb = std::clamp(toBar(m.x), 0.0f, node->lengthBars());
+            float nb = std::clamp(toBar(m.x), 0.0f, graph.automation().lengthBars());
             float nv = std::clamp(toVal(r, m.y), 0.0f, 1.0f);
             if (dragPoint_ > 0)                  nb = std::max(nb, p[dragPoint_ - 1].bar + 1e-4f);
             if (dragPoint_ + 1 < (int)p.size())  nb = std::min(nb, p[dragPoint_ + 1].bar - 1e-4f);

@@ -61,10 +61,9 @@ static int runScreenshot(const std::string& path) {
         // Demo content so the panels aren't empty.
         int aId = app.addNodeOfType("Automation", glm::vec2(420.0f, 60.0f));
         if (auto* an = dynamic_cast<oss::AutomationNode*>(app.graph().findNode(aId))) {
-            an->setLengthBars(8.0f);
+            app.graph().automation().setLengthBars(8.0f);
             an->channel(0) = { {0.0f, 0.20f}, {2.0f, 0.85f}, {5.0f, 0.40f}, {8.0f, 0.95f} };
             an->channel(1) = { {0.0f, 0.60f}, {4.0f, 0.10f}, {8.0f, 0.70f} };
-            an->setCategory(1, oss::AutoCategory::UiControl);
             an->setOutRange(2, 20.0f, 2000.0f);
         }
         app.graph().transport().bpm = 120.0;
