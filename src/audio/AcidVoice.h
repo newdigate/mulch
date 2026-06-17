@@ -43,7 +43,7 @@ public:
     void noteOff(int midiNote);
 
     void setWaveform(int w)     { waveform_ = w < 0 ? 0 : (w > 1 ? 1 : w); }
-    void setCutoff(float hz)    { cutoff_ = hz < 20.0f ? 20.0f : (hz > 18000.0f ? 18000.0f : hz); }
+    void setCutoff(float hz)    { cutoff_ = hz < 20.0f ? 20.0f : (hz > 12000.0f ? 12000.0f : hz); }
     void setResonance(float r)  { resonance_ = clamp01(r); }
     void setEnvMod(float a)     { envMod_ = clamp01(a); }
     void setDecay(float s)      { decay_ = s < 1e-3f ? 1e-3f : s; updateCoefs(); }

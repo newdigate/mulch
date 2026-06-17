@@ -211,6 +211,14 @@ process(n):  VCO(saw/sq)+Sub ─► LadderFilter(cutoff·reso, modulated by env/
 - Output is always `tanh(...)` → bounded to `[-1,1]`; resonance at max or filter FM at
   max cannot make it diverge. A **stability test** asserts finite, bounded output for
   an extreme-parameter sweep.
+- **Implementation note (added during build):** the output `tanh` alone was not
+  enough — under hard audio drive a *linear* ladder at `res = 1` could still diverge
+  internally to NaN, and the filter-FM tap fed an *unbounded* signal back into the
+  cutoff. Two saturations fix this and make the whole voice BIBO-stable: the ladder
+  feedback tap is `in - tanh(s4)*fb` (caps self-oscillation; this is the "light tanh
+  saturation" of the design), and the filter-FM feedback uses the bounded `tanh(s)`
+  (the VCA output) rather than the raw signal. `noteOn`/`noteOff` also clamp the note
+  to `[0,127]` so an out-of-range note can't produce an infinite pitch.
 - `decay`/`slide time` are clamped to a small positive epsilon before forming
   coefficients (no div-by-zero, no `exp` overflow).
 - `cutoff` is clamped to `[20, 0.45*sr]` after modulation, so the ladder's normalized
