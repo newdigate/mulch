@@ -72,6 +72,14 @@ CMake 4.x, it's relaxed with `CMAKE_POLICY_VERSION_MINIMUM 3.5` around its
   table in `src/core/StepSync.h`), so they follow the project BPM, start/stop with
   the transport, and stay bar-aligned through loops. With `sync` off they free-run
   off their own `tempo`/`rate`, unchanged.
+- **Acid Bass synth voice** — `AcidNode` (`src/modules/AcidNode.h`, header-only) is
+  the first MIDI-in → audio-out synth: it wraps the GL-free `AcidVoice` DSP
+  (`src/audio/AcidVoice.{h,cpp}`) — a monophonic 303-style voice (saw/square VCO +
+  sub-osc → a compact 4-pole resonant `LadderFilter` modulated by an envelope /
+  accent / key-track / filter-FM → VCA → a `tanh` distortion stage, plus note slide).
+  The ladder feedback and the output are `tanh`-saturated so it's BIBO-stable and
+  bounded to `[-1,1]` regardless of resonance/FM. The voice is unit-tested in
+  `core_tests`; the node is header-only and GL-free.
 - **Texture nodes** derive from `ShaderNode` (`src/gfx/ShaderNode.h`): render a
   fragment shader into their own FBO and publish a `TexRef` on output 0. `ColourNode`
   is the minimal example — declare ports, override `setUniforms()`, call `render(ctx)`.
@@ -115,7 +123,7 @@ CMake 4.x, it's relaxed with `CMAKE_POLICY_VERSION_MINIMUM 3.5` around its
 
 1. Create the node class in `src/modules/`. Declare ports in the constructor; if it
    renders, derive from `ShaderNode` and add a shader under `shaders/`.
-2. Register it in **both** `makeNode()` and `nodeTypeNames()` in
+2. Register it in **both** `makeNode()` and `nodeCategories()` in
    `src/app/Application.cpp` (the string key is the editor's add-node menu label).
 3. Add a unit test in `tests/` (GL-free logic) and/or a `gl_smoke` scenario
    (renders + pixel-readback) where it makes sense.
