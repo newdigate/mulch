@@ -4,6 +4,8 @@
 #include <variant>
 #include <string>
 #include <cstdio>
+#include <algorithm>
+#include <cmath>
 
 namespace oss {
 
@@ -20,7 +22,21 @@ void drawInlineInputWidget(Node& node, std::size_t i) {
             break;
         }
         case PortType::Float: {
-            ImGui::SliderFloat("##f", &std::get<float>(v), port.minVal, port.maxVal);
+            if (!port.choices.empty()) {
+                // A choice port: a dropdown whose value is the selected index.
+                int idx = (int)std::lround(std::get<float>(v));
+                idx = std::clamp(idx, 0, (int)port.choices.size() - 1);
+                if (ImGui::BeginCombo("##choice", port.choices[idx].c_str())) {
+                    for (int k = 0; k < (int)port.choices.size(); ++k) {
+                        bool sel = (k == idx);
+                        if (ImGui::Selectable(port.choices[k].c_str(), sel)) v = Value((float)k);
+                        if (sel) ImGui::SetItemDefaultFocus();
+                    }
+                    ImGui::EndCombo();
+                }
+            } else {
+                ImGui::SliderFloat("##f", &std::get<float>(v), port.minVal, port.maxVal);
+            }
             break;
         }
         case PortType::Bool: {
