@@ -41,6 +41,19 @@ void AutomationPanel::draw(Graph& graph) {
     ImGui::SameLine();
     ImGui::TextDisabled("global \xE2\x80\xA2 right-click a node to automate a parameter");
 
+    // Zoom: scale the time axis (H) and lane height (V). Each click is x1.25,
+    // clamped; the factors persist for the session.
+    ImGui::SameLine();
+    ImGui::TextDisabled("|  Zoom");
+    ImGui::SameLine();
+    if (ImGui::SmallButton("H-")) zoomX_ = std::max(0.3f, zoomX_ / 1.25f);
+    ImGui::SameLine();
+    if (ImGui::SmallButton("H+")) zoomX_ = std::min(4.0f, zoomX_ * 1.25f);
+    ImGui::SameLine();
+    if (ImGui::SmallButton("V-")) zoomY_ = std::max(0.5f, zoomY_ / 1.25f);
+    ImGui::SameLine();
+    if (ImGui::SmallButton("V+")) zoomY_ = std::min(3.0f, zoomY_ * 1.25f);
+
     // --- Build this frame's row layout: a ruler, then group headers + lanes ---
     struct Row {
         enum Kind { Ruler, Header, Lane } kind = Lane;
@@ -51,8 +64,11 @@ void AutomationPanel::draw(Graph& graph) {
         UiAutomationChannel* uich = nullptr;               // ui source
         int delNode = 0, delPort = 0;                      // ui delete target
     };
-    const float rulerH = 24.0f, headerH = 22.0f, laneH = 46.0f;
-    const float leftW = 210.0f, pxPerBar = 55.0f, inset = 7.0f;
+    const float rulerH = 24.0f, headerH = 22.0f;
+    const float leftW = 210.0f, inset = 7.0f;
+    // Lane size scales with the zoom factors (toolbar buttons), clamped.
+    const float laneH    = std::clamp(46.0f * zoomY_, 24.0f, 140.0f);
+    const float pxPerBar = std::clamp(55.0f * zoomX_, 16.0f, 220.0f);
 
     std::vector<Row> rows;
     std::vector<float> hgt;
@@ -149,26 +165,30 @@ void AutomationPanel::draw(Graph& graph) {
             ImGui::PushID((int)r.key);
             ImGui::SetCursorPos(ImVec2(12.0f, y[i] + 4.0f));
             ImGui::TextColored(ImColor(r.col), "%s", r.label.c_str());
-            ImGui::SetCursorPos(ImVec2(12.0f, y[i] + 24.0f));
-            float lo = r.omin, hi = r.omax;
-            ImGui::SetNextItemWidth(52.0f);
-            if (ImGui::DragFloat("##lo", &lo, 0.01f, 0, 0, "%.2f")) {
-                if (r.anode)      r.anode->setOutRange(r.achan, lo, hi);
-                else if (r.uich)  r.uich->outMin = lo;
-            }
-            ImGui::SameLine(); ImGui::SetNextItemWidth(52.0f);
-            if (ImGui::DragFloat("##hi", &hi, 0.01f, 0, 0, "%.2f")) {
-                if (r.anode)      r.anode->setOutRange(r.achan, lo, hi);
-                else if (r.uich)  r.uich->outMax = hi;
-            }
-            ImGui::SameLine();
-            if (ImGui::SmallButton("clr")) {
-                r.pts->clear();
-                if (dragLane_ == r.key) { dragLane_ = -1; dragPoint_ = -1; }
-            }
-            if (r.uich) {
+            // The range + buttons row only fits when the lane is tall enough; at
+            // strong vertical zoom-out a compact lane shows just the label + curve.
+            if (laneH >= 40.0f) {
+                ImGui::SetCursorPos(ImVec2(12.0f, y[i] + 24.0f));
+                float lo = r.omin, hi = r.omax;
+                ImGui::SetNextItemWidth(52.0f);
+                if (ImGui::DragFloat("##lo", &lo, 0.01f, 0, 0, "%.2f")) {
+                    if (r.anode)      r.anode->setOutRange(r.achan, lo, hi);
+                    else if (r.uich)  r.uich->outMin = lo;
+                }
+                ImGui::SameLine(); ImGui::SetNextItemWidth(52.0f);
+                if (ImGui::DragFloat("##hi", &hi, 0.01f, 0, 0, "%.2f")) {
+                    if (r.anode)      r.anode->setOutRange(r.achan, lo, hi);
+                    else if (r.uich)  r.uich->outMax = hi;
+                }
                 ImGui::SameLine();
-                if (ImGui::SmallButton("x")) { pendingDelNode = r.delNode; pendingDelPort = r.delPort; }
+                if (ImGui::SmallButton("clr")) {
+                    r.pts->clear();
+                    if (dragLane_ == r.key) { dragLane_ = -1; dragPoint_ = -1; }
+                }
+                if (r.uich) {
+                    ImGui::SameLine();
+                    if (ImGui::SmallButton("x")) { pendingDelNode = r.delNode; pendingDelPort = r.delPort; }
+                }
             }
             ImGui::PopID();
         }
