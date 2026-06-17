@@ -80,6 +80,13 @@ CMake 4.x, it's relaxed with `CMAKE_POLICY_VERSION_MINIMUM 3.5` around its
   The ladder feedback and the output are `tanh`-saturated so it's BIBO-stable and
   bounded to `[-1,1]` regardless of resonance/FM. The voice is unit-tested in
   `core_tests`; the node is header-only and GL-free.
+- **MIDI File player** — `MidiFilePlayerNode` (`src/modules/MidiFilePlayerNode.h`,
+  header-only) wraps a GL-free from-scratch SMF parser (`src/core/MidiFile.{h,cpp}`,
+  events positioned in beats with the file's tempo ignored) and a `MidiClipPlayer`
+  (`src/core/MidiClip.h`). Each frame the player derives the clip position from
+  `transport.beats()` (anchored at a start-offset, looping a region) and emits the
+  events in that frame's `[prevPlay, playPos)` window, flushing note-offs at every
+  loop seam / stop / mute so nothing hangs. Output is a `MidiRef` → wire into a synth.
 - **Texture nodes** derive from `ShaderNode` (`src/gfx/ShaderNode.h`): render a
   fragment shader into their own FBO and publish a `TexRef` on output 0. `ColourNode`
   is the minimal example — declare ports, override `setUniforms()`, call `render(ctx)`.
