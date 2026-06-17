@@ -1,21 +1,40 @@
 #include <doctest/doctest.h>
 #include "modules/StepSequencerNode.h"
 #include "core/Node.h"
+#include "core/Transport.h"
+#include "core/StepSync.h"
 #include "core/Value.h"
 #include <array>
 #include <vector>
 
 using namespace oss;
 
-// Drive one evaluate() with a 16-step pattern + params; return generated events.
+// Drive one free-mode evaluate() with a 16-step pattern + params; return events.
 static std::vector<MidiEvent> step(StepSequencerNode& seq, const std::array<bool, 16>& pat,
                                    float dt, float tempo = 120.0f, float note = 36.0f,
                                    float channel = 9.0f) {
-    std::vector<Value> in(19);
+    std::vector<Value> in(21);
     for (int i = 0; i < 16; ++i) in[i] = pat[i];
     in[16] = tempo; in[17] = note; in[18] = channel;
+    in[19] = false;                              // sync off (free mode)
+    in[20] = (float)kStepDivisionDefault;        // rate sync (unused when free)
     std::vector<Value> out(1);
     EvalContext ctx{in, out, dt};
+    seq.evaluate(ctx);
+    MidiRef o = std::get<MidiRef>(out[0]);
+    return std::vector<MidiEvent>(o.events, o.events + o.count);
+}
+
+// Drive one synced evaluate() at a transport bar position (seconds) + division.
+static std::vector<MidiEvent> syncStep(StepSequencerNode& seq, const std::array<bool, 16>& pat,
+                                       Transport& t, double seconds, int div) {
+    std::vector<Value> in(21);
+    for (int i = 0; i < 16; ++i) in[i] = pat[i];
+    in[16] = 120.0f; in[17] = 36.0f; in[18] = 9.0f;
+    in[19] = true; in[20] = (float)div;
+    std::vector<Value> out(1);
+    t.seconds = seconds;
+    EvalContext ctx{in, out, 0.0f, &t};
     seq.evaluate(ctx);
     MidiRef o = std::get<MidiRef>(out[0]);
     return std::vector<MidiEvent>(o.events, o.events + o.count);
@@ -24,6 +43,11 @@ static std::vector<MidiEvent> step(StepSequencerNode& seq, const std::array<bool
 static int countNoteOns(const std::vector<MidiEvent>& evs) {
     int n = 0;
     for (auto& e : evs) if (midiIsNoteOn(e)) ++n;
+    return n;
+}
+static int countNoteOffs(const std::vector<MidiEvent>& evs) {
+    int n = 0;
+    for (auto& e : evs) if (midiIsNoteOff(e)) ++n;
     return n;
 }
 
@@ -82,4 +106,25 @@ TEST_CASE("faster tempo packs more steps into the same wall-clock time") {
         fastHits += countNoteOns(step(fast, all, 0.01f, 240.0f));
     }
     CHECK(fastHits > slowHits);
+}
+
+TEST_CASE("synced sequencer fires steps on transport bar boundaries") {
+    StepSequencerNode seq;
+    std::array<bool, 16> pat{};
+    pat[0] = pat[1] = true;                                // steps 0 and 1 on
+    Transport t; t.bpm = 120.0; t.play();                  // 2 s/bar
+    // div 0 = 1/4 = 0.25 bar/step = 0.5 s/step.
+    CHECK(countNoteOns(syncStep(seq, pat, t, 0.0, 0)) == 1);   // bars 0   -> step 0 (downbeat)
+    auto e1 = syncStep(seq, pat, t, 0.5, 0);                   // bars 0.25 -> step 1
+    CHECK(countNoteOns(e1) == 1);
+    CHECK(countNoteOffs(e1) == 1);                             // released step 0 first
+    CHECK(countNoteOns(syncStep(seq, pat, t, 1.0, 0)) == 0);   // bars 0.5  -> step 2 (off)
+}
+
+TEST_CASE("a paused transport produces no synced steps") {
+    StepSequencerNode seq;
+    std::array<bool, 16> pat{};
+    pat[0] = true;
+    Transport t; t.bpm = 120.0; t.pause();
+    CHECK(countNoteOns(syncStep(seq, pat, t, 0.0, 0)) == 0);
 }
