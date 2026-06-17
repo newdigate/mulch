@@ -116,3 +116,29 @@ TEST_CASE("synced arpeggiator steps on transport bar boundaries") {
     auto c = noteOns(syncStep(arp, {}, t, 1.0, 0));       // bars 0.5  -> 60
     REQUIRE(c.size() == 1); CHECK(c[0] == 60);
 }
+
+TEST_CASE("synced arpeggiator releases on pause and re-fires on resume") {
+    ArpeggiatorNode arp;
+    std::vector<MidiEvent> chord = {midiNoteOn(60, 100), midiNoteOn(64, 100)};
+    Transport t; t.bpm = 120.0; t.play();
+    REQUIRE(noteOns(syncStep(arp, chord, t, 0.0, 0)).size() == 1);    // playing: a note fires
+    t.pause();
+    auto paused = syncStep(arp, {}, t, 0.0, 0);                       // release + re-prime
+    bool sawOff = false; for (auto& e : paused) if (midiIsNoteOff(e)) sawOff = true;
+    CHECK(sawOff);
+    CHECK(noteOns(paused).empty());
+    t.play();
+    CHECK(noteOns(syncStep(arp, {}, t, 0.0, 0)).size() == 1);         // resume: fires again
+}
+
+TEST_CASE("synced arpeggiator keeps stepping across a transport loop wrap") {
+    ArpeggiatorNode arp;
+    std::vector<MidiEvent> chord = {midiNoteOn(60, 100), midiNoteOn(64, 100)};
+    Transport t; t.bpm = 120.0; t.play();                            // div 0 = 0.25 bar/step
+    REQUIRE(noteOns(syncStep(arp, chord, t, 2.0, 0)).size() == 1);    // bars 1.0 -> stepAbs 4
+    // loop wraps the position back to bar 0 -> stepAbs drops -> a boundary still fires
+    auto wrap = syncStep(arp, {}, t, 0.0, 0);
+    CHECK(noteOns(wrap).size() == 1);
+    bool sawOff = false; for (auto& e : wrap) if (midiIsNoteOff(e)) sawOff = true;
+    CHECK(sawOff);                                                    // released prior note first
+}

@@ -128,7 +128,10 @@ private:
     double clock_    = 0.0;                // seconds since start (free mode)
     double nextStep_ = 0.0;                // clock time of the next note-on (free mode)
     double noteOff_  = 0.0;                // clock time to release the active note (free mode)
-    int    step_     = 0;                  // index into the step sequence
+    int    step_     = 0;                  // running cyclic index into the held-note
+                                           // sequence (shared by both modes; advances
+                                           // once per fired step, NOT tied to the
+                                           // absolute bar position like the Step Seq)
     int    active_   = -1;                 // currently sounding note, or -1
     long long lastStepAbs_ = 0;            // last synced step index (sync mode)
     bool      primed_      = false;        // synced playback has fired its first step
