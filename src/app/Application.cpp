@@ -11,6 +11,7 @@
 #include "modules/MidiMergeNode.h"
 #include "modules/MidiOutputNode.h"
 #include "modules/MixNode.h"
+#include "modules/LfoNode.h"
 #include "modules/OutputNode.h"
 #include "modules/RecorderNode.h"
 #include "modules/ShadedRenderNode.h"
@@ -49,6 +50,7 @@ std::unique_ptr<Node> makeNode(const std::string& type) {
     if (type == "MIDI Merge")  return std::make_unique<MidiMergeNode>();
     if (type == "MIDI Out")    return std::make_unique<MidiOutputNode>();
     if (type == "Automation")  return std::make_unique<AutomationNode>();
+    if (type == "LFO")         return std::make_unique<LfoNode>();
     return nullptr;
 }
 
@@ -58,7 +60,7 @@ const std::vector<NodeCategory>& nodeCategories() {
         { "Audio",   { "Sine", "Audio File", "Audio In", "Audio Mix", "Spectrograph", "Audio Out" } },
         { "MIDI",    { "MIDI In", "Step Seq", "Arpeggiator", "MIDI Merge", "MIDI Out" } },
         { "3D",      { "Mesh Loader", "Text 2D", "Text 3D", "World Transform", "Wireframe", "Shaded Render" } },
-        { "Control", { "Automation" } },
+        { "Control", { "Automation", "LFO" } },
     };
     return cats;
 }

@@ -72,6 +72,8 @@ static int runScreenshot(const std::string& path) {
         if (auto* ch = app.graph().automation().add(app.graph(), wfId, 1)) {  // Wireframe "spin" (Float)
             ch->curve.points = { {0.0f, 0.30f}, {3.0f, 0.90f}, {8.0f, 0.20f} };
         }
+        // An LFO node so the capture shows the choice dropdowns + the new module.
+        app.addNodeOfType("LFO", glm::vec2(740.0f, 60.0f));
         app.graph().transport().bpm = 120.0;
         app.graph().transport().seconds = 6.0;   // playhead at bar 3
 
