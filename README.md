@@ -64,6 +64,7 @@ to see it; or `Mesh Loader → Shaded Render → Output` to spin a 3D model.
 | **Audio In / Out** | capture the mic/line-in (stereo if available) / play to the default device, in stereo (libsoundio) |
 | **Audio Mix** | four inputs, each with gain + pan → one stereo mix (pan mono sources into the stereo field) |
 | **MIDI In / Out** | hardware or virtual MIDI ports (RtMidi) |
+| **MIDI File** | streams a Standard MIDI File (.mid) synced to the project BPM → MIDI: anchor `start offset` (bars), `loop` + `loop length` (bars), and `mute 1`…`mute 16` toggles per channel. The file's own tempo is ignored. Wire `out` into a synth (e.g. **Acid Bass**) |
 | **Step Seq** | 16-step drum sequencer → MIDI; `sync` toggle locks the step rate to the project BPM over musical divisions (1/4 … 1/32, incl. dotted + triplet), or runs free at its own `tempo` |
 | **Arpeggiator** | held notes → a stepped sequence (up / down / up-down); `sync` toggle locks the step rate to the project BPM, or runs free at `rate` steps/sec |
 | **MIDI Merge** | up to four MIDI streams → one |
