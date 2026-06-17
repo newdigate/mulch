@@ -3,6 +3,13 @@
 #include "core/MidiFile.h"
 #include "core/Value.h"
 #include <vector>
+#include "modules/MidiFilePlayerNode.h"
+#include "core/Node.h"
+#include "core/Transport.h"
+#include <fstream>
+#include <cstdio>
+#include <string>
+#include <variant>
 
 using namespace oss;
 
@@ -93,4 +100,41 @@ TEST_CASE("clip releases a held note when a non-looping clip ends") {
     p.advance(s, 0.5, 4, 0.0, false, 8, mute);                          // note-on 60 sounding
     auto e = p.advance(s, 2.5, 4, 0.0, false, 8, mute);                 // past the clip end (2.0)
     CHECK(countNoteOffs(e) >= 1);                                       // released at the end
+}
+
+TEST_CASE("MidiFilePlayerNode loads a file and emits notes synced to the transport") {
+    // A tiny SMF (note-on 60 @ beat 0) written to a temp file.
+    std::vector<unsigned char> smf = {
+        'M','T','h','d', 0,0,0,6, 0,0, 0,1, 0x01,0xE0,
+        'M','T','r','k', 0,0,0,8,
+        0x00, 0x90,0x3C,0x64,
+        0x00, 0xFF,0x2F,0x00
+    };
+    const char* path = "oss_midi_test.mid";
+    { std::ofstream f(path, std::ios::binary);
+      REQUIRE(f.write((const char*)smf.data(), (std::streamsize)smf.size())); }
+
+    MidiFilePlayerNode node;
+    auto eval = [&](Transport& t) {
+        std::vector<Value> in(20);
+        in[0] = std::string(path);
+        in[1] = 0.0f;   // start offset
+        in[2] = true;   // loop
+        in[3] = 4.0f;   // loop length (bars)
+        for (int i = 0; i < 16; ++i) in[4 + i] = false;   // no mutes
+        std::vector<Value> out(1);
+        EvalContext ctx{ in, out, 0.0f, &t };
+        node.evaluate(ctx);
+        MidiRef m = std::get<MidiRef>(out[0]);
+        return std::vector<MidiEvent>(m.events, m.events + m.count);
+    };
+    Transport t; t.bpm = 120.0; t.play();   // 0.5 s/beat
+    t.seconds = 0.0; eval(t);               // entry frame (also loads the file)
+    t.seconds = 0.5; auto e = eval(t);      // 1 beat in -> window [0,1) includes beat 0
+    std::remove(path);
+
+    int ons = 0; int firstNote = -1;
+    for (auto& x : e) if (midiIsNoteOn(x)) { ++ons; if (firstNote < 0) firstNote = x.data1; }
+    CHECK(ons == 1);
+    CHECK(firstNote == 60);
 }
