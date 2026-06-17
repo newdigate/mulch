@@ -48,3 +48,125 @@ TEST_CASE("ladder filter stays finite and bounded at max resonance") {
     CHECK(finite);
     CHECK(m < 10.0f);
 }
+
+static float noteFreq(int n) { return 440.0f * std::pow(2.0f, (n - 69) / 12.0f); }
+
+// High-frequency content (first-difference energy) -- a simple brightness proxy.
+static float hfEnergy(const std::vector<float>& x) {
+    double s = 0.0;
+    for (std::size_t i = 1; i < x.size(); ++i) { double d = (double)x[i] - x[i - 1]; s += d * d; }
+    return (float)std::sqrt(s / (x.size() > 0 ? x.size() : 1));
+}
+
+TEST_CASE("voice: a note sounds and is brighter while the filter envelope is open") {
+    AcidVoice v; v.setSampleRate(48000);
+    v.setCutoff(300.0f); v.setEnvMod(0.9f); v.setResonance(0.3f);
+    v.setDecay(0.2f); v.setAccent(0.0f);
+    v.noteOn(48, 100, false);
+    std::vector<float> warm(480); v.process(warm.data(), 480);   // 10 ms: amp env settles
+    std::vector<float> a(2400);   v.process(a.data(), 2400);     // filter still open
+    std::vector<float> b(2400);
+    for (int k = 0; k < 10; ++k)  v.process(b.data(), 2400);     // ~0.5 s later (filter closed)
+    CHECK(rms(a.data(), 2400) > 0.0f);                           // audible
+    CHECK(hfEnergy(a) > hfEnergy(b));                            // brighter while open
+}
+
+TEST_CASE("voice: the filter envelope decays to ~1/e after the decay time") {
+    AcidVoice v; v.setSampleRate(48000); v.setDecay(0.1f);
+    v.noteOn(60, 100, false);
+    CHECK(v.filtEnv() == doctest::Approx(1.0f));        // just retriggered
+    std::vector<float> buf(4800);
+    v.process(buf.data(), 4800);                        // 0.1 s = one decay time
+    CHECK(v.filtEnv() == doctest::Approx(std::exp(-1.0f)).epsilon(0.02));
+}
+
+TEST_CASE("voice: a slid note glides to the target pitch") {
+    AcidVoice v; v.setSampleRate(48000); v.setSlideTime(0.05f);
+    v.noteOn(48, 100, false);
+    CHECK(v.currentFreq() == doctest::Approx(noteFreq(48)).epsilon(0.001));
+    float f48 = v.currentFreq();
+    v.noteOn(60, 100, true);                            // legato slide up an octave
+    std::vector<float> mid(240); v.process(mid.data(), 240);   // 5 ms in
+    CHECK(v.currentFreq() > f48);
+    CHECK(v.currentFreq() < noteFreq(60));              // partway between
+    std::vector<float> rest(30000); v.process(rest.data(), 30000);  // well past the glide
+    CHECK(v.currentFreq() == doctest::Approx(noteFreq(60)).epsilon(0.01));
+}
+
+TEST_CASE("voice: an accented (high-velocity) note is louder than a soft one") {
+    auto rmsAt = [](int vel) {
+        AcidVoice v; v.setSampleRate(48000);
+        v.setAccent(1.0f); v.setCutoff(2000.0f); v.setEnvMod(0.3f);
+        v.noteOn(48, vel, false);
+        std::vector<float> b(4800); v.process(b.data(), 4800);
+        return rms(b.data(), 4800);
+    };
+    CHECK(rmsAt(127) > rmsAt(40));
+}
+
+TEST_CASE("voice: output is bounded for any distortion and changes the signal") {
+    auto run = [](float dist) {
+        AcidVoice v; v.setSampleRate(48000);
+        v.setDistortion(dist); v.setCutoff(4000.0f); v.setResonance(0.6f);
+        v.noteOn(48, 110, false);
+        std::vector<float> b(4800); v.process(b.data(), 4800);
+        return b;
+    };
+    auto clean = run(0.0f), dirty = run(0.9f);
+    float mc = 0, md = 0; double diff = 0;
+    for (int i = 0; i < 4800; ++i) {
+        mc = std::max(mc, std::fabs(clean[i]));
+        md = std::max(md, std::fabs(dirty[i]));
+        diff += std::fabs(clean[i] - dirty[i]);
+    }
+    CHECK(mc <= 1.0f);
+    CHECK(md <= 1.0f);
+    CHECK(diff > 0.0);
+}
+
+TEST_CASE("voice: stays finite and bounded under an extreme-parameter sweep") {
+    AcidVoice v; v.setSampleRate(48000);
+    v.setCutoff(12000.0f); v.setResonance(1.0f); v.setFilterFM(1.0f);
+    v.setDistortion(1.0f); v.setEnvMod(1.0f); v.setSubLevel(1.0f);
+    v.noteOn(60, 127, false);
+    std::vector<float> b(48000); v.process(b.data(), 48000);
+    bool ok = true;
+    for (int i = 0; i < 48000; ++i)
+        if (!std::isfinite(b[i]) || std::fabs(b[i]) > 1.0f) { ok = false; break; }
+    CHECK(ok);
+}
+
+TEST_CASE("voice: last-note priority falls back to the held note on release") {
+    AcidVoice v; v.setSampleRate(48000);
+    v.noteOn(48, 100, false);
+    CHECK(v.currentFreq() == doctest::Approx(noteFreq(48)).epsilon(0.001));
+    v.noteOn(60, 100, false);                      // newer note takes over
+    CHECK(v.currentFreq() == doctest::Approx(noteFreq(60)).epsilon(0.001));
+    v.noteOff(60);                                 // fall back to the still-held 48
+    CHECK(v.currentFreq() == doctest::Approx(noteFreq(48)).epsilon(0.001));
+    v.noteOff(99);                                 // unheld note -> no change
+    CHECK(v.currentFreq() == doctest::Approx(noteFreq(48)).epsilon(0.001));
+    v.noteOff(48);                                 // all released -> stays finite
+    std::vector<float> b(480); v.process(b.data(), 480);
+    bool ok = true; for (float x : b) if (!std::isfinite(x)) ok = false;
+    CHECK(ok);
+}
+
+TEST_CASE("voice: the square waveform with key-track makes valid, bounded sound") {
+    AcidVoice v; v.setSampleRate(48000);
+    v.setWaveform(1); v.setKeyTrack(1.0f); v.setCutoff(1000.0f);
+    v.noteOn(72, 110, false);
+    std::vector<float> b(4800); v.process(b.data(), 4800);
+    bool ok = true;
+    for (float x : b) if (!std::isfinite(x) || std::fabs(x) > 1.0f) ok = false;
+    CHECK(ok);
+    CHECK(rms(b.data(), 4800) > 0.0f);
+}
+
+TEST_CASE("voice: an out-of-range MIDI note is clamped (no inf/NaN)") {
+    AcidVoice v; v.setSampleRate(48000);
+    v.noteOn(2000, 127, false);                    // absurd note -> clamped to 127
+    std::vector<float> b(480); v.process(b.data(), 480);
+    bool ok = true; for (float x : b) if (!std::isfinite(x)) ok = false;
+    CHECK(ok);
+}

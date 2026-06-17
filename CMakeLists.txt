@@ -194,6 +194,7 @@ set(APP_SOURCES
   src/core/AutomationStore.cpp
   src/audio/FFT.cpp
   src/audio/SignalGenerator.cpp
+  src/audio/AcidVoice.cpp
   src/audio/AudioFile.cpp
   src/gfx/GLUtil.cpp
   src/gfx/Framebuffer.cpp
@@ -262,6 +263,7 @@ add_executable(core_tests
   src/core/AutomationStore.cpp
   src/audio/FFT.cpp
   src/audio/SignalGenerator.cpp
+  src/audio/AcidVoice.cpp
 )
 target_include_directories(core_tests PRIVATE src)
 target_link_libraries(core_tests PRIVATE glm::glm doctest::doctest)
