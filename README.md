@@ -59,6 +59,7 @@ to see it; or `Mesh Loader → Shaded Render → Output` to spin a 3D model.
 | **Mix** | blend two textures by a factor |
 | **Spectrograph** | audio → FFT → texture (and a 3D line-strip vertex buffer) |
 | **Sine** | pure sine-wave audio source |
+| **Acid Bass** | 303-style monophonic synth: MIDI in → mono audio. Saw/square VCO + sub-osc → 4-pole resonant ladder filter (decay · env-mod · accent) → VCA → distortion, with note slide, filter FM (VCA → cutoff), and filter key-tracking. Every control is an input port |
 | **Audio File** | play an audio file — mp3, wav, flac, m4a, ogg, … (any FFmpeg format), decoded to 48 kHz stereo → audio; signed `rate` (negative = reverse), variable speed, loop |
 | **Audio In / Out** | capture the mic/line-in (stereo if available) / play to the default device, in stereo (libsoundio) |
 | **Audio Mix** | four inputs, each with gain + pan → one stereo mix (pan mono sources into the stereo field) |

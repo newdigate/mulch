@@ -74,6 +74,7 @@ static int runScreenshot(const std::string& path) {
         }
         // An LFO node so the capture shows the choice dropdowns + the new module.
         app.addNodeOfType("LFO", glm::vec2(740.0f, 60.0f));
+        app.addNodeOfType("Acid Bass", glm::vec2(740.0f, 320.0f));
         app.graph().transport().bpm = 120.0;
         app.graph().transport().seconds = 6.0;   // playhead at bar 3
 
