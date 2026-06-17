@@ -1,7 +1,5 @@
 #pragma once
 #include <map>
-#include <vector>
-#include "core/AutoCurve.h"
 
 namespace oss {
 
@@ -24,9 +22,9 @@ private:
         return it == open_.end() ? true : it->second;   // groups default to open
     }
 
-    std::map<long, bool>    open_;             // group collapse state, keyed by group
-    std::vector<AutoPoint>* dragPts_ = nullptr; // points vector being edited
-    int                     dragPoint_ = -1;    // index of the dragged point
+    std::map<long, bool> open_;       // group collapse state, keyed by header key
+    long dragLane_  = -1;             // stable key of the lane being edited (-1 = none)
+    int  dragPoint_ = -1;             // index of the dragged point in that lane
 };
 
 } // namespace oss

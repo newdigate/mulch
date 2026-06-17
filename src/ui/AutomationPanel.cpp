@@ -71,6 +71,7 @@ void AutomationPanel::draw(Graph& graph) {
         if (!isOpen(key)) continue;
         for (int c = 0; c < an->channelCount(); ++c) {
             Row r; r.kind = Row::Lane;
+            r.key = (long)an->id() * 1000 + c;   // stable lane identity (drag + PushID)
             r.pts = &an->channel(c); r.omin = an->outMin(c); r.omax = an->outMax(c);
             r.col = streamColour(c); r.label = "ch " + std::to_string(c + 1);
             r.anode = an; r.achan = c;
@@ -98,12 +99,23 @@ void AutomationPanel::draw(Graph& graph) {
                                 ? n->inputs()[ch.port].name
                                 : ("port " + std::to_string(ch.port));
             Row r; r.kind = Row::Lane;
+            r.key = (long)nid * 1000 + 500 + ch.port;   // stable lane identity (drag + PushID)
             r.pts = &ch.curve.points; r.omin = ch.outMin; r.omax = ch.outMax;
             r.col = uiColour(idx); r.label = pname;
             r.uich = &ch; r.delNode = nid; r.delPort = ch.port;
             pushRow(r, laneH);
             ++idx;
         }
+    }
+
+    // Drop collapse state for groups that no longer exist (so open_ can't grow
+    // without bound across a long session of node creation/deletion).
+    {
+        std::vector<long> live;
+        for (auto& r : rows) if (r.kind == Row::Header) live.push_back(r.key);
+        for (auto it = open_.begin(); it != open_.end(); )
+            it = (std::find(live.begin(), live.end(), it->first) == live.end())
+                 ? open_.erase(it) : std::next(it);
     }
 
     if (rows.size() == 1) {   // only the ruler -> nothing to edit yet
@@ -134,7 +146,7 @@ void AutomationPanel::draw(Graph& graph) {
             if (ImGui::Selectable(lbl.c_str(), false, 0, ImVec2(leftW - 4.0f, headerH - 3.0f)))
                 open_[r.key] = !op;
         } else {
-            ImGui::PushID((int)i);
+            ImGui::PushID((int)r.key);
             ImGui::SetCursorPos(ImVec2(12.0f, y[i] + 4.0f));
             ImGui::TextColored(ImColor(r.col), "%s", r.label.c_str());
             ImGui::SetCursorPos(ImVec2(12.0f, y[i] + 24.0f));
@@ -150,7 +162,10 @@ void AutomationPanel::draw(Graph& graph) {
                 else if (r.uich)  r.uich->outMax = hi;
             }
             ImGui::SameLine();
-            if (ImGui::SmallButton("clr")) r.pts->clear();
+            if (ImGui::SmallButton("clr")) {
+                r.pts->clear();
+                if (dragLane_ == r.key) { dragLane_ = -1; dragPoint_ = -1; }
+            }
             if (r.uich) {
                 ImGui::SameLine();
                 if (ImGui::SmallButton("x")) { pendingDelNode = r.delNode; pendingDelPort = r.delPort; }
@@ -173,14 +188,15 @@ void AutomationPanel::draw(Graph& graph) {
     ImDrawList*  dl = ImGui::GetWindowDrawList();
     auto X = [&](float bar) { return o.x + bar * pxPerBar; };
 
-    // Row backgrounds.
+    // Row backgrounds (lanes alternate by lane position, not absolute row index).
+    int laneStripe = 0;
     for (std::size_t i = 0; i < rows.size(); ++i) {
         float top = o.y + y[i], bot = o.y + y[i] + hgt[i];
         ImU32 bg;
         if      (rows[i].kind == Row::Ruler)  bg = IM_COL32(32, 35, 44, 255);
         else if (rows[i].kind == Row::Header) bg = IM_COL32(44, 49, 62, 255);
-        else                                  bg = (i & 1) ? IM_COL32(29, 32, 38, 255)
-                                                           : IM_COL32(24, 26, 32, 255);
+        else                                  bg = (laneStripe++ & 1) ? IM_COL32(29, 32, 38, 255)
+                                                                       : IM_COL32(24, 26, 32, 255);
         dl->AddRectFilled(ImVec2(o.x, top), ImVec2(o.x + contentW, bot), bg);
     }
     // Bar grid lines + numbers (numbers in the ruler row).
@@ -230,36 +246,46 @@ void AutomationPanel::draw(Graph& graph) {
 
     if (hovered && hoverRow >= 0 && ImGui::IsMouseClicked(ImGuiMouseButton_Right)) {
         auto* p = rows[hoverRow].pts; int h = hitPoint(hoverRow);
-        if (h >= 0) p->erase(p->begin() + h);
+        if (h >= 0) {
+            p->erase(p->begin() + h);
+            // keep an in-progress drag on this lane pointing at the right point
+            if (dragLane_ == rows[hoverRow].key) {
+                if (h < dragPoint_)      --dragPoint_;
+                else if (h == dragPoint_) { dragLane_ = -1; dragPoint_ = -1; }
+            }
+        }
     }
     if (hovered && hoverRow >= 0 && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
         auto* p = rows[hoverRow].pts; int h = hitPoint(hoverRow);
-        if (h >= 0) { dragPts_ = p; dragPoint_ = h; }
+        if (h >= 0) { dragLane_ = rows[hoverRow].key; dragPoint_ = h; }
         else {
             AutoPoint np{ std::clamp(toBar(m.x), 0.0f, length),
                           std::clamp(rowVal(hoverRow, m.y), 0.0f, 1.0f) };
             auto it = std::lower_bound(p->begin(), p->end(), np,
                                        [](const AutoPoint& a, const AutoPoint& b) { return a.bar < b.bar; });
-            dragPts_ = p; dragPoint_ = (int)(it - p->begin());
+            dragLane_ = rows[hoverRow].key; dragPoint_ = (int)(it - p->begin());
             p->insert(it, np);
         }
     }
-    // Continue an in-progress drag by re-finding its lane (so the drag survives the
-    // cursor leaving the lane vertically). Skip if the lane vanished (e.g. collapsed).
-    if (dragPts_ && dragPoint_ >= 0 && ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
+    // Continue an in-progress drag by re-finding its lane each frame from the stable
+    // lane key -- so the drag survives the cursor leaving the lane vertically, and a
+    // points vector belonging to a since-deleted node/channel is never dereferenced.
+    if (dragLane_ >= 0 && dragPoint_ >= 0 && ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
         int dr = -1;
         for (std::size_t i = 0; i < rows.size(); ++i)
-            if (rows[i].kind == Row::Lane && rows[i].pts == dragPts_) { dr = (int)i; break; }
-        if (dr >= 0 && dragPoint_ < (int)dragPts_->size()) {
-            auto* p = dragPts_;
-            float nb = std::clamp(toBar(m.x), 0.0f, length);
-            float nv = std::clamp(rowVal((std::size_t)dr, m.y), 0.0f, 1.0f);
-            if (dragPoint_ > 0)                 nb = std::max(nb, (*p)[dragPoint_ - 1].bar + 1e-4f);
-            if (dragPoint_ + 1 < (int)p->size()) nb = std::min(nb, (*p)[dragPoint_ + 1].bar - 1e-4f);
-            (*p)[dragPoint_].bar = nb; (*p)[dragPoint_].value = nv;
+            if (rows[i].kind == Row::Lane && rows[i].key == dragLane_) { dr = (int)i; break; }
+        if (dr >= 0) {
+            auto* p = rows[dr].pts;
+            if (dragPoint_ < (int)p->size()) {
+                float nb = std::clamp(toBar(m.x), 0.0f, length);
+                float nv = std::clamp(rowVal((std::size_t)dr, m.y), 0.0f, 1.0f);
+                if (dragPoint_ > 0)                 nb = std::max(nb, (*p)[dragPoint_ - 1].bar + 1e-4f);
+                if (dragPoint_ + 1 < (int)p->size()) nb = std::min(nb, (*p)[dragPoint_ + 1].bar - 1e-4f);
+                (*p)[dragPoint_].bar = nb; (*p)[dragPoint_].value = nv;
+            }
         }
     }
-    if (!ImGui::IsMouseDown(ImGuiMouseButton_Left)) { dragPts_ = nullptr; dragPoint_ = -1; }
+    if (!ImGui::IsMouseDown(ImGuiMouseButton_Left)) { dragLane_ = -1; dragPoint_ = -1; }
 
     ImGui::EndChild();
 
