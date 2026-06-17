@@ -12,6 +12,13 @@ cmake --build build -j
 ./build/shader_streamer   # run from the repo root
 ```
 
+For a headless capture of the UI (no interactive session), render one frame to a
+PNG and exit:
+
+```bash
+./build/shader_streamer --screenshot ui.png
+```
+
 Most dependencies are fetched and pinned by CMake. The one system package is
 **FFmpeg** (for the Video node) — install it first: `brew install ffmpeg` on
 macOS, or your distro's `libav*-dev` packages. A network connection is needed the
