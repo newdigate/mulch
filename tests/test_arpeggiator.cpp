@@ -1,22 +1,42 @@
 #include <doctest/doctest.h>
 #include "modules/ArpeggiatorNode.h"
 #include "core/Node.h"
+#include "core/Transport.h"
+#include "core/StepSync.h"
 #include "core/Value.h"
 #include <string>
 #include <vector>
 
 using namespace oss;
 
-// Drive one evaluate() with the given input events + dt; return generated events.
+// Drive one free-mode evaluate() with the given input events + dt; return events.
 static std::vector<MidiEvent> step(ArpeggiatorNode& arp,
                                    const std::vector<MidiEvent>& inEvents, float dt,
                                    float rate = 10.0f, float gate = 0.5f,
                                    float octaves = 1.0f, float mode = 0.0f) {
-    std::vector<Value> in(5);
+    std::vector<Value> in(7);
     in[0] = MidiRef{inEvents.data(), inEvents.size()};
     in[1] = rate; in[2] = gate; in[3] = octaves; in[4] = mode;
+    in[5] = false;                              // sync off (free mode)
+    in[6] = (float)kStepDivisionDefault;        // rate sync (unused when free)
     std::vector<Value> out(1);
     EvalContext ctx{in, out, dt};
+    arp.evaluate(ctx);
+    MidiRef o = std::get<MidiRef>(out[0]);
+    return std::vector<MidiEvent>(o.events, o.events + o.count);
+}
+
+// Drive one synced evaluate() at a transport bar position (seconds) + division.
+static std::vector<MidiEvent> syncStep(ArpeggiatorNode& arp,
+                                       const std::vector<MidiEvent>& inEvents,
+                                       Transport& t, double seconds, int div) {
+    std::vector<Value> in(7);
+    in[0] = MidiRef{inEvents.data(), inEvents.size()};
+    in[1] = 10.0f; in[2] = 0.5f; in[3] = 1.0f; in[4] = 0.0f;
+    in[5] = true; in[6] = (float)div;
+    std::vector<Value> out(1);
+    t.seconds = seconds;
+    EvalContext ctx{in, out, 0.0f, &t};
     arp.evaluate(ctx);
     MidiRef o = std::get<MidiRef>(out[0]);
     return std::vector<MidiEvent>(o.events, o.events + o.count);
@@ -83,4 +103,16 @@ TEST_CASE("arpeggiator down mode descends") {
 TEST_CASE("arpeggiator emits nothing with no held notes") {
     ArpeggiatorNode arp;
     for (int i = 0; i < 10; ++i) CHECK(step(arp, {}, 0.02f).empty());
+}
+
+TEST_CASE("synced arpeggiator steps on transport bar boundaries") {
+    ArpeggiatorNode arp;
+    std::vector<MidiEvent> chord = {midiNoteOn(60, 100), midiNoteOn(64, 100)};
+    Transport t; t.bpm = 120.0; t.play();          // 2 s/bar; div 0 = 1/4 = 0.5 s/step
+    auto a = noteOns(syncStep(arp, chord, t, 0.0, 0));   // bars 0    -> 60 (downbeat)
+    REQUIRE(a.size() == 1); CHECK(a[0] == 60);
+    auto b = noteOns(syncStep(arp, {}, t, 0.5, 0));       // bars 0.25 -> 64
+    REQUIRE(b.size() == 1); CHECK(b[0] == 64);
+    auto c = noteOns(syncStep(arp, {}, t, 1.0, 0));       // bars 0.5  -> 60
+    REQUIRE(c.size() == 1); CHECK(c[0] == 60);
 }
