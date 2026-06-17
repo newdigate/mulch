@@ -58,6 +58,14 @@ CMake 4.x, it's relaxed with `CMAKE_POLICY_VERSION_MINIMUM 3.5` around its
   (`src/ui/NodeEditorPanel.cpp`); `Graph::evaluate` calls `AutomationStore::apply`
   each frame to write the sampled value straight into the control's input default
   (skipping connected inputs). A channel's kind is structural — there is no switch.
+- **Choice input ports** — a `Float` input can carry dropdown labels
+  (`Port::choices`, built with `Node::addChoiceInput(name, labels, defaultIndex)`);
+  the editor renders it as a combo whose value is the selected index
+  (`src/ui/PortWidgets.cpp`). The **LFO** (`src/modules/LfoNode.h`, header-only,
+  GL-free) uses it for its waveform and BPM-sync-rate menus: a control-rate Float
+  modulation source that runs free (Hz, integrating `rate*dt`) or transport-synced
+  (phase from `transport.bars()`), mapped into a per-node `[min,max]`. All its
+  controls are input ports, so LFOs chain.
 - **Texture nodes** derive from `ShaderNode` (`src/gfx/ShaderNode.h`): render a
   fragment shader into their own FBO and publish a `TexRef` on output 0. `ColourNode`
   is the minimal example — declare ports, override `setUniforms()`, call `render(ctx)`.
