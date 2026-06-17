@@ -128,3 +128,40 @@ TEST_CASE("a paused transport produces no synced steps") {
     Transport t; t.bpm = 120.0; t.pause();
     CHECK(countNoteOns(syncStep(seq, pat, t, 0.0, 0)) == 0);
 }
+
+TEST_CASE("synced note releases on its gate within the step") {
+    StepSequencerNode seq;
+    std::array<bool, 16> pat{};
+    pat[0] = true;
+    Transport t; t.bpm = 120.0; t.play();                     // 2 s/bar; div 0 = 0.5 s/step
+    CHECK(countNoteOns(syncStep(seq, pat, t, 0.0, 0)) == 1);   // bars 0 -> step 0 on
+    // bars 0.125 -> frac 0.5 of a 1/4 step == kGate: release, same step, no new note
+    auto e = syncStep(seq, pat, t, 0.25, 0);
+    CHECK(countNoteOffs(e) == 1);
+    CHECK(countNoteOns(e) == 0);
+}
+
+TEST_CASE("synced sequencer fires the loop-start step when the transport wraps") {
+    StepSequencerNode seq;
+    std::array<bool, 16> pat{};
+    pat[0] = pat[4] = true;                                   // steps 0 and 4 on
+    Transport t; t.bpm = 120.0; t.play();
+    // div 0 = 1/4: bars 1.0 -> stepAbs 4 (step 4 on)
+    CHECK(countNoteOns(syncStep(seq, pat, t, 2.0, 0)) == 1);   // seconds 2.0 -> bars 1.0
+    // loop wraps the position back to bar 0 -> stepAbs drops 4 -> 0; step 0 fires
+    auto wrap = syncStep(seq, pat, t, 0.0, 0);
+    CHECK(countNoteOns(wrap) == 1);                            // step 0 (loop start)
+    CHECK(countNoteOffs(wrap) == 1);                           // released step 4 first
+}
+
+TEST_CASE("stopping then resuming re-fires the step at the current position") {
+    StepSequencerNode seq;
+    std::array<bool, 16> pat{};
+    pat[0] = true;
+    Transport t; t.bpm = 120.0; t.play();
+    CHECK(countNoteOns(syncStep(seq, pat, t, 0.0, 0)) == 1);   // playing: step 0 fires
+    t.pause();
+    CHECK(countNoteOffs(syncStep(seq, pat, t, 0.0, 0)) == 1);  // paused: release, re-prime
+    t.play();
+    CHECK(countNoteOns(syncStep(seq, pat, t, 0.0, 0)) == 1);   // resume: step 0 fires again
+}
