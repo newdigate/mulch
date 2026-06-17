@@ -255,6 +255,7 @@ add_executable(core_tests
   tests/test_automation_store.cpp
   tests/test_choice_port.cpp
   tests/test_lfo.cpp
+  tests/test_step_sync.cpp
   src/core/Node.cpp
   src/core/Graph.cpp
   src/core/AutomationStore.cpp
