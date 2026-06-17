@@ -20,6 +20,7 @@ void Graph::removeNode(int nodeId) {
         [&](const std::unique_ptr<Node>& n){ return n->id() == nodeId; }),
         nodes_.end());
     outputs_.erase(nodeId);
+    automation_.removeNode(nodeId);   // drop ui-automation channels for this node
     markDirty();
 }
 
@@ -89,6 +90,7 @@ std::vector<int> Graph::topologicalOrder() const {
 
 void Graph::evaluate(float dt) {
     transport_.advance(dt);   // advance the global clock once per frame
+    automation_.apply(*this, transport_);   // ui channels drive their controls
     if (orderDirty_) { order_ = topologicalOrder(); orderDirty_ = false; }
     for (int id : order_) {
         Node* n = findNode(id);

@@ -3,14 +3,12 @@
 #include <cstddef>
 #include <string>
 #include <vector>
+#include "core/AutoCurve.h"
 #include "core/Node.h"
 #include "core/Value.h"
 #include "core/Transport.h"
 
 namespace oss {
-
-// One automation breakpoint: a value in [0, 1] at a song position (in bars).
-struct AutoPoint { float bar = 0.0f; float value = 0.0f; };
 
 // What kind of thing a channel automates. StreamParam drives a module parameter
 // (e.g. the World Transform rate). UiControl is a pot/slider whose movements will

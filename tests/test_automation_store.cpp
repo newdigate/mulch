@@ -101,3 +101,22 @@ TEST_CASE("setLengthBars never goes below one bar") {
     store.setLengthBars(16.0f);
     CHECK(store.lengthBars() == doctest::Approx(16.0f));
 }
+
+TEST_CASE("Graph owns the store and applies it during evaluate") {
+    Graph g; int id = g.addNode(std::make_unique<Knob>());
+    auto* ch = g.automation().add(g, id, 0);
+    REQUIRE(ch);
+    ch->curve.points = { {0.0f, 0.0f}, {4.0f, 1.0f} };
+    ch->outMin = 100.0f; ch->outMax = 200.0f;
+    g.transport().bpm = 120.0; g.transport().seconds = 4.0; g.transport().pause();  // bar 2
+    g.evaluate(0.0f);
+    CHECK(std::get<float>(g.findNode(id)->inputDefault(0)) == doctest::Approx(150.0f));
+}
+
+TEST_CASE("removeNode drops the node's UI automation channels") {
+    Graph g; int id = g.addNode(std::make_unique<Knob>());
+    g.automation().add(g, id, 0);
+    REQUIRE(g.automation().channels().size() == 1);
+    g.removeNode(id);
+    CHECK(g.automation().channels().empty());
+}
