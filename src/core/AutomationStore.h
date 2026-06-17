@@ -25,14 +25,17 @@ public:
     float lengthBars() const { return lengthBars_; }
     void  setLengthBars(float L) { lengthBars_ = L < 1.0f ? 1.0f : L; }
 
-    // First existing channel for node+port, or nullptr.
+    // First existing channel for node+port, or nullptr. The returned pointer is
+    // valid only until the next add/remove/removeNode (or any channels() mutation),
+    // which may reallocate the underlying vector -- don't cache it across those.
     UiAutomationChannel* find(int nodeId, int port);
 
     // Create a channel for (nodeId, port). Idempotent: returns the existing channel
     // if one already targets that node+port. Seeds outMin/outMax from the port's
     // slider range and inserts one breakpoint at bar 0 equal to the control's
     // current normalised value (so creation never changes the live value). Returns
-    // nullptr if the node/port is missing or the port is not a Float.
+    // nullptr if the node/port is missing or the port is not a Float. Same pointer
+    // lifetime caveat as find() -- valid only until the next add/remove/removeNode.
     UiAutomationChannel* add(Graph& graph, int nodeId, int port);
 
     void remove(int nodeId, int port);   // drop the channel for node+port (if any)
