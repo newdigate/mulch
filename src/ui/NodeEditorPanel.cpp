@@ -25,6 +25,7 @@ static void decodePin(int pin, int& nodeId, int& port, bool& isOutput) {
 struct NodeEditorPanel::Impl {
     ed::EditorContext* ctx = nullptr;
     std::set<int> placed;
+    int ctxNodeId = 0;   // node whose context menu is open
 };
 
 NodeEditorPanel::NodeEditorPanel() : impl_(std::make_unique<Impl>()) {
@@ -189,6 +190,34 @@ void NodeEditorPanel::draw(Graph& graph,
             // stray scroll has zoomed the canvas too far in or out to recover.
             if (ImGui::MenuItem("Reset View (fit all)")) ed::NavigateToContent();
             ImGui::EndMenu();
+        }
+        ImGui::EndPopup();
+    }
+
+    // Node context menu: right-click a node to automate one of its Float inputs
+    // as a UI-automation channel (created/removed in the graph's AutomationStore;
+    // shown grouped under the node in the Automation window).
+    ed::NodeId ctxNode;
+    if (ed::ShowNodeContextMenu(&ctxNode)) {
+        impl_->ctxNodeId = (int)ctxNode.Get();
+        ImGui::OpenPopup("NodeMenu");
+    }
+    if (ImGui::BeginPopup("NodeMenu")) {
+        Node* n = graph.findNode(impl_->ctxNodeId);
+        if (n) {
+            ImGui::TextDisabled("Automate (UI)");
+            ImGui::Separator();
+            bool any = false;
+            for (std::size_t i = 0; i < n->inputs().size(); ++i) {
+                if (n->inputs()[i].type != PortType::Float) continue;
+                any = true;
+                bool on = graph.automation().find(n->id(), (int)i) != nullptr;
+                if (ImGui::MenuItem(n->inputs()[i].name.c_str(), nullptr, on)) {
+                    if (on) graph.automation().remove(n->id(), (int)i);
+                    else    graph.automation().add(graph, n->id(), (int)i);
+                }
+            }
+            if (!any) ImGui::TextDisabled("No automatable parameters");
         }
         ImGui::EndPopup();
     }

@@ -36,13 +36,16 @@ editable start/end (in bars) that wraps the position back to the loop start when
 reaches the end. It's a global clock the whole graph shares, advanced each frame
 while playing; nodes can read it to sync to the beat.
 
-The **Automation** window is a grid — a reserved top row plus one row per channel
-over a shared, horizontally-scrollable time axis. Each row's left header carries the
-channel's category (stream / ui), its output range, and a clear button; draw
-breakpoint curves with the mouse in the lane (click to add, drag to move, right-click
-to delete). Each of an **Automation** node's 4 channels is sampled at the transport
-position and output as a Float, so wiring a channel into any parameter sequences it
-over time as the transport plays.
+The **Automation** window groups channels over one shared, global-length time axis
+(set the song length in its toolbar). There are two structurally-distinct kinds of
+channel. **Stream channels** come from an **Automation** node: adding one contributes
+a collapsible group of its 4 channels, and you wire each channel's Float output into
+any parameter (an edge). **UI channels** are bound directly to a control: right-click
+any node and pick one of its Float parameters to create a channel grouped under that
+module — it drives the control directly, no wiring. Draw breakpoint curves in a lane
+with the mouse (click to add, drag to move, right-click to delete); a channel's left
+header carries its output range, a clear button, and (for ui channels) a delete. A
+channel's kind is fixed by how it was created.
 
 Try it: wire `Sine → Audio Out` to hear a tone and `Sine → Spectrograph → Output`
 to see it; or `Mesh Loader → Shaded Render → Output` to spin a 3D model.
@@ -69,7 +72,7 @@ to see it; or `Mesh Loader → Shaded Render → Output` to spin a 3D model.
 | **Wireframe / Shaded Render** | a vertex buffer → a rotating wireframe / lit texture; their `transform` input takes a shared World Transform (else each self-rotates via `spin`) |
 | **Recorder** | inline tap: passes video + audio through unchanged while recording them to a movie file (H.264/AAC mp4, mono or stereo per the input); toggle `record`, set `file` |
 | **Output** | marks the texture shown in the Output window |
-| **Automation** | 4 float channels, each a mouse-drawn curve over song time (bars), sampled at the transport position → sequences any Float parameter. Edited in the **Automation** window |
+| **Automation** | 4 stream channels (Float outputs you wire), each a mouse-drawn curve over song time (bars), sampled at the transport position. Plus ui channels created by right-clicking any node's Float parameter — bound directly to that control. Edited in the **Automation** window |
 
 Texture nodes render a fragment shader into their own framebuffer; audio and MIDI
 nodes carry samples and events; geometry flows as GL vertex-buffer handles. The

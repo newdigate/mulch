@@ -5,6 +5,7 @@
 #include "core/Node.h"
 #include "core/Connection.h"
 #include "core/Transport.h"
+#include "core/AutomationStore.h"
 
 namespace oss {
 
@@ -14,6 +15,10 @@ public:
     // evaluate() advances it by dt and hands it to each node via EvalContext.
     Transport&       transport()       { return transport_; }
     const Transport& transport() const { return transport_; }
+
+    // UI-automation channels + the global song length (the Automation window).
+    AutomationStore&       automation()       { return automation_; }
+    const AutomationStore& automation() const { return automation_; }
 
     // Takes ownership; returns the assigned (>=1) node id.
     int  addNode(std::unique_ptr<Node> node);
@@ -47,6 +52,7 @@ private:
     mutable bool             orderDirty_ = true;
 
     Transport transport_;
+    AutomationStore automation_;
     std::unordered_map<int, std::vector<Value>> outputs_;  // per-frame node outputs
 };
 

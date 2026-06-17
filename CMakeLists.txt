@@ -191,6 +191,7 @@ target_compile_definitions(ui_thirdparty PRIVATE GLFW_INCLUDE_NONE)
 set(APP_SOURCES
   src/core/Node.cpp
   src/core/Graph.cpp
+  src/core/AutomationStore.cpp
   src/audio/FFT.cpp
   src/audio/SignalGenerator.cpp
   src/audio/AudioFile.cpp
@@ -250,8 +251,11 @@ add_executable(core_tests
   tests/test_transport.cpp
   tests/test_automation.cpp
   tests/test_world_transform.cpp
+  tests/test_auto_curve.cpp
+  tests/test_automation_store.cpp
   src/core/Node.cpp
   src/core/Graph.cpp
+  src/core/AutomationStore.cpp
   src/audio/FFT.cpp
   src/audio/SignalGenerator.cpp
 )
@@ -265,6 +269,7 @@ add_executable(gl_smoke
   tests/gl_smoke.cpp
   src/core/Node.cpp
   src/core/Graph.cpp
+  src/core/AutomationStore.cpp
   src/gfx/GLUtil.cpp
   src/gfx/Framebuffer.cpp
   src/gfx/FullscreenPass.cpp
