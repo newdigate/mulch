@@ -31,9 +31,14 @@ void drawTransportBar(Transport& t) {
                 t.barNumber(), t.beatInBar(), t.beats(), mins, rem, t.millis());
 
     // Loop: a toggle button (highlighted when on) and editable start/end in bars.
-    if (t.looping) ImGui::PushStyleColor(ImGuiCol_Button, (ImU32)IM_COL32(170, 110, 40, 255));
+    // Capture `looping` BEFORE the button: clicking it calls toggleLoop(), which
+    // flips t.looping mid-widget. Gating the push on the pre-click value and the pop
+    // on the post-click value would push/pop unequal counts and trip ImGui's
+    // "PopStyleColor() too many times" assert. One captured flag keeps them balanced.
+    const bool loopHighlighted = t.looping;
+    if (loopHighlighted) ImGui::PushStyleColor(ImGuiCol_Button, (ImU32)IM_COL32(170, 110, 40, 255));
     if (ImGui::Button("Loop")) t.toggleLoop();
-    if (t.looping) ImGui::PopStyleColor();
+    if (loopHighlighted) ImGui::PopStyleColor();
 
     ImGui::SetNextItemWidth(46.0f);
     float ls = (float)t.loopStartBar;
