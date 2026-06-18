@@ -95,6 +95,14 @@ CMake 4.x, it's relaxed with `CMAKE_POLICY_VERSION_MINIMUM 3.5` around its
   512-point line strip and scaled by `gain`. The node owns the history + an internal
   `SignalGenerator` fallback + the VBO, and publishes a `VertexRef` on output 0 → wire
   into the Wireframe renderer. The trace math is unit-tested in `core_tests`.
+- **Chord Player** — `ChordPlayerNode` (`src/modules/ChordPlayerNode.h`, header-only,
+  GL-free) holds 8 patterns (root pitch-class + octave + chord name from the 14-chord
+  GL-free `core/Chords.h`) and emits one at a time as a chord (simultaneous note-ons) on
+  its `midi` output, switching on a transport-synced Bar/Beat boundary — auto-progressing
+  `unitAbs % length` (stateless from `transport.bars()`, so loop-robust) or manually
+  selected. It tracks the sounding chord's exact notes and releases them on every
+  switch / stop, so nothing hangs; wire it into the Arpeggiator (which folds the chord's
+  note-ons into its held set) or any synth. Unit-tested in `core_tests`.
 - **Texture nodes** derive from `ShaderNode` (`src/gfx/ShaderNode.h`): render a
   fragment shader into their own FBO and publish a `TexRef` on output 0. `ColourNode`
   is the minimal example — declare ports, override `setUniforms()`, call `render(ctx)`.
