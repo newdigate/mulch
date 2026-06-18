@@ -263,6 +263,7 @@ add_executable(core_tests
   tests/test_midi_file.cpp
   tests/test_midi_clip.cpp
   tests/test_oscilloscope.cpp
+  tests/test_chords.cpp
   src/core/Node.cpp
   src/core/Graph.cpp
   src/core/AutomationStore.cpp
