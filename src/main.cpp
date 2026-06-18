@@ -76,6 +76,7 @@ static int runScreenshot(const std::string& path) {
         app.addNodeOfType("LFO", glm::vec2(740.0f, 60.0f));
         app.addNodeOfType("Acid Bass", glm::vec2(740.0f, 320.0f));
         app.addNodeOfType("MIDI File", glm::vec2(40.0f, 320.0f));
+        app.addNodeOfType("Oscilloscope", glm::vec2(1060.0f, 60.0f));
         app.graph().transport().bpm = 120.0;
         app.graph().transport().seconds = 6.0;   // playhead at bar 3
 
