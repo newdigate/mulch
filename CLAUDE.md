@@ -87,6 +87,14 @@ CMake 4.x, it's relaxed with `CMAKE_POLICY_VERSION_MINIMUM 3.5` around its
   `transport.beats()` (anchored at a start-offset, looping a region) and emits the
   events in that frame's `[prevPlay, playPos)` window, flushing note-offs at every
   loop seam / stop / mute so nothing hangs. Output is a `MidiRef` → wire into a synth.
+- **Oscilloscope** — `OscilloscopeNode` (`src/modules/OscilloscopeNode.h`, header-only)
+  turns an audio signal into an oscilloscope trace as streamed geometry. The GL-free
+  `buildScopeVertices` (`src/core/Oscilloscope.{h,cpp}`) does the trace math over a
+  rolling sample history: a mono waveform locked to a rising zero-crossing `trigger`
+  (so a steady tone stands still) or an X-Y vectorscope (L→x, R→y), resampled to a fixed
+  512-point line strip and scaled by `gain`. The node owns the history + an internal
+  `SignalGenerator` fallback + the VBO, and publishes a `VertexRef` on output 0 → wire
+  into the Wireframe renderer. The trace math is unit-tested in `core_tests`.
 - **Texture nodes** derive from `ShaderNode` (`src/gfx/ShaderNode.h`): render a
   fragment shader into their own FBO and publish a `TexRef` on output 0. `ColourNode`
   is the minimal example — declare ports, override `setUniforms()`, call `render(ctx)`.

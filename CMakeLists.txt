@@ -193,6 +193,7 @@ set(APP_SOURCES
   src/core/Graph.cpp
   src/core/AutomationStore.cpp
   src/core/MidiFile.cpp
+  src/core/Oscilloscope.cpp
   src/audio/FFT.cpp
   src/audio/SignalGenerator.cpp
   src/audio/AcidVoice.cpp
@@ -261,10 +262,12 @@ add_executable(core_tests
   tests/test_acid_voice.cpp
   tests/test_midi_file.cpp
   tests/test_midi_clip.cpp
+  tests/test_oscilloscope.cpp
   src/core/Node.cpp
   src/core/Graph.cpp
   src/core/AutomationStore.cpp
   src/core/MidiFile.cpp
+  src/core/Oscilloscope.cpp
   src/audio/FFT.cpp
   src/audio/SignalGenerator.cpp
   src/audio/AcidVoice.cpp
