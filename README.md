@@ -68,6 +68,7 @@ to see it; or `Mesh Loader → Shaded Render → Output` to spin a 3D model.
 | **MIDI File** | streams a Standard MIDI File (.mid) synced to the project BPM → MIDI: anchor `start offset` (bars), `loop` + `loop length` (bars), and `mute 1`…`mute 16` toggles per channel. The file's own tempo is ignored. Wire `out` into a synth (e.g. **Acid Bass**) |
 | **Step Seq** | 16-step drum sequencer → MIDI; `sync` toggle locks the step rate to the project BPM over musical divisions (1/4 … 1/32, incl. dotted + triplet), or runs free at its own `tempo` |
 | **Arpeggiator** | held notes → a stepped sequence (up / down / up-down); `sync` toggle locks the step rate to the project BPM, or runs free at `rate` steps/sec |
+| **Chord Player** | 8 chord patterns → MIDI: each pattern is a root + octave + chord name (14 types); plays one as a chord, switching on a transport-synced **Bar**/**Beat** boundary. Auto-progress through the first `length` patterns, or pick one manually. Wire into the **Arpeggiator** or a synth |
 | **MIDI Merge** | up to four MIDI streams → one |
 | **Mesh Loader** | load .obj/.gltf/.glb (incl. Draco/meshopt) on a worker thread → geometry |
 | **Text 2D / Text 3D** | type a string → vertex buffers: flat filled letters / extruded solid 3D letters (stb_truetype + earcut) |
