@@ -175,6 +175,39 @@ TEST_CASE("voice: an out-of-range MIDI note is clamped (no inf/NaN)") {
     CHECK(ok);
 }
 
+// Peak |amplitude| of a held note rendered by a fresh voice; optionally setLevel first.
+static float voicePeak(float level, bool applyLevel) {
+    AcidVoice v; v.setSampleRate(48000);
+    v.setCutoff(2000.0f); v.setResonance(0.3f); v.setEnvMod(0.3f); v.setDistortion(0.0f);
+    if (applyLevel) v.setLevel(level);
+    v.noteOn(48, 110, false);
+    std::vector<float> b(4800); v.process(b.data(), 4800);
+    float m = 0.0f; for (float x : b) m = std::max(m, std::fabs(x));
+    return m;
+}
+
+TEST_CASE("voice: level scales the output amplitude linearly") {
+    float full = voicePeak(1.0f, true);
+    float half = voicePeak(0.5f, true);
+    REQUIRE(full > 0.01f);                                  // audible reference
+    CHECK(half == doctest::Approx(0.5f * full).epsilon(0.02));
+}
+
+TEST_CASE("voice: level 0 is silent") {
+    AcidVoice v; v.setSampleRate(48000);
+    v.setLevel(0.0f);
+    v.noteOn(48, 110, false);
+    std::vector<float> b(4800); v.process(b.data(), 4800);
+    for (float x : b) CHECK(x == 0.0f);
+}
+
+TEST_CASE("voice: the default output level is 0.7") {
+    float dflt  = voicePeak(0.0f, false);                   // fresh voice, no setLevel
+    float unity = voicePeak(1.0f, true);
+    REQUIRE(unity > 0.01f);
+    CHECK(dflt == doctest::Approx(0.7f * unity).epsilon(0.02));
+}
+
 TEST_CASE("AcidNode renders audio for a MIDI note and decays after note-off") {
     AcidNode node;
     auto eval = [&](const std::vector<MidiEvent>& ev, float dt) {
