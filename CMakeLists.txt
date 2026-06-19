@@ -265,6 +265,7 @@ add_executable(core_tests
   tests/test_oscilloscope.cpp
   tests/test_chords.cpp
   tests/test_chord_player.cpp
+  tests/test_blend_modes.cpp
   src/core/Node.cpp
   src/core/Graph.cpp
   src/core/AutomationStore.cpp
