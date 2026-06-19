@@ -103,6 +103,13 @@ CMake 4.x, it's relaxed with `CMAKE_POLICY_VERSION_MINIMUM 3.5` around its
   selected. It tracks the sounding chord's exact notes and releases them on every
   switch / stop, so nothing hangs; wire it into the Arpeggiator (which folds the chord's
   note-ons into its held set) or any synth. Unit-tested in `core_tests`.
+- **Compositor** — `CompositorNode` (`src/modules/CompositorNode.h`, header-only) is a
+  `ShaderNode` that blends two input textures with a selectable operator. The 23 blend
+  modes (arithmetic, the Photoshop-standard separable set, the HSL non-separable
+  hue/saturation/color/luminosity, and bitwise and/or/xor) live in `shaders/compositor.frag`,
+  which mirrors the GL-free reference `core/BlendModes.h` (`blendPixel` + `blendModeLabels`);
+  the reference is unit-tested in `core_tests` and a `gl_smoke` scenario cross-checks the
+  shader against it (one mode per code path) so they can't drift.
 - **Texture nodes** derive from `ShaderNode` (`src/gfx/ShaderNode.h`): render a
   fragment shader into their own FBO and publish a `TexRef` on output 0. `ColourNode`
   is the minimal example — declare ports, override `setUniforms()`, call `render(ctx)`.

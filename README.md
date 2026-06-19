@@ -57,6 +57,7 @@ to see it; or `Mesh Loader → Shaded Render → Output` to spin a 3D model.
 | **Colour** | colour parameter → texture |
 | **Video** | play a video file → texture + audio; signed `rate` (negative = reverse), variable speed, loop |
 | **Mix** | blend two textures by a factor |
+| **Compositor** | blend two textures with a selectable operator (23 modes): add/subtract/difference/exclusion, multiply/screen/overlay, darken/lighten, dodge/burn, hard/soft light, divide/average, the HSL hue/saturation/color/luminosity, and bitwise and/or/xor; plus `opacity` |
 | **Spectrograph** | audio → FFT → texture (and a 3D line-strip vertex buffer) |
 | **Oscilloscope** | turns audio into an oscilloscope trace as geometry → Vertex: `mode` (Waveform / X-Y vectorscope), a rising-edge `trigger` so a steady tone stands still, `window` (ms), and `gain`. Wire `geometry` into **Wireframe** to view it |
 | **Sine** | pure sine-wave audio source |

@@ -14,6 +14,7 @@
 #include "modules/MidiOutputNode.h"
 #include "modules/MidiFilePlayerNode.h"
 #include "modules/MixNode.h"
+#include "modules/CompositorNode.h"
 #include "modules/LfoNode.h"
 #include "modules/OutputNode.h"
 #include "modules/RecorderNode.h"
@@ -41,6 +42,7 @@ std::unique_ptr<Node> makeNode(const std::string& type) {
     if (type == "Spectrograph") return std::make_unique<SpectrographNode>();
     if (type == "Oscilloscope") return std::make_unique<OscilloscopeNode>();
     if (type == "Mix")         return std::make_unique<MixNode>();
+    if (type == "Compositor")  return std::make_unique<CompositorNode>();
     if (type == "Mesh Loader") return std::make_unique<MeshLoaderNode>();
     if (type == "Text 2D")     return std::make_unique<Text2DNode>();
     if (type == "Text 3D")     return std::make_unique<Text3DNode>();
@@ -64,7 +66,7 @@ std::unique_ptr<Node> makeNode(const std::string& type) {
 
 const std::vector<NodeCategory>& nodeCategories() {
     static const std::vector<NodeCategory> cats = {
-        { "Texture", { "Colour", "Video", "Mix", "Recorder", "Output" } },
+        { "Texture", { "Colour", "Video", "Mix", "Compositor", "Recorder", "Output" } },
         { "Audio",   { "Sine", "Acid Bass", "Audio File", "Audio In", "Audio Mix", "Spectrograph", "Oscilloscope", "Audio Out" } },
         { "MIDI",    { "MIDI In", "MIDI File", "Step Seq", "Chord Player", "Arpeggiator", "MIDI Merge", "MIDI Out" } },
         { "3D",      { "Mesh Loader", "Text 2D", "Text 3D", "World Transform", "Wireframe", "Shaded Render" } },
