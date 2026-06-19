@@ -12,14 +12,19 @@ namespace oss {
 bool drawInlineInputWidget(Node& node, std::size_t i) {
     const Port& port = node.inputs()[i];
     Value& v = node.inputDefault(i);
-    bool choiceClicked = false;
+    bool popupClicked = false;
     ImGui::PushID((int)i);
     ImGui::PushItemWidth(120.0f);
     switch (port.type) {
         case PortType::Colour: {
+            // The colour swatch is a button; clicking it asks the caller to open the
+            // colour picker in the editor's Suspend/Resume block. ColorEdit4's built-in
+            // picker popup, opened here inside the node, would render in canvas
+            // coordinates -- off-screen and unusable, like the choice dropdown.
             auto& c = std::get<glm::vec4>(v);
-            ImGui::ColorEdit4("##c", &c.x,
-                ImGuiColorEditFlags_NoInputs | ImGuiColorEditFlags_AlphaBar);
+            if (ImGui::ColorButton("##c", ImVec4(c.x, c.y, c.z, c.w),
+                    ImGuiColorEditFlags_AlphaPreviewHalf, ImVec2(120.0f, 0.0f)))
+                popupClicked = true;
             break;
         }
         case PortType::Float: {
@@ -32,7 +37,7 @@ bool drawInlineInputWidget(Node& node, std::size_t i) {
                 int idx = (int)std::lround(std::get<float>(v));
                 idx = std::clamp(idx, 0, (int)port.choices.size() - 1);
                 std::string label = port.choices[idx] + "###choice";
-                if (ImGui::Button(label.c_str(), ImVec2(120.0f, 0.0f))) choiceClicked = true;
+                if (ImGui::Button(label.c_str(), ImVec2(120.0f, 0.0f))) popupClicked = true;
             } else {
                 ImGui::SliderFloat("##f", &std::get<float>(v), port.minVal, port.maxVal);
             }
@@ -53,7 +58,7 @@ bool drawInlineInputWidget(Node& node, std::size_t i) {
     }
     ImGui::PopItemWidth();
     ImGui::PopID();
-    return choiceClicked;
+    return popupClicked;
 }
 
 } // namespace oss
