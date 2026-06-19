@@ -62,12 +62,13 @@ struct VertexRef {
     VertexFormat format    = VertexFormat::Pos3;
 };
 
-// A shared world transform so several 3D renderers can be aligned. Currently a
-// single rotation about Y (radians). `active` distinguishes a real transform
-// (from a World Transform node) from the default an unconnected input carries, so
-// a renderer can fall back to rotating itself when nothing is connected.
+// A shared world transform several 3D renderers can align to: a yaw rotation about Y
+// plus a pitch about X (radians), with an `active` flag distinguishing a real transform
+// (from a World Transform node) from the default an unconnected input carries, so a
+// renderer can fall back to rotating itself when nothing is wired in.
 struct Transform {
-    float angle  = 0.0f;
+    float angle  = 0.0f;   // yaw, about Y (radians)
+    float pitch  = 0.0f;   // pitch, about X (radians)
     bool  active = false;
 };
 

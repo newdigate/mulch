@@ -59,9 +59,9 @@ void ShadedRenderNode::evaluate(EvalContext& ctx) {
     // A connected World Transform overrides the node's own spin so several
     // renderers share one rotation and stay aligned.
     Transform tf = ctx.in<Transform>(3);
-    float angle;
-    if (tf.active) { angle = tf.angle; }
-    else { angle_ += ctx.dt * ctx.in<float>(2); angle = angle_; }
+    float yaw, pitch;
+    if (tf.active) { yaw = tf.angle; pitch = tf.pitch; }
+    else { angle_ += ctx.dt * ctx.in<float>(2); yaw = angle_; pitch = 0.0f; }
 
     fbo_.bind();
     glClearColor(0.04f, 0.04f, 0.06f, 1.0f);
@@ -75,7 +75,8 @@ void ShadedRenderNode::evaluate(EvalContext& ctx) {
         float aspect = fbo_.height() ? (float)fbo_.width() / (float)fbo_.height() : 1.7778f;
         glm::mat4 proj  = glm::perspective(glm::radians(45.0f), aspect, 0.1f, 100.0f);
         glm::mat4 view  = glm::lookAt(glm::vec3(0, 0.4f, 2.8f), glm::vec3(0, 0, 0), glm::vec3(0, 1, 0));
-        glm::mat4 model = glm::rotate(glm::mat4(1.0f), angle, glm::vec3(0, 1, 0));
+        glm::mat4 model = glm::rotate(glm::mat4(1.0f), yaw, glm::vec3(0, 1, 0))
+                        * glm::rotate(glm::mat4(1.0f), pitch, glm::vec3(1, 0, 0));
         glm::mat4 mvp = proj * view * model;
         glm::mat3 nrm = glm::mat3(model);   // rotation only -> orthonormal
         glm::vec3 light = glm::normalize(glm::vec3(0.5f, 0.8f, 0.6f));

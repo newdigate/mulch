@@ -59,9 +59,9 @@ void WireframeNode::evaluate(EvalContext& ctx) {
     // A connected World Transform overrides the node's own spin so several
     // renderers share one rotation and stay aligned.
     Transform tf = ctx.in<Transform>(2);
-    float angle;
-    if (tf.active) { angle = tf.angle; }
-    else { angle_ += ctx.dt * ctx.in<float>(1); angle = angle_; }
+    float yaw, pitch;
+    if (tf.active) { yaw = tf.angle; pitch = tf.pitch; }
+    else { angle_ += ctx.dt * ctx.in<float>(1); yaw = angle_; pitch = 0.0f; }
 
     fbo_.bind();
     glClearColor(0.03f, 0.03f, 0.05f, 1.0f);
@@ -74,7 +74,8 @@ void WireframeNode::evaluate(EvalContext& ctx) {
         glm::mat4 view = glm::lookAt(glm::vec3(0.0f, 0.4f, 2.8f),
                                      glm::vec3(0.0f, 0.0f, 0.0f),
                                      glm::vec3(0.0f, 1.0f, 0.0f));
-        glm::mat4 model = glm::rotate(glm::mat4(1.0f), angle, glm::vec3(0.0f, 1.0f, 0.0f));
+        glm::mat4 model = glm::rotate(glm::mat4(1.0f), yaw, glm::vec3(0.0f, 1.0f, 0.0f))
+                        * glm::rotate(glm::mat4(1.0f), pitch, glm::vec3(1.0f, 0.0f, 0.0f));
         glm::mat4 mvp = proj * view * model;
 
         bool colored = (geo.format == VertexFormat::Pos3Color3);
