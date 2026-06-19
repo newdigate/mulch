@@ -53,6 +53,7 @@ public:
     void setFilterFM(float a)   { filterFM_ = clamp01(a); }
     void setKeyTrack(float a)   { keyTrack_ = clamp01(a); }
     void setDistortion(float a) { distortion_ = clamp01(a); }
+    void setLevel(float a)      { level_ = clamp01(a); }
 
     void process(float* out, int n);
 
@@ -77,6 +78,7 @@ private:
     float filterFM_   = 0.0f;
     float keyTrack_   = 0.0f;
     float distortion_ = 0.0f;
+    float level_      = 0.7f;   // output gain (post-distortion volume trim)
     // derived coefficients
     float decayCoef_   = 0.0f;
     float glideCoef_   = 0.0f;

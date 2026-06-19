@@ -76,7 +76,7 @@ CMake 4.x, it's relaxed with `CMAKE_POLICY_VERSION_MINIMUM 3.5` around its
   the first MIDI-in → audio-out synth: it wraps the GL-free `AcidVoice` DSP
   (`src/audio/AcidVoice.{h,cpp}`) — a monophonic 303-style voice (saw/square VCO +
   sub-osc → a compact 4-pole resonant `LadderFilter` modulated by an envelope /
-  accent / key-track / filter-FM → VCA → a `tanh` distortion stage, plus note slide).
+  accent / key-track / filter-FM → VCA → a `tanh` distortion stage → output `level`, plus note slide).
   The ladder feedback and the output are `tanh`-saturated so it's BIBO-stable and
   bounded to `[-1,1]` regardless of resonance/FM. The voice is unit-tested in
   `core_tests`; the node is header-only and GL-free.

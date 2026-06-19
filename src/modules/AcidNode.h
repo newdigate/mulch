@@ -14,7 +14,7 @@ namespace oss {
 //
 // Inputs: 0 = midi, 1 = waveform (choice), 2 = cutoff, 3 = resonance, 4 = env mod,
 //   5 = decay, 6 = accent, 7 = sub level, 8 = slide, 9 = slide time, 10 = filter FM,
-//   11 = key track, 12 = distortion.
+//   11 = key track, 12 = distortion, 13 = level.
 class AcidNode : public Node {
 public:
     AcidNode() : Node("Acid Bass"), buffer_(kMaxBlock, 0.0f) {
@@ -31,6 +31,7 @@ public:
         addInput("filter FM",  PortType::Float, 0.0f,   0.0f,   1.0f);
         addInput("key track",  PortType::Float, 0.0f,   0.0f,   1.0f);
         addInput("distortion", PortType::Float, 0.0f,   0.0f,   1.0f);
+        addInput("level",      PortType::Float, 0.7f,   0.0f,   1.0f);
         addOutput("audio", PortType::Audio);
         voice_.setSampleRate(sampleRate_);
     }
@@ -54,6 +55,7 @@ public:
         voice_.setFilterFM(ctx.in<float>(10));
         voice_.setKeyTrack(ctx.in<float>(11));
         voice_.setDistortion(ctx.in<float>(12));
+        voice_.setLevel(ctx.in<float>(13));
 
         int n = std::clamp((int)std::lround(sampleRate_ * (double)ctx.dt), 1, kMaxBlock);
         voice_.process(buffer_.data(), n);

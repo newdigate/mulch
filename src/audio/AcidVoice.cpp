@@ -75,8 +75,8 @@ void AcidVoice::process(float* out, int n) {
 
         float filtered = filter_.process(osc, fcHz, resonance_, sr_);
         float s = filtered * ampEnv_;
-        lastOut_ = std::tanh(s);   // bounded VCA output -> stable filter-FM feedback
-        out[i] = std::tanh(s * (1.0f + distortion_ * 9.0f));
+        lastOut_ = std::tanh(s);   // bounded VCA output -> stable filter-FM feedback (unscaled)
+        out[i] = level_ * std::tanh(s * (1.0f + distortion_ * 9.0f));
     }
 }
 
