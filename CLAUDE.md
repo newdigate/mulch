@@ -119,6 +119,13 @@ CMake 4.x, it's relaxed with `CMAKE_POLICY_VERSION_MINIMUM 3.5` around its
   vertex format and the Wireframe node's colored draw path were added for it (Wireframe
   branches on `format`, like Shaded Render on `Pos3Normal3`). Unit-tested in `core_tests`;
   a `gl_smoke` scenario checks the colours reach the Wireframe texture.
+- **Skybox** — `SkyboxNode` (`src/modules/SkyboxNode.h`, header-only) is a `ShaderNode`
+  that samples 6 face textures as a cubemap in `shaders/skybox.frag`: a per-pixel view ray
+  (45° FOV, −Z forward) is rotated by yaw+pitch, then in-shader major-axis face selection
+  (mirroring the GL-free `core/CubeMap.h` `cubeFaceUV`, unit-tested + gl_smoke
+  cross-checked) picks and samples the face. It's rotated by a self-spin or the shared
+  `Transform`, which now carries **yaw + pitch** — the World Transform produces both and
+  Wireframe / Shaded Render / Skybox all apply them (`rotate(yaw,Y)·rotate(pitch,X)`).
 - **Texture nodes** derive from `ShaderNode` (`src/gfx/ShaderNode.h`): render a
   fragment shader into their own FBO and publish a `TexRef` on output 0. `ColourNode`
   is the minimal example — declare ports, override `setUniforms()`, call `render(ctx)`.
