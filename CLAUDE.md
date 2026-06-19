@@ -110,6 +110,15 @@ CMake 4.x, it's relaxed with `CMAKE_POLICY_VERSION_MINIMUM 3.5` around its
   which mirrors the GL-free reference `core/BlendModes.h` (`blendPixel` + `blendModeLabels`);
   the reference is unit-tested in `core_tests` and a `gl_smoke` scenario cross-checks the
   shader against it (one mode per code path) so they can't drift.
+- **Pitch Graph** — `PitchGraphNode` (`src/modules/PitchGraphNode.h`, header-only) turns
+  incoming MIDI into a scrolling pitch-vs-time graph as colored line geometry. The GL-free
+  `core/PitchGraph` holds a rolling note history (note-on opens a segment, note-off closes
+  it, old ones scroll off and prune) and builds line segments — x = time (newest at the
+  right, scrolling left), y = note number (log-frequency), colour = pitch-class rainbow
+  hue × velocity brightness via `hsvToRgb`. It publishes a `Pos3Color3` `VertexRef`; that
+  vertex format and the Wireframe node's colored draw path were added for it (Wireframe
+  branches on `format`, like Shaded Render on `Pos3Normal3`). Unit-tested in `core_tests`;
+  a `gl_smoke` scenario checks the colours reach the Wireframe texture.
 - **Texture nodes** derive from `ShaderNode` (`src/gfx/ShaderNode.h`): render a
   fragment shader into their own FBO and publish a `TexRef` on output 0. `ColourNode`
   is the minimal example — declare ports, override `setUniforms()`, call `render(ctx)`.

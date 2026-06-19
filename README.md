@@ -70,6 +70,7 @@ to see it; or `Mesh Loader → Shaded Render → Output` to spin a 3D model.
 | **Step Seq** | 16-step drum sequencer → MIDI; `sync` toggle locks the step rate to the project BPM over musical divisions (1/4 … 1/32, incl. dotted + triplet), or runs free at its own `tempo` |
 | **Arpeggiator** | held notes → a stepped sequence (up / down / up-down); `sync` toggle locks the step rate to the project BPM, or runs free at `rate` steps/sec |
 | **Chord Player** | 8 chord patterns → MIDI: each pattern is a root + octave + chord name (14 types); plays one as a chord, switching on a transport-synced **Bar**/**Beat** boundary. Auto-progress through the first `length` patterns, or pick one manually. Wire into the **Arpeggiator** or a synth |
+| **Pitch Graph** | MIDI → a scrolling pitch-vs-time graph as colored geometry → Vertex: each held note is a horizontal line at its pitch, coloured by pitch class (rainbow hue) and velocity (brightness), scrolling over `window` seconds. Wire `geometry` into **Wireframe** (set its `spin` to 0 for a static view) |
 | **MIDI Merge** | up to four MIDI streams → one |
 | **Mesh Loader** | load .obj/.gltf/.glb (incl. Draco/meshopt) on a worker thread → geometry |
 | **Text 2D / Text 3D** | type a string → vertex buffers: flat filled letters / extruded solid 3D letters (stb_truetype + earcut) |
