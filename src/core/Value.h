@@ -49,7 +49,8 @@ enum class Primitive { LineStrip, Lines, Triangles };
 // The per-vertex layout of a VertexRef's buffer:
 //   Pos3        - 3 floats: position (stride 12)
 //   Pos3Normal3 - 6 floats: position + normal (stride 24, normal at offset 12)
-enum class VertexFormat { Pos3, Pos3Normal3 };
+//   Pos3Color3  - 6 floats: position + RGB colour (stride 24, colour at offset 12)
+enum class VertexFormat { Pos3, Pos3Normal3, Pos3Color3 };
 
 // A handle to a GL vertex buffer (VBO) a node produced, with its vertex count,
 // primitive, and per-vertex format. `vbo` is a plain GL name so this header

@@ -17,9 +17,10 @@ public:
 
 private:
     Framebuffer fbo_;
-    GLuint program_ = 0;
-    GLuint vao_     = 0;
-    float  angle_   = 0.0f;   // accumulated camera rotation (radians)
+    GLuint program_       = 0;
+    GLuint program_color_ = 0;   // per-vertex-colour variant (Pos3Color3)
+    GLuint vao_           = 0;
+    float  angle_         = 0.0f;   // accumulated camera rotation (radians)
 };
 
 } // namespace oss

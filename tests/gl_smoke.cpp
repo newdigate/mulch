@@ -853,6 +853,42 @@ int main() {
         std::fprintf(stderr, "gl_smoke OK: Compositor shader matches blendPixel (Multiply/Hue/XOR)\n");
     }
 
+    // --- Scenario 16: Wireframe draws a per-vertex-coloured line (Pos3Color3) ---
+    // A hand-built coloured VBO (a red horizontal line) fed to the Wireframe node must
+    // render RED, not the node's default green -- proving the Pos3Color3 colored path.
+    {
+        const float verts[] = {
+            -0.5f, 0.0f, 0.0f,  1.0f, 0.0f, 0.0f,   // (x,y,z, r,g,b)
+             0.5f, 0.0f, 0.0f,  1.0f, 0.0f, 0.0f,
+        };
+        GLuint vbo = 0;
+        glGenBuffers(1, &vbo); glBindBuffer(GL_ARRAY_BUFFER, vbo);
+        glBufferData(GL_ARRAY_BUFFER, sizeof(verts), verts, GL_STATIC_DRAW);
+        glBindBuffer(GL_ARRAY_BUFFER, 0);
+
+        Graph g;
+        auto wire = std::make_unique<WireframeNode>();
+        wire->inputDefault(0) = VertexRef{vbo, 2, Primitive::Lines, VertexFormat::Pos3Color3};
+        wire->inputDefault(1) = 0.0f;   // spin off -> static
+        auto out = std::make_unique<OutputNode>();
+        wire->initGL(); out->initGL();
+        int wId = g.addNode(std::move(wire));
+        int oId = g.addNode(std::move(out));
+        if (!g.connect(wId, 0, oId, 0)) { glfwTerminate(); return fail("connect colour-wire->output"); }
+        g.evaluate(1.0f/60.0f);
+        TexRef t = dynamic_cast<OutputNode*>(g.findNode(oId))->current();
+        if (!t.id) { glfwTerminate(); return fail("coloured wireframe texture not produced"); }
+        std::vector<unsigned char> px((size_t)t.w * t.h * 4);
+        glBindTexture(GL_TEXTURE_2D, t.id);
+        glGetTexImage(GL_TEXTURE_2D, 0, GL_RGBA, GL_UNSIGNED_BYTE, px.data());
+        bool sawRed = false;
+        for (size_t i = 0; i < px.size(); i += 4)
+            if (px[i] > 150 && px[i+1] < 80 && px[i+2] < 80) { sawRed = true; break; }
+        glDeleteBuffers(1, &vbo);
+        if (!sawRed) { glfwTerminate(); return fail("coloured wireframe did not render a red line (Pos3Color3 path)"); }
+        std::fprintf(stderr, "gl_smoke OK: Wireframe renders per-vertex colour (Pos3Color3)\n");
+    }
+
     glfwDestroyWindow(win);
     glfwTerminate();
     return 0;
