@@ -211,7 +211,7 @@ TEST_CASE("voice: the default output level is 0.7") {
 TEST_CASE("AcidNode renders audio for a MIDI note and decays after note-off") {
     AcidNode node;
     auto eval = [&](const std::vector<MidiEvent>& ev, float dt) {
-        std::vector<Value> in(13);
+        std::vector<Value> in(14);
         in[0]  = MidiRef{ ev.data(), ev.size() };
         in[1]  = 0.0f;   // waveform (Saw)
         in[2]  = 800.0f; // cutoff
@@ -225,6 +225,7 @@ TEST_CASE("AcidNode renders audio for a MIDI note and decays after note-off") {
         in[10] = 0.0f;   // filter FM
         in[11] = 0.0f;   // key track
         in[12] = 0.0f;   // distortion
+        in[13] = 0.7f;   // level
         std::vector<Value> out(1);
         EvalContext ctx{ in, out, dt };
         node.evaluate(ctx);
