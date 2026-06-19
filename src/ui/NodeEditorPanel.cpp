@@ -3,6 +3,7 @@
 #include "app/Application.h"   // for nodeCategories()
 #include <imgui.h>
 #include <imgui_node_editor.h>
+#include <glm/vec4.hpp>
 #include <algorithm>
 #include <cmath>
 #include <set>
@@ -30,14 +31,15 @@ struct NodeEditorPanel::Impl {
     std::set<int> placed;
     int ctxNodeId = 0;   // node whose context menu is open
 
-    // Deferred choice-input dropdown. A choice port's inline button (drawn inside a
-    // node) records a request here; the popup is opened/drawn in screen space inside
-    // the editor's Suspend/Resume block. `pending*` is set the frame a button is
-    // clicked; `open*` holds the port whose dropdown is currently open.
-    int    pendingChoiceNode = -1, pendingChoicePort = -1;
-    ImVec2 pendingChoicePos{0.0f, 0.0f};
-    int    openChoiceNode = -1, openChoicePort = -1;
-    ImVec2 openChoicePos{0.0f, 0.0f};
+    // Deferred in-node popup (a choice dropdown or a colour picker). A port's inline
+    // button (drawn inside a node) records a request here; the popup is opened/drawn in
+    // screen space inside the editor's Suspend/Resume block, dispatched by port type.
+    // `pending*` is set the frame a button is clicked; `open*` holds the port whose
+    // popup is currently open.
+    int    pendingPopupNode = -1, pendingPopupPort = -1;
+    ImVec2 pendingPopupPos{0.0f, 0.0f};
+    int    openPopupNode = -1, openPopupPort = -1;
+    ImVec2 openPopupPos{0.0f, 0.0f};
 };
 
 NodeEditorPanel::NodeEditorPanel() : impl_(std::make_unique<Impl>()) {
@@ -79,11 +81,12 @@ void NodeEditorPanel::draw(Graph& graph,
             if (!graph.isInputConnected(n.id(), (int)i)) {
                 ImGui::SameLine();
                 if (drawInlineInputWidget(n, i)) {
-                    // A choice button was clicked; request its dropdown (opened below
-                    // in the Suspend block, anchored at the click in screen space).
-                    impl_->pendingChoiceNode = n.id();
-                    impl_->pendingChoicePort = (int)i;
-                    impl_->pendingChoicePos  = ImGui::GetMousePos();
+                    // A popup-backed control (choice / colour) was clicked; request its
+                    // popup (opened below in the Suspend block, anchored at the click in
+                    // screen space).
+                    impl_->pendingPopupNode = n.id();
+                    impl_->pendingPopupPort = (int)i;
+                    impl_->pendingPopupPos  = ImGui::GetMousePos();
                 }
             }
         }
@@ -240,28 +243,34 @@ void NodeEditorPanel::draw(Graph& graph,
         ImGui::EndPopup();
     }
 
-    // Choice-input dropdown (deferred from a node's inline choice button). Opened and
-    // drawn here, inside Suspend, so the popup uses screen coordinates and is clickable
-    // -- a combo opened inside the node lands in canvas space, off-screen and unusable.
-    if (impl_->pendingChoiceNode >= 0) {
-        impl_->openChoiceNode = impl_->pendingChoiceNode;
-        impl_->openChoicePort = impl_->pendingChoicePort;
-        impl_->openChoicePos  = impl_->pendingChoicePos;
-        impl_->pendingChoiceNode = -1;
-        ImGui::OpenPopup("ChoiceDropdown");
+    // In-node popup (deferred from a node's inline choice button or colour swatch).
+    // Opened and drawn here, inside Suspend, so the popup uses screen coordinates and is
+    // clickable -- a popup opened inside the node lands in canvas space, off-screen and
+    // unusable. Dispatched by the port's type.
+    if (impl_->pendingPopupNode >= 0) {
+        impl_->openPopupNode = impl_->pendingPopupNode;
+        impl_->openPopupPort = impl_->pendingPopupPort;
+        impl_->openPopupPos  = impl_->pendingPopupPos;
+        impl_->pendingPopupNode = -1;
+        ImGui::OpenPopup("NodePopup");
     }
-    ImGui::SetNextWindowPos(impl_->openChoicePos, ImGuiCond_Appearing);
-    if (ImGui::BeginPopup("ChoiceDropdown")) {
-        Node* n = graph.findNode(impl_->openChoiceNode);
-        if (n && impl_->openChoicePort >= 0 && impl_->openChoicePort < (int)n->inputs().size()) {
-            const Port& port = n->inputs()[(std::size_t)impl_->openChoicePort];
-            Value& v = n->inputDefault((std::size_t)impl_->openChoicePort);
-            int idx = std::clamp((int)std::lround(std::get<float>(v)),
-                                 0, (int)port.choices.size() - 1);
-            for (int k = 0; k < (int)port.choices.size(); ++k) {
-                if (ImGui::Selectable(port.choices[k].c_str(), k == idx)) {
-                    v = Value((float)k);
-                    ImGui::CloseCurrentPopup();
+    ImGui::SetNextWindowPos(impl_->openPopupPos, ImGuiCond_Appearing);
+    if (ImGui::BeginPopup("NodePopup")) {
+        Node* n = graph.findNode(impl_->openPopupNode);
+        if (n && impl_->openPopupPort >= 0 && impl_->openPopupPort < (int)n->inputs().size()) {
+            const Port& port = n->inputs()[(std::size_t)impl_->openPopupPort];
+            Value& v = n->inputDefault((std::size_t)impl_->openPopupPort);
+            if (port.type == PortType::Colour) {
+                auto& c = std::get<glm::vec4>(v);
+                ImGui::ColorPicker4("##picker", &c.x, ImGuiColorEditFlags_AlphaBar);
+            } else {   // a Float choice port: a list of its labels
+                int idx = std::clamp((int)std::lround(std::get<float>(v)),
+                                     0, (int)port.choices.size() - 1);
+                for (int k = 0; k < (int)port.choices.size(); ++k) {
+                    if (ImGui::Selectable(port.choices[k].c_str(), k == idx)) {
+                        v = Value((float)k);
+                        ImGui::CloseCurrentPopup();
+                    }
                 }
             }
         } else {
