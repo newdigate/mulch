@@ -268,6 +268,7 @@ add_executable(core_tests
   tests/test_chord_player.cpp
   tests/test_blend_modes.cpp
   tests/test_pitch_graph.cpp
+  tests/test_cube_map.cpp
   src/core/Node.cpp
   src/core/Graph.cpp
   src/core/AutomationStore.cpp
