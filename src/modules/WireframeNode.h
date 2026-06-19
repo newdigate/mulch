@@ -5,9 +5,9 @@
 
 namespace oss {
 
-// Renders a streamed vertex buffer (a line strip of vec3 positions) as a
-// wireframe into its own framebuffer, viewed through a slowly rotating 3D
-// camera, and publishes the result as a texture on output 0.
+// Renders a streamed vertex buffer (Pos3 line strip/lines in a fixed green, or a
+// Pos3Color3 buffer with per-vertex colour) as a wireframe into its own framebuffer,
+// viewed through a slowly rotating 3D camera, and publishes a texture on output 0.
 class WireframeNode : public Node {
 public:
     WireframeNode();
