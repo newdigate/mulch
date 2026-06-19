@@ -11,6 +11,8 @@
 #include "core/Graph.h"
 #include "modules/ColourNode.h"
 #include "modules/MixNode.h"
+#include "modules/CompositorNode.h"
+#include "core/BlendModes.h"
 #include "modules/OutputNode.h"
 #include "gfx/MeshLoader.h"
 #include <meshoptimizer.h>
@@ -806,6 +808,49 @@ int main() {
         std::fprintf(stderr, "gl_smoke OK: shared World Transform aligns Wireframe + Shaded (centroid %.0f,%.0f in bbox)\n", gcx, gcy);
 
         glDeleteBuffers(1, &trisVbo); glDeleteBuffers(1, &linesVbo);
+    }
+
+    // --- Scenario 15: Compositor blends two colours; shader matches the C++ reference ---
+    // Feed two solid colours into the Compositor and assert the rendered centre pixel
+    // matches blendPixel() for one mode per code path: Multiply (separable), Hue
+    // (non-separable setSat/setLum), XOR (bitwise). The reference is computed on the
+    // 8-bit-quantised inputs (what the textures actually carry) so only output rounding
+    // can differ; the near() tolerance is +/-3.
+    {
+        auto quant = [](glm::vec3 c) {
+            return glm::vec3(std::round(c.x*255.0f)/255.0f,
+                             std::round(c.y*255.0f)/255.0f,
+                             std::round(c.z*255.0f)/255.0f);
+        };
+        auto check = [&](int mode, glm::vec3 ca, glm::vec3 cb) -> bool {
+            Graph g;
+            auto a = std::make_unique<ColourNode>(); a->inputDefault(0) = glm::vec4(ca, 1.0f);
+            auto b = std::make_unique<ColourNode>(); b->inputDefault(0) = glm::vec4(cb, 1.0f);
+            auto comp = std::make_unique<CompositorNode>();
+            comp->inputDefault(2) = (float)mode;   // mode
+            comp->inputDefault(3) = 1.0f;          // opacity
+            auto out = std::make_unique<OutputNode>();
+            a->initGL(); b->initGL(); comp->initGL(); out->initGL();
+            int aId = g.addNode(std::move(a));
+            int bId = g.addNode(std::move(b));
+            int cId = g.addNode(std::move(comp));
+            int oId = g.addNode(std::move(out));
+            if (!g.connect(aId,0,cId,0) || !g.connect(bId,0,cId,1) || !g.connect(cId,0,oId,0)) return false;
+            g.evaluate(1.0f/60.0f);
+            TexRef t = dynamic_cast<OutputNode*>(g.findNode(oId))->current();
+            if (!t.id) return false;
+            int r, gg, bb, aa; readCentre(t, r, gg, bb, aa);
+            glm::vec3 e = blendPixel(mode, quant(ca), quant(cb));
+            int er = (int)std::lround(e.x*255.0f), eg = (int)std::lround(e.y*255.0f), eb = (int)std::lround(e.z*255.0f);
+            std::fprintf(stderr, "gl_smoke compositor mode %d: got (%d,%d,%d) expected (%d,%d,%d)\n",
+                         mode, r, gg, bb, er, eg, eb);
+            return near(r,er) && near(gg,eg) && near(bb,eb);
+        };
+        glm::vec3 ca(0.2f, 0.5f, 0.8f), cb(0.9f, 0.3f, 0.1f);   // distinct channels (no setSat ties)
+        if (!check(5,  ca, cb)) { glfwTerminate(); return fail("Compositor Multiply mismatch vs reference"); }
+        if (!check(16, ca, cb)) { glfwTerminate(); return fail("Compositor Hue mismatch vs reference"); }
+        if (!check(22, ca, cb)) { glfwTerminate(); return fail("Compositor XOR mismatch vs reference"); }
+        std::fprintf(stderr, "gl_smoke OK: Compositor shader matches blendPixel (Multiply/Hue/XOR)\n");
     }
 
     glfwDestroyWindow(win);
