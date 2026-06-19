@@ -3,8 +3,11 @@
 #include "app/Application.h"   // for nodeCategories()
 #include <imgui.h>
 #include <imgui_node_editor.h>
+#include <algorithm>
+#include <cmath>
 #include <set>
 #include <string>
+#include <variant>
 #include <vector>
 #include <utility>
 
@@ -26,6 +29,15 @@ struct NodeEditorPanel::Impl {
     ed::EditorContext* ctx = nullptr;
     std::set<int> placed;
     int ctxNodeId = 0;   // node whose context menu is open
+
+    // Deferred choice-input dropdown. A choice port's inline button (drawn inside a
+    // node) records a request here; the popup is opened/drawn in screen space inside
+    // the editor's Suspend/Resume block. `pending*` is set the frame a button is
+    // clicked; `open*` holds the port whose dropdown is currently open.
+    int    pendingChoiceNode = -1, pendingChoicePort = -1;
+    ImVec2 pendingChoicePos{0.0f, 0.0f};
+    int    openChoiceNode = -1, openChoicePort = -1;
+    ImVec2 openChoicePos{0.0f, 0.0f};
 };
 
 NodeEditorPanel::NodeEditorPanel() : impl_(std::make_unique<Impl>()) {
@@ -66,7 +78,13 @@ void NodeEditorPanel::draw(Graph& graph,
             ed::EndPin();
             if (!graph.isInputConnected(n.id(), (int)i)) {
                 ImGui::SameLine();
-                drawInlineInputWidget(n, i);
+                if (drawInlineInputWidget(n, i)) {
+                    // A choice button was clicked; request its dropdown (opened below
+                    // in the Suspend block, anchored at the click in screen space).
+                    impl_->pendingChoiceNode = n.id();
+                    impl_->pendingChoicePort = (int)i;
+                    impl_->pendingChoicePos  = ImGui::GetMousePos();
+                }
             }
         }
         for (std::size_t i = 0; i < n.outputs().size(); ++i) {
@@ -218,6 +236,36 @@ void NodeEditorPanel::draw(Graph& graph,
                 }
             }
             if (!any) ImGui::TextDisabled("No automatable parameters");
+        }
+        ImGui::EndPopup();
+    }
+
+    // Choice-input dropdown (deferred from a node's inline choice button). Opened and
+    // drawn here, inside Suspend, so the popup uses screen coordinates and is clickable
+    // -- a combo opened inside the node lands in canvas space, off-screen and unusable.
+    if (impl_->pendingChoiceNode >= 0) {
+        impl_->openChoiceNode = impl_->pendingChoiceNode;
+        impl_->openChoicePort = impl_->pendingChoicePort;
+        impl_->openChoicePos  = impl_->pendingChoicePos;
+        impl_->pendingChoiceNode = -1;
+        ImGui::OpenPopup("ChoiceDropdown");
+    }
+    ImGui::SetNextWindowPos(impl_->openChoicePos, ImGuiCond_Appearing);
+    if (ImGui::BeginPopup("ChoiceDropdown")) {
+        Node* n = graph.findNode(impl_->openChoiceNode);
+        if (n && impl_->openChoicePort >= 0 && impl_->openChoicePort < (int)n->inputs().size()) {
+            const Port& port = n->inputs()[(std::size_t)impl_->openChoicePort];
+            Value& v = n->inputDefault((std::size_t)impl_->openChoicePort);
+            int idx = std::clamp((int)std::lround(std::get<float>(v)),
+                                 0, (int)port.choices.size() - 1);
+            for (int k = 0; k < (int)port.choices.size(); ++k) {
+                if (ImGui::Selectable(port.choices[k].c_str(), k == idx)) {
+                    v = Value((float)k);
+                    ImGui::CloseCurrentPopup();
+                }
+            }
+        } else {
+            ImGui::CloseCurrentPopup();   // node went away
         }
         ImGui::EndPopup();
     }

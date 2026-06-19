@@ -9,9 +9,10 @@
 
 namespace oss {
 
-void drawInlineInputWidget(Node& node, std::size_t i) {
+bool drawInlineInputWidget(Node& node, std::size_t i) {
     const Port& port = node.inputs()[i];
     Value& v = node.inputDefault(i);
+    bool choiceClicked = false;
     ImGui::PushID((int)i);
     ImGui::PushItemWidth(120.0f);
     switch (port.type) {
@@ -23,17 +24,15 @@ void drawInlineInputWidget(Node& node, std::size_t i) {
         }
         case PortType::Float: {
             if (!port.choices.empty()) {
-                // A choice port: a dropdown whose value is the selected index.
+                // A choice port: show the current label as a button. Clicking it asks
+                // the caller to open the dropdown in the editor's Suspend/Resume block --
+                // a BeginCombo popup opened here (inside the node) would render in canvas
+                // coordinates, landing off-screen and unclickable. "###" keeps the
+                // button's ImGui id stable as the displayed label changes.
                 int idx = (int)std::lround(std::get<float>(v));
                 idx = std::clamp(idx, 0, (int)port.choices.size() - 1);
-                if (ImGui::BeginCombo("##choice", port.choices[idx].c_str())) {
-                    for (int k = 0; k < (int)port.choices.size(); ++k) {
-                        bool sel = (k == idx);
-                        if (ImGui::Selectable(port.choices[k].c_str(), sel)) v = Value((float)k);
-                        if (sel) ImGui::SetItemDefaultFocus();
-                    }
-                    ImGui::EndCombo();
-                }
+                std::string label = port.choices[idx] + "###choice";
+                if (ImGui::Button(label.c_str(), ImVec2(120.0f, 0.0f))) choiceClicked = true;
             } else {
                 ImGui::SliderFloat("##f", &std::get<float>(v), port.minVal, port.maxVal);
             }
@@ -54,6 +53,7 @@ void drawInlineInputWidget(Node& node, std::size_t i) {
     }
     ImGui::PopItemWidth();
     ImGui::PopID();
+    return choiceClicked;
 }
 
 } // namespace oss
