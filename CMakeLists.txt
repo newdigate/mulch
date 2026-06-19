@@ -194,6 +194,7 @@ set(APP_SOURCES
   src/core/AutomationStore.cpp
   src/core/MidiFile.cpp
   src/core/Oscilloscope.cpp
+  src/core/PitchGraph.cpp
   src/audio/FFT.cpp
   src/audio/SignalGenerator.cpp
   src/audio/AcidVoice.cpp
@@ -266,11 +267,13 @@ add_executable(core_tests
   tests/test_chords.cpp
   tests/test_chord_player.cpp
   tests/test_blend_modes.cpp
+  tests/test_pitch_graph.cpp
   src/core/Node.cpp
   src/core/Graph.cpp
   src/core/AutomationStore.cpp
   src/core/MidiFile.cpp
   src/core/Oscilloscope.cpp
+  src/core/PitchGraph.cpp
   src/audio/FFT.cpp
   src/audio/SignalGenerator.cpp
   src/audio/AcidVoice.cpp
@@ -286,6 +289,7 @@ add_executable(gl_smoke
   src/core/Node.cpp
   src/core/Graph.cpp
   src/core/AutomationStore.cpp
+  src/core/PitchGraph.cpp
   src/gfx/GLUtil.cpp
   src/gfx/Framebuffer.cpp
   src/gfx/FullscreenPass.cpp

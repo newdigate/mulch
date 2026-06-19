@@ -13,6 +13,7 @@
 #include "modules/MidiMergeNode.h"
 #include "modules/MidiOutputNode.h"
 #include "modules/MidiFilePlayerNode.h"
+#include "modules/PitchGraphNode.h"
 #include "modules/MixNode.h"
 #include "modules/CompositorNode.h"
 #include "modules/LfoNode.h"
@@ -55,6 +56,7 @@ std::unique_ptr<Node> makeNode(const std::string& type) {
     if (type == "MIDI In")     return std::make_unique<MidiInputNode>();
     if (type == "MIDI File")   return std::make_unique<MidiFilePlayerNode>();
     if (type == "Chord Player") return std::make_unique<ChordPlayerNode>();
+    if (type == "Pitch Graph")  return std::make_unique<PitchGraphNode>();
     if (type == "Step Seq")    return std::make_unique<StepSequencerNode>();
     if (type == "Arpeggiator") return std::make_unique<ArpeggiatorNode>();
     if (type == "MIDI Merge")  return std::make_unique<MidiMergeNode>();
@@ -68,7 +70,7 @@ const std::vector<NodeCategory>& nodeCategories() {
     static const std::vector<NodeCategory> cats = {
         { "Texture", { "Colour", "Video", "Mix", "Compositor", "Recorder", "Output" } },
         { "Audio",   { "Sine", "Acid Bass", "Audio File", "Audio In", "Audio Mix", "Spectrograph", "Oscilloscope", "Audio Out" } },
-        { "MIDI",    { "MIDI In", "MIDI File", "Step Seq", "Chord Player", "Arpeggiator", "MIDI Merge", "MIDI Out" } },
+        { "MIDI",    { "MIDI In", "MIDI File", "Step Seq", "Chord Player", "Arpeggiator", "MIDI Merge", "MIDI Out", "Pitch Graph" } },
         { "3D",      { "Mesh Loader", "Text 2D", "Text 3D", "World Transform", "Wireframe", "Shaded Render" } },
         { "Control", { "Automation", "LFO" } },
     };

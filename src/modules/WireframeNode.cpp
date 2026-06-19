@@ -19,6 +19,20 @@ out vec4 FragColor;
 void main() { FragColor = vec4(0.12, 0.95, 0.45, 1.0); }
 )";
 
+static const char* kWireColorVS = R"(#version 410 core
+layout(location = 0) in vec3 aPos;
+layout(location = 1) in vec3 aColor;
+uniform mat4 uMVP;
+out vec3 vColor;
+void main() { vColor = aColor; gl_Position = uMVP * vec4(aPos, 1.0); }
+)";
+
+static const char* kWireColorFS = R"(#version 410 core
+in vec3 vColor;
+out vec4 FragColor;
+void main() { FragColor = vec4(vColor, 1.0); }
+)";
+
 WireframeNode::WireframeNode() : Node("Wireframe") {
     addInput("geometry", PortType::Vertex, VertexRef{});
     addInput("spin", PortType::Float, 0.5f, 0.0f, 2.0f);   // self-rotation speed (rad/s)
@@ -28,11 +42,13 @@ WireframeNode::WireframeNode() : Node("Wireframe") {
 
 WireframeNode::~WireframeNode() {
     if (program_) glDeleteProgram(program_);
+    if (program_color_) glDeleteProgram(program_color_);
     if (vao_) glDeleteVertexArrays(1, &vao_);
 }
 
 void WireframeNode::initGL() {
     program_ = linkProgram(kWireVS, kWireFS);
+    program_color_ = linkProgram(kWireColorVS, kWireColorFS);
     fbo_.create(kCanvasW, kCanvasH);
     glGenVertexArrays(1, &vao_);
 }
@@ -52,7 +68,6 @@ void WireframeNode::evaluate(EvalContext& ctx) {
     glClear(GL_COLOR_BUFFER_BIT);
 
     if (geo.vbo != 0 && geo.count > 0) {
-        glUseProgram(program_);
         float aspect = fbo_.height() ? (float)fbo_.width() / (float)fbo_.height() : 1.7778f;
         // Camera matches Shaded Render so the two views register when blended.
         glm::mat4 proj = glm::perspective(glm::radians(45.0f), aspect, 0.1f, 100.0f);
@@ -61,14 +76,24 @@ void WireframeNode::evaluate(EvalContext& ctx) {
                                      glm::vec3(0.0f, 1.0f, 0.0f));
         glm::mat4 model = glm::rotate(glm::mat4(1.0f), angle, glm::vec3(0.0f, 1.0f, 0.0f));
         glm::mat4 mvp = proj * view * model;
-        glUniformMatrix4fv(glGetUniformLocation(program_, "uMVP"), 1, GL_FALSE,
-                           glm::value_ptr(mvp));
 
-        // Bind the upstream node's VBO to our own VAO and draw it as a line strip.
+        bool colored = (geo.format == VertexFormat::Pos3Color3);
+        GLuint prog = colored ? program_color_ : program_;
+        glUseProgram(prog);
+        glUniformMatrix4fv(glGetUniformLocation(prog, "uMVP"), 1, GL_FALSE, glm::value_ptr(mvp));
+
         glBindVertexArray(vao_);
         glBindBuffer(GL_ARRAY_BUFFER, geo.vbo);
         glEnableVertexAttribArray(0);
-        glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 3 * sizeof(float), (void*)0);
+        if (colored) {
+            const GLsizei stride = 6 * sizeof(float);   // pos(3) + colour(3)
+            glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, stride, (void*)0);
+            glEnableVertexAttribArray(1);
+            glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, stride, (void*)(3 * sizeof(float)));
+        } else {
+            glDisableVertexAttribArray(1);   // clear any stale colour attribute (one shared VAO)
+            glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 3 * sizeof(float), (void*)0);
+        }
         GLenum prim = geo.primitive == Primitive::Lines     ? GL_LINES
                     : geo.primitive == Primitive::Triangles ? GL_TRIANGLES
                                                             : GL_LINE_STRIP;
