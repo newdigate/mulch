@@ -40,11 +40,10 @@ void SpectrographNode::evaluate(EvalContext& ctx) {
     // Advance the rolling window by one frame's worth of samples. Use the
     // connected source's sample rate when present, else the internal synth's.
     int sr = (a.samples && a.sampleRate > 0) ? a.sampleRate : gen_.sampleRate();
-    int ch = (a.samples && a.channels > 0) ? a.channels : 1;
-    std::size_t frames = a.samples ? a.frames() : 0;
+    std::size_t frames = a.samples ? a.count : 0;
     int adv = std::clamp((int)std::lround(sr * (double)ctx.dt), 1, kWindow);
     // When an external source is connected, ingest exactly the block it gave us
-    // (in frames, capped to the window). This keeps the rolling window gap-free
+    // (in samples, capped to the window). This keeps the rolling window gap-free
     // regardless of the source's per-frame block size, instead of recomputing
     // adv from dt.
     if (a.samples) adv = std::clamp((int)frames, 1, kWindow);
@@ -52,13 +51,8 @@ void SpectrographNode::evaluate(EvalContext& ctx) {
     float* tail = window_.data() + (kWindow - adv);
 
     if (a.samples && frames >= (std::size_t)adv) {
-        // Take the last `adv` frames, downmixing stereo to mono for the FFT.
         std::size_t start = frames - (std::size_t)adv;
-        for (int i = 0; i < adv; ++i) {
-            std::size_t f = start + (std::size_t)i;
-            tail[i] = (ch == 2) ? 0.5f * (a.samples[f * 2] + a.samples[f * 2 + 1])
-                                : a.samples[f];
-        }
+        for (int i = 0; i < adv; ++i) tail[i] = a.samples[start + (std::size_t)i];
     } else {
         // No audio connected (a.samples==nullptr), or an upstream underrun
         // (frames<adv): fill the new tail from the internal synth.
