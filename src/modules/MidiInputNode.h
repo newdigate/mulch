@@ -1,12 +1,14 @@
 #pragma once
+#include <string>
 #include <vector>
 #include "core/Node.h"
 #include "core/Value.h"
-#include "core/LazyInit.h"
 
 class RtMidiIn;   // opaque; <RtMidi.h> stays out of this header
 
 namespace oss {
+
+struct Preferences;
 
 // MIDI source: reads channel messages from a hardware or virtual MIDI input port
 // via RtMidi and publishes the events received this frame as a MidiRef. RtMidi
@@ -20,11 +22,11 @@ public:
     void evaluate(EvalContext& ctx) override;
 
 private:
-    bool ensureStarted();
-    bool openDevice();
-    RtMidiIn*              midiin_ = nullptr;
-    std::vector<MidiEvent> events_;        // this frame's events (owns MidiRef storage)
-    LazyInit lazy_;
+    void syncPorts(const Preferences* prefs);     // open/close to match the enabled set
+    void closeAll();
+    std::vector<RtMidiIn*>   ins_;                 // one per open port
+    std::vector<std::string> open_;                // descriptor of the current open set
+    std::vector<MidiEvent>   events_;
 };
 
 } // namespace oss

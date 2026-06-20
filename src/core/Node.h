@@ -10,6 +10,7 @@
 namespace oss {
 
 class Graph;
+struct Preferences;
 
 // Per-frame, fully-resolved evaluation context handed to a node.
 struct EvalContext {
@@ -17,6 +18,7 @@ struct EvalContext {
     std::vector<Value>&       outputs;  // node writes one value per output port
     float                     dt;        // seconds since previous frame
     const Transport*          transport = nullptr;  // global clock (set by Graph::evaluate)
+    const Preferences*        prefs     = nullptr;   // app settings (set by Graph::evaluate)
 
     template <class T> const T& in(std::size_t i) const { return std::get<T>(inputs[i]); }
     template <class T> void out(std::size_t i, T v) { outputs[i] = Value(std::move(v)); }

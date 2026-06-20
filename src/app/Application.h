@@ -4,8 +4,10 @@
 #include <vector>
 #include <glm/vec2.hpp>
 #include "core/Graph.h"
+#include "core/Preferences.h"
 #include "ui/NodeEditorPanel.h"
 #include "ui/AutomationPanel.h"
+#include "ui/PreferencesPanel.h"
 
 struct GLFWwindow;
 
@@ -26,6 +28,9 @@ public:
     bool saveProjectToFile(const std::string& path);
     bool loadProjectFromFile(const std::string& path);
 
+    void loadPreferences();
+    void savePreferences();
+
 private:
     GLFWwindow* window_;   // reserved for framebuffer-size / HiDPI queries
     Graph graph_;
@@ -33,6 +38,9 @@ private:
     AutomationPanel automation_;
     char        filename_[256] = "project.oss";
     std::string projectStatus_;
+    Preferences      prefs_;
+    PreferencesPanel preferences_;
+    bool             showPreferences_ = false;
 };
 
 // Factory used by the app and the add-node menu.

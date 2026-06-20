@@ -99,6 +99,13 @@ all connections, the transport (tempo + loop), and the automation (the Automatio
 curves and the right-click parameter-automation channels). Playback position is not saved —
 a loaded project opens paused at the start. The `.oss` format is plain line-based text.
 
+### Preferences
+
+The toolbar **Prefs** button opens a Preferences window with **Audio Output**, **Audio Input**,
+and **MIDI** tabs: pick the output/input sound card and enable which MIDI interfaces are used.
+Changes apply live (the running audio/MIDI nodes reopen their device/ports) and persist to a
+`preferences.oss` file in the working directory.
+
 ## Test
 
 ```bash

@@ -99,6 +99,8 @@ Application::Application(GLFWwindow* window) : window_(window) {
     int c = addNodeOfType("Colour", {40, 40});
     int o = addNodeOfType("Output", {360, 40});
     graph_.connect(c, 0, o, 0);
+    loadPreferences();
+    graph_.setPreferences(&prefs_);
 }
 
 Application::~Application() = default;
@@ -118,6 +120,18 @@ bool Application::saveProjectToFile(const std::string& path) {
     return (bool)f;
 }
 
+void Application::loadPreferences() {
+    std::ifstream f("preferences.oss");
+    if (!f) return;
+    std::stringstream ss; ss << f.rdbuf();
+    parsePreferences(ss.str(), prefs_);    // bad/missing file -> prefs_ stays default
+}
+
+void Application::savePreferences() {
+    std::ofstream f("preferences.oss");
+    if (f) f << serializePreferences(prefs_);
+}
+
 bool Application::loadProjectFromFile(const std::string& path) {
     std::ifstream f(path);
     if (!f) return false;
@@ -134,9 +148,11 @@ void Application::frame(float dt) {
     io.onSave = [this]{ projectStatus_ = saveProjectToFile(filename_) ? (std::string("saved ") + filename_) : "save failed"; };
     io.onLoad = [this]{ projectStatus_ = loadProjectFromFile(filename_) ? (std::string("loaded ") + filename_) : "load failed"; };
     io.status = projectStatus_;
+    io.showPreferences = &showPreferences_;
     drawTransportBar(graph_.transport(), &io);   // top toolbar: tempo + play/stop/scrub
     editor_.draw(graph_, [this](const std::string& t, glm::vec2 p){ return addNodeOfType(t, p); });
     automation_.draw(graph_);                // automation timeline window
+    preferences_.draw(prefs_, [this]{ savePreferences(); }, &showPreferences_);
     graph_.evaluate(dt);                     // advances the transport by dt
 }
 
