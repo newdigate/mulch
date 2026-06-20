@@ -7,7 +7,10 @@
 namespace oss {
 
 AudioInputNode::AudioInputNode() : Node("Audio In"), block_(1 << 13, 0.0f) {
-    addOutput("audio", PortType::Audio);
+    addOutput("left",  PortType::Audio);
+    addOutput("right", PortType::Audio);
+    outL_.assign(block_.size(), 0.0f);
+    outR_.assign(block_.size(), 0.0f);
 }
 
 AudioInputNode::~AudioInputNode() {
@@ -19,14 +22,25 @@ AudioInputNode::~AudioInputNode() {
 }
 
 void AudioInputNode::evaluate(EvalContext& ctx) {
-    if (!ensureStarted()) { ctx.out<AudioRef>(0, AudioRef{}); return; }   // silence
+    if (!ensureStarted()) {                               // silence on both outputs
+        ctx.out<AudioRef>(0, AudioRef{});
+        ctx.out<AudioRef>(1, AudioRef{});
+        return;
+    }
     soundio_flush_events(soundio_);
 
     // Drain whatever the capture thread has buffered, up to one block. `block_`
-    // holds interleaved samples; trim to a whole number of frames.
+    // holds interleaved samples; trim to a whole number of frames, then
+    // deinterleave into the two mono outputs (mono device duplicated to both).
     std::size_t n = ring_.pop(block_.data(), block_.size());
     n -= n % (std::size_t)channels_;
-    ctx.out<AudioRef>(0, AudioRef{block_.data(), n, sampleRate_, channels_});
+    std::size_t frames = n / (std::size_t)channels_;
+    for (std::size_t f = 0; f < frames; ++f) {
+        outL_[f] = block_[f * (std::size_t)channels_];
+        outR_[f] = (channels_ == 2) ? block_[f * 2 + 1] : block_[f * (std::size_t)channels_];
+    }
+    ctx.out<AudioRef>(0, AudioRef{outL_.data(), frames, sampleRate_});
+    ctx.out<AudioRef>(1, AudioRef{outR_.data(), frames, sampleRate_});
 }
 
 bool AudioInputNode::ensureStarted() {

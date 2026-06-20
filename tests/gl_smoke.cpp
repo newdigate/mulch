@@ -622,7 +622,7 @@ int main() {
         Graph g;
         auto col = std::make_unique<ColourNode>();
         auto recN = std::make_unique<RecorderNode>();
-        recN->inputDefault(3) = std::string("build/_rec_node.mp4");   // file
+        recN->inputDefault(4) = std::string("build/_rec_node.mp4");   // file
         auto out = std::make_unique<OutputNode>();
         col->initGL(); recN->initGL(); out->initGL();
         int cId = g.addNode(std::move(col));
@@ -643,9 +643,9 @@ int main() {
         }
         int vw = passed.w, vh = passed.h;
 
-        rn->inputDefault(2) = true;                          // record on
+        rn->inputDefault(3) = true;                          // record on
         for (int f = 0; f < 12; ++f) g.evaluate(1.0f / 60.0f);
-        rn->inputDefault(2) = false;                         // record off -> finalise file
+        rn->inputDefault(3) = false;                         // record off -> finalise file
         g.evaluate(1.0f / 60.0f);
 
         VideoDecoder dec2;
@@ -657,8 +657,8 @@ int main() {
         if (got2 == 0) { glfwTerminate(); return fail("recorded file decoded no frames"); }
         std::fprintf(stderr, "gl_smoke OK: Recorder passed video through and wrote a decodable %dx%d mp4\n", vw, vh);
 
-        // (c) Stereo end-to-end: two sines panned hard L/R through the Mixer feed
-        // the Recorder's audio; the recorded file must be a 2-channel movie.
+        // (c) Stereo end-to-end: two sines panned through the Mixer feed the
+        // Recorder's L/R audio; the recorded file must be a 2-channel movie.
         {
             Graph gs;
             auto col2 = std::make_unique<ColourNode>();
@@ -668,7 +668,7 @@ int main() {
             mix->inputDefault(2) = -1.0f;   // pan 1 -> hard left
             mix->inputDefault(5) =  1.0f;   // pan 2 -> hard right
             auto rec2 = std::make_unique<RecorderNode>();
-            rec2->inputDefault(3) = std::string("build/_rec_stereo_node.mp4");
+            rec2->inputDefault(4) = std::string("build/_rec_stereo_node.mp4");
             col2->initGL(); s1->initGL(); s2->initGL(); mix->initGL(); rec2->initGL();
             int cId2 = gs.addNode(std::move(col2));
             int s1Id = gs.addNode(std::move(s1));
@@ -676,13 +676,13 @@ int main() {
             int mId  = gs.addNode(std::move(mix));
             int r2Id = gs.addNode(std::move(rec2));
             if (!gs.connect(s1Id, 0, mId, 0) || !gs.connect(s2Id, 0, mId, 3) ||
-                !gs.connect(cId2, 0, r2Id, 0) || !gs.connect(mId, 0, r2Id, 1)) {
+                !gs.connect(cId2, 0, r2Id, 0) || !gs.connect(mId, 0, r2Id, 1) || !gs.connect(mId, 1, r2Id, 2)) {
                 glfwTerminate(); return fail("connect stereo record graph");
             }
             auto* rn2 = dynamic_cast<RecorderNode*>(gs.findNode(r2Id));
-            rn2->inputDefault(2) = true;                          // record on
+            rn2->inputDefault(3) = true;                          // record on
             for (int f = 0; f < 16; ++f) gs.evaluate(1.0f / 60.0f);
-            rn2->inputDefault(2) = false;                        // record off -> finalise
+            rn2->inputDefault(3) = false;                        // record off -> finalise
             gs.evaluate(1.0f / 60.0f);
 
             VideoDecoder d3; std::string e3;
@@ -725,13 +725,14 @@ int main() {
         bool sawAudio = false;
         for (int f = 0; f < 400 && !sawAudio; ++f) {     // poll while the worker decodes
             g.evaluate(1.0f / 60.0f);
-            AudioRef o = an->audioOut();
-            if (o.channels == 2)
-                for (std::size_t i = 0; i < o.count; ++i)
-                    if (o.samples[i] > 0.01f || o.samples[i] < -0.01f) { sawAudio = true; break; }
+            AudioRef oL = an->leftOut();
+            AudioRef oR = an->rightOut();
+            if (oL.count > 0 && oR.count > 0)
+                for (std::size_t i = 0; i < oL.count; ++i)
+                    if (std::fabs(oL.samples[i]) > 0.01f || std::fabs(oR.samples[i]) > 0.01f) { sawAudio = true; break; }
             if (!sawAudio) std::this_thread::sleep_for(std::chrono::milliseconds(2));
         }
-        if (!sawAudio) { glfwTerminate(); return fail("audio player produced no stereo audio"); }
+        if (!sawAudio) { glfwTerminate(); return fail("audio player produced no audio"); }
 
         for (int f = 0; f < 10; ++f) g.evaluate(1.0f / 60.0f);   // play forward a bit
         double fwd = an->playhead();

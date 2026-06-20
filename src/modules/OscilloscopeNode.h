@@ -13,7 +13,7 @@ namespace oss {
 
 // Turns an audio signal into an oscilloscope trace as streamed geometry: a line strip of
 // vec3 positions published on output 0 (wire into the Wireframe node). Two modes: a
-// triggered/free-running waveform (mono L+R downmix) or an X-Y vectorscope (L->x, R->y).
+// Two mono inputs (left, right); waveform uses left, X-Y uses left->x, right->y. A lone connected side mirrors to the other.
 // The trace math is the GL-free buildScopeVertices; this node owns the rolling audio
 // history, an internal synth fallback when `audio` is unconnected, and the VBO upload.
 class OscilloscopeNode : public Node {
@@ -22,7 +22,8 @@ public:
         : Node("Oscilloscope"), gen_(48000, 220.0f),
           histL_(kHistory, 0.0f), histR_(kHistory, 0.0f),
           verts_((std::size_t)kPoints * 3, 0.0f) {
-        addInput("audio", PortType::Audio, AudioRef{});       // unconnected -> internal synth
+        addInput("left",  PortType::Audio, AudioRef{});       // unconnected -> internal synth
+        addInput("right", PortType::Audio, AudioRef{});
         addChoiceInput("mode", {"Waveform", "X-Y"}, 0);
         addInput("trigger", PortType::Bool, true);            // rising-edge lock (waveform only)
         addInput("window", PortType::Float, 20.0f, 1.0f, 100.0f);   // milliseconds
@@ -34,25 +35,30 @@ public:
     void initGL() override { glGenBuffers(1, &vbo_); }
 
     void evaluate(EvalContext& ctx) override {
-        AudioRef a = ctx.in<AudioRef>(0);
-        int sr = (a.samples && a.sampleRate > 0) ? a.sampleRate : gen_.sampleRate();
-        int ch = (a.samples && a.channels > 0) ? a.channels : 1;
-        std::size_t frames = a.samples ? a.frames() : 0;
+        AudioRef aL = ctx.in<AudioRef>(0);
+        AudioRef aR = ctx.in<AudioRef>(1);
+        bool hasAudio = (aL.samples && aL.count > 0) || (aR.samples && aR.count > 0);
+        const AudioRef& sL = (aL.samples && aL.count > 0) ? aL : aR;   // mirror lone side
+        const AudioRef& sR = (aR.samples && aR.count > 0) ? aR : aL;
+        int sr = hasAudio ? sL.sampleRate : gen_.sampleRate();
+        std::size_t framesL = sL.samples ? sL.count : 0;
+        std::size_t framesR = sR.samples ? sR.count : 0;
+        std::size_t frames  = std::max(framesL, framesR);
 
         // Advance the rolling history by one frame's worth of samples.
-        int adv = a.samples ? std::clamp((int)frames, 1, kHistory)
-                            : std::clamp((int)std::lround(sr * (double)ctx.dt), 1, kHistory);
+        int adv = hasAudio ? std::clamp((int)frames, 1, kHistory)
+                           : std::clamp((int)std::lround(sr * (double)ctx.dt), 1, kHistory);
         std::move(histL_.begin() + adv, histL_.end(), histL_.begin());
         std::move(histR_.begin() + adv, histR_.end(), histR_.begin());
         float* tailL = histL_.data() + (kHistory - adv);
         float* tailR = histR_.data() + (kHistory - adv);
 
-        if (a.samples && frames >= (std::size_t)adv) {
+        if (hasAudio && frames >= (std::size_t)adv) {
             std::size_t start = frames - (std::size_t)adv;
             for (int i = 0; i < adv; ++i) {
                 std::size_t f = start + (std::size_t)i;
-                tailL[i] = a.samples[f * (std::size_t)ch];
-                tailR[i] = (ch == 2) ? a.samples[f * 2 + 1] : a.samples[f * (std::size_t)ch];
+                tailL[i] = (f < framesL) ? sL.samples[f] : 0.0f;
+                tailR[i] = (f < framesR) ? sR.samples[f] : 0.0f;
             }
         } else {
             scratch_.resize((std::size_t)adv);                 // no audio / underrun -> synth
@@ -60,13 +66,13 @@ public:
             for (int i = 0; i < adv; ++i) { tailL[i] = scratch_[i]; tailR[i] = scratch_[i]; }
         }
 
-        float windowMs = ctx.in<float>(3);
+        float windowMs = ctx.in<float>(4);
         int windowSamples = std::clamp((int)std::lround(windowMs / 1000.0 * sr),
                                        2, kHistory / 2);
-        ScopeMode mode = ((int)std::lround(ctx.in<float>(1)) == 1) ? ScopeMode::XY
+        ScopeMode mode = ((int)std::lround(ctx.in<float>(2)) == 1) ? ScopeMode::XY
                                                                    : ScopeMode::Waveform;
         buildScopeVertices(histL_.data(), histR_.data(), (std::size_t)kHistory,
-                           windowSamples, kPoints, mode, ctx.in<bool>(2), ctx.in<float>(4), verts_);
+                           windowSamples, kPoints, mode, ctx.in<bool>(3), ctx.in<float>(5), verts_);
 
         glBindBuffer(GL_ARRAY_BUFFER, vbo_);
         glBufferData(GL_ARRAY_BUFFER, (GLsizeiptr)(verts_.size() * sizeof(float)),

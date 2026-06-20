@@ -1,5 +1,6 @@
 #include "modules/AudioOutputNode.h"
 #include <soundio/soundio.h>
+#include <algorithm>
 #include <cstddef>
 #include <cstdio>
 #include <cstring>
@@ -7,7 +8,8 @@
 namespace oss {
 
 AudioOutputNode::AudioOutputNode() : Node("Audio Out") {
-    addInput("audio", PortType::Audio, AudioRef{});
+    addInput("left",  PortType::Audio, AudioRef{});
+    addInput("right", PortType::Audio, AudioRef{});
 }
 
 AudioOutputNode::~AudioOutputNode() {
@@ -23,22 +25,22 @@ void AudioOutputNode::evaluate(EvalContext& ctx) {
     if (!ensureStarted()) return;          // no device -> silent no-op
     soundio_flush_events(soundio_);        // pump device events (non-blocking)
 
-    AudioRef a = ctx.in<AudioRef>(0);
-    if (a.samples && a.count > 0) {
-        // The ring carries interleaved stereo. Stereo input goes in as-is; mono is
-        // upmixed (L = R) so the RT callback always reads two floats per frame.
-        if (a.channels == 2) {
-            ring_.push(a.samples, a.count);          // already L,R,L,R
-        } else {
-            std::size_t fr = a.frames();
-            stereoScratch_.resize(fr * 2);
-            for (std::size_t i = 0; i < fr; ++i) {
-                stereoScratch_[i * 2]     = a.samples[i];
-                stereoScratch_[i * 2 + 1] = a.samples[i];
-            }
-            ring_.push(stereoScratch_.data(), fr * 2);   // overflow dropped, never blocks
-        }
+    AudioRef l = ctx.in<AudioRef>(0);
+    AudioRef r = ctx.in<AudioRef>(1);
+    // Symmetric mirror: a single connected side feeds both speakers, so a lone
+    // mono wire just works. The ring carries interleaved stereo (L,R,L,R).
+    const AudioRef& effL = (l.samples && l.count > 0) ? l : r;
+    const AudioRef& effR = (r.samples && r.count > 0) ? r : l;
+    std::size_t nL = effL.samples ? effL.count : 0;
+    std::size_t nR = effR.samples ? effR.count : 0;
+    std::size_t n  = std::max(nL, nR);
+    if (n == 0) return;                                  // nothing connected -> silence
+    stereoScratch_.resize(n * 2);
+    for (std::size_t i = 0; i < n; ++i) {
+        stereoScratch_[i * 2]     = (i < nL) ? effL.samples[i] : 0.0f;
+        stereoScratch_[i * 2 + 1] = (i < nR) ? effR.samples[i] : 0.0f;
     }
+    ring_.push(stereoScratch_.data(), n * 2);            // overflow dropped, never blocks
 }
 
 bool AudioOutputNode::ensureStarted() {

@@ -59,7 +59,7 @@ public:
 
         int n = std::clamp((int)std::lround(sampleRate_ * (double)ctx.dt), 1, kMaxBlock);
         voice_.process(buffer_.data(), n);
-        ctx.out<AudioRef>(0, AudioRef{buffer_.data(), (std::size_t)n, sampleRate_, 1});
+        ctx.out<AudioRef>(0, AudioRef{buffer_.data(), (std::size_t)n, sampleRate_});
     }
 
 private:

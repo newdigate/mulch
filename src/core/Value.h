@@ -13,16 +13,14 @@ enum class PortType { Texture, Colour, Float, Bool, Audio, String, Midi, Vertex,
 // as a plain unsigned int so this header (and all of core/) stays GL-free.
 struct TexRef { unsigned int id = 0; int w = 0; int h = 0; };
 
-// Non-owning view of a node's latest audio samples. `count` is the total number
-// of floats in `samples` (interleaved); `channels` is 1 (mono) or 2 (interleaved
-// stereo L,R,L,R). `frames()` is the per-channel sample count. Defaulting
-// channels to 1 keeps every existing `AudioRef{ptr, n, sr}` a mono buffer.
+// Non-owning view of a node's latest audio samples. Audio edges are mono: `count`
+// is the number of float samples in `samples`; `sampleRate` is the source rate.
+// Stereo is carried as two separate mono edges (see the Mono to Stereo / Stereo to
+// Mono bridges and nodes' left/right ports).
 struct AudioRef {
     const float* samples    = nullptr;
     std::size_t  count      = 0;
     int          sampleRate = 0;
-    int          channels   = 1;
-    std::size_t  frames() const { return channels > 0 ? count / (std::size_t)channels : count; }
 };
 
 // A 3-byte MIDI channel message (note on/off, control change, ...).
