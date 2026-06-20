@@ -27,7 +27,7 @@ CMake 4.x, it's relaxed with `CMAKE_POLICY_VERSION_MINIMUM 3.5` around its
 ## Architecture
 
 - **`Value`** (`src/core/Value.h`) is the one currency on every edge:
-  `std::variant<float, bool, glm::vec4, std::string, TexRef, AudioRef, MidiRef, VertexRef>`.
+  `std::variant<float, bool, glm::vec4, std::string, TexRef, AudioRef, MidiRef, VertexRef, Transform, ShaderRef>`.
   `PortType` enumerates the same set; `typeOf(Value)` maps variant → PortType.
   Connections only join ports of equal `PortType`. Audio edges are **mono**:
   `AudioRef` is `{samples, count, sampleRate}` and `count` is the sample count;
