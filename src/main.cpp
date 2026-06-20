@@ -81,6 +81,8 @@ static int runScreenshot(const std::string& path) {
         app.addNodeOfType("Compositor", glm::vec2(260.0f, 200.0f));
         app.addNodeOfType("Pitch Graph", glm::vec2(620.0f, 200.0f));
         app.addNodeOfType("Skybox", glm::vec2(240.0f, 330.0f));
+        app.addNodeOfType("Vertex Shader", glm::vec2(40.0f, 130.0f));
+        app.addNodeOfType("Deform", glm::vec2(620.0f, 110.0f));
         app.graph().transport().bpm = 120.0;
         app.graph().transport().seconds = 6.0;   // playhead at bar 3
 

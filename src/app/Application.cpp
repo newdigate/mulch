@@ -27,6 +27,8 @@
 #include "modules/TextNode.h"
 #include "modules/WorldTransformNode.h"
 #include "modules/SkyboxNode.h"
+#include "modules/VertexShaderNode.h"
+#include "modules/DeformNode.h"
 #include "modules/VideoPlayerNode.h"
 #include "modules/WireframeNode.h"
 #include "ui/TransportBar.h"
@@ -52,6 +54,8 @@ std::unique_ptr<Node> makeNode(const std::string& type) {
     if (type == "Wireframe")   return std::make_unique<WireframeNode>();
     if (type == "Shaded Render") return std::make_unique<ShadedRenderNode>();
     if (type == "Skybox")        return std::make_unique<SkyboxNode>();
+    if (type == "Vertex Shader") return std::make_unique<VertexShaderNode>();
+    if (type == "Deform")        return std::make_unique<DeformNode>();
     if (type == "Recorder")    return std::make_unique<RecorderNode>();
     if (type == "Output")      return std::make_unique<OutputNode>();
     if (type == "Audio Out")   return std::make_unique<AudioOutputNode>();
@@ -75,6 +79,7 @@ const std::vector<NodeCategory>& nodeCategories() {
         { "MIDI",    { "MIDI In", "MIDI File", "Step Seq", "Chord Player", "Arpeggiator", "MIDI Merge", "MIDI Out", "Pitch Graph" } },
         { "3D",      { "Mesh Loader", "Text 2D", "Text 3D", "World Transform", "Wireframe", "Shaded Render", "Skybox" } },
         { "Control", { "Automation", "LFO" } },
+        { "Shader",  { "Vertex Shader", "Deform" } },
     };
     return cats;
 }

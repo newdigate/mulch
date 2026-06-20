@@ -30,6 +30,9 @@
 #include "modules/PitchGraphNode.h"
 #include "modules/WorldTransformNode.h"
 #include "modules/SkyboxNode.h"
+#include "modules/DeformNode.h"
+#include "modules/VertexShaderNode.h"
+#include "core/VertexShaders.h"
 #include "gfx/VideoDecoder.h"
 #include "gfx/VideoEncoder.h"
 #include "gfx/TextGeometry.h"
@@ -966,6 +969,64 @@ int main() {
         if (!centre(0.0f,-HALF_PI, r, g, b) || !(near(r,255) && near(g,255) && near(b,0))) { glfwTerminate(); return fail("skybox pitch -pi/2 not -Y (yellow)"); }
         if (!centre(3.14159265f,0.0f, r,g,b)|| !(near(r,255) && near(g,0) && near(b,255))) { glfwTerminate(); return fail("skybox yaw pi not +Z (magenta)"); }
         std::fprintf(stderr, "gl_smoke OK: Skybox samples all 6 faces with yaw/pitch rotation\n");
+    }
+
+    // --- Scenario: Deform runs a vertex shader over a VBO via transform feedback ---
+    // A 1-vertex input VBO (Pos3) + a known preset shader -> Deform; read the transform-
+    // feedback output (Pos3Color3, 6 floats) back and verify the GPU transform exactly.
+    {
+        const float inPos[3] = { 0.2f, 0.3f, 0.4f };
+        GLuint inVbo = 0;
+        glGenBuffers(1, &inVbo); glBindBuffer(GL_ARRAY_BUFFER, inVbo);
+        glBufferData(GL_ARRAY_BUFFER, sizeof(inPos), inPos, GL_STATIC_DRAW);
+        glBindBuffer(GL_ARRAY_BUFFER, 0);
+
+        auto runDeform = [&](int preset, float pos, glm::vec4 col, float o[6]) -> bool {
+            Graph g;
+            auto def = std::make_unique<DeformNode>();
+            def->inputDefault(0) = VertexRef{ inVbo, 1, Primitive::Lines, VertexFormat::Pos3 };
+            def->inputDefault(1) = pos;
+            def->inputDefault(2) = col;
+            def->inputDefault(3) = ShaderRef{ vertexShaderSource(preset) };
+            def->initGL();
+            int dId = g.addNode(std::move(def));
+            g.evaluate(1.0f / 60.0f);
+            VertexRef out = dynamic_cast<DeformNode*>(g.findNode(dId))->output();
+            if (out.vbo == 0 || out.count != 1 || out.format != VertexFormat::Pos3Color3) return false;
+            glBindBuffer(GL_ARRAY_BUFFER, out.vbo);
+            glGetBufferSubData(GL_ARRAY_BUFFER, 0, 6 * sizeof(float), o);
+            glBindBuffer(GL_ARRAY_BUFFER, 0);
+            return true;
+        };
+        auto af = [](float a, float b) { return std::fabs(a - b) < 1e-3f; };
+
+        float o[6];
+        // Identity: vPosition = aPos; vColor = aColor(0) + uColour.rgb = colour.
+        if (!runDeform(0, 0.5f, glm::vec4(0.6f, 0.7f, 0.8f, 1.0f), o)) { glfwTerminate(); return fail("Deform identity produced no output"); }
+        if (!(af(o[0],0.2f) && af(o[1],0.3f) && af(o[2],0.4f) && af(o[3],0.6f) && af(o[4],0.7f) && af(o[5],0.8f))) {
+            std::fprintf(stderr, "Deform identity got (%.3f,%.3f,%.3f, %.3f,%.3f,%.3f)\n", o[0],o[1],o[2],o[3],o[4],o[5]);
+            glDeleteBuffers(1, &inVbo); glfwTerminate(); return fail("Deform identity transform wrong");
+        }
+        // Wave: y += uPos*sin(x*2pi); x=0.2, uPos=0.5 -> y = 0.3 + 0.5*sin(0.2*2pi); x,z unchanged.
+        if (!runDeform(2, 0.5f, glm::vec4(0, 0, 0, 1), o)) { glfwTerminate(); return fail("Deform wave produced no output"); }
+        float ey = 0.3f + 0.5f * std::sin(0.2f * 6.2831853f);
+        if (!(af(o[0],0.2f) && af(o[1],ey) && af(o[2],0.4f))) {
+            std::fprintf(stderr, "Deform wave got y=%.4f expected %.4f\n", o[1], ey);
+            glDeleteBuffers(1, &inVbo); glfwTerminate(); return fail("Deform wave transform wrong");
+        }
+        glDeleteBuffers(1, &inVbo);
+
+        // The new Shader edge wires end to end (VertexShader -> Deform.shader).
+        {
+            Graph g;
+            auto vs = std::make_unique<VertexShaderNode>();
+            auto def = std::make_unique<DeformNode>();
+            def->initGL();
+            int vsId = g.addNode(std::move(vs));
+            int dId  = g.addNode(std::move(def));
+            if (!g.connect(vsId, 0, dId, 3)) { glfwTerminate(); return fail("Shader edge VertexShader->Deform did not connect"); }
+        }
+        std::fprintf(stderr, "gl_smoke OK: Deform applies a vertex shader via transform feedback\n");
     }
 
     glfwDestroyWindow(win);

@@ -38,6 +38,26 @@ GLuint linkProgram(const std::string& vertSrc, const std::string& fragSrc) {
     return prog;
 }
 
+GLuint linkFeedbackProgram(const std::string& vertSrc, const std::vector<const char*>& varyings) {
+    GLuint vs = compileShader(GL_VERTEX_SHADER, vertSrc);
+    GLuint fs = compileShader(GL_FRAGMENT_SHADER, "#version 410 core\nvoid main() {}\n");
+    GLuint prog = glCreateProgram();
+    glAttachShader(prog, vs); glAttachShader(prog, fs);
+    glTransformFeedbackVaryings(prog, (GLsizei)varyings.size(), varyings.data(), GL_INTERLEAVED_ATTRIBS);
+    glLinkProgram(prog);
+    glDeleteShader(vs); glDeleteShader(fs);
+    GLint ok = 0; glGetProgramiv(prog, GL_LINK_STATUS, &ok);
+    if (!ok) {
+        GLint len = 0; glGetProgramiv(prog, GL_INFO_LOG_LENGTH, &len);
+        std::vector<char> log(len > 1 ? len : 1);
+        glGetProgramInfoLog(prog, (GLsizei)log.size(), nullptr, log.data());
+        std::fprintf(stderr, "[feedback program link error]\n%s\n", log.data());
+        glDeleteProgram(prog);
+        return 0;
+    }
+    return prog;
+}
+
 std::string readFile(const std::string& path) {
     std::ifstream f(path);
     if (!f) { std::fprintf(stderr, "[readFile] cannot open %s\n", path.c_str()); return ""; }

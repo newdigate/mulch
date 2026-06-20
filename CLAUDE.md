@@ -126,6 +126,17 @@ CMake 4.x, it's relaxed with `CMAKE_POLICY_VERSION_MINIMUM 3.5` around its
   cross-checked) picks and samples the face. It's rotated by a self-spin or the shared
   `Transform`, which now carries **yaw + pitch** — the World Transform produces both and
   Wireframe / Shaded Render / Skybox all apply them (`rotate(yaw,Y)·rotate(pitch,X)`).
+- **Shader edge + Deform** — a new `Shader` `PortType` carries a `ShaderRef` (a GLSL
+  vertex-shader source string, GL-free) on an edge. The **Vertex Shader** node
+  (`src/modules/VertexShaderNode.h`, header-only, GL-free) emits a preset from the GL-free
+  `core/VertexShaders.h` (Identity/Twist/Wave/Bulge). The **Deform** node
+  (`src/modules/DeformNode.h`, header-only) compiles the incoming shader as a
+  transform-feedback program (`gfx/GLUtil` `linkFeedbackProgram`, capturing
+  `vPosition`/`vColor`), draws the input VBO as `GL_POINTS` with `GL_RASTERIZER_DISCARD`,
+  and captures the transformed vertices into a `Pos3Color3` output VBO (driven by the
+  `position`/`colour` uniforms; `aColor` pinned to 0 when the input has no colour). Both
+  live in the new **Shader** node category. Unit-tested in `core_tests`; the transform
+  feedback is `gl_smoke`-verified by reading the output buffer back.
 - **Texture nodes** derive from `ShaderNode` (`src/gfx/ShaderNode.h`): render a
   fragment shader into their own FBO and publish a `TexRef` on output 0. `ColourNode`
   is the minimal example — declare ports, override `setUniforms()`, call `render(ctx)`.
