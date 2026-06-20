@@ -29,6 +29,7 @@
 #include "modules/WireframeNode.h"
 #include "modules/PitchGraphNode.h"
 #include "modules/WorldTransformNode.h"
+#include "modules/SkyboxNode.h"
 #include "gfx/VideoDecoder.h"
 #include "gfx/VideoEncoder.h"
 #include "gfx/TextGeometry.h"
@@ -922,6 +923,49 @@ int main() {
             if (px[i] > 120 && px[i+1] < 80 && px[i+2] < 80) { sawRed = true; break; }
         if (!sawRed) { glfwTerminate(); return fail("pitch graph did not render note 60 as a red line"); }
         std::fprintf(stderr, "gl_smoke OK: Pitch Graph -> Wireframe renders MIDI as a coloured pitch graph\n");
+    }
+
+    // --- Scenario 18: Skybox samples 6 face textures as a cubemap, rotated by yaw/pitch ---
+    // Six Colour nodes (distinct colours) -> the 6 Skybox face inputs -> Output. With the
+    // transform fixed, the CENTRE pixel (ray (0,0,-1) before rotation) looks at a known face:
+    //   yaw 0,    pitch 0     -> -Z (face 5, cyan)
+    //   yaw pi/2, pitch 0     -> -X (face 1, green)
+    //   yaw 0,    pitch pi/2  -> +Y (face 2, blue)
+    {
+        const glm::vec4 faceCols[6] = {
+            {1,0,0,1}, {0,1,0,1}, {0,0,1,1}, {1,1,0,1}, {1,0,1,1}, {0,1,1,1}   // +X,-X,+Y,-Y,+Z,-Z
+        };
+        auto centre = [&](float yaw, float pitch, int& r, int& g, int& b) -> bool {
+            Graph gr;
+            auto sky = std::make_unique<SkyboxNode>();
+            sky->inputDefault(7) = Transform{ yaw, pitch, true };   // port 7 = transform (yaw, pitch, active)
+            sky->initGL();
+            int skId = gr.addNode(std::move(sky));
+            for (int i = 0; i < 6; ++i) {
+                auto c = std::make_unique<ColourNode>();
+                c->inputDefault(0) = faceCols[i];
+                c->initGL();
+                int cid = gr.addNode(std::move(c));
+                if (!gr.connect(cid, 0, skId, i)) return false;
+            }
+            auto out = std::make_unique<OutputNode>();
+            out->initGL();
+            int oId = gr.addNode(std::move(out));
+            if (!gr.connect(skId, 0, oId, 0)) return false;
+            gr.evaluate(1.0f/60.0f);
+            TexRef t = dynamic_cast<OutputNode*>(gr.findNode(oId))->current();
+            if (!t.id) return false;
+            int a; readCentre(t, r, g, b, a);
+            return true;
+        };
+        const float HALF_PI = 1.57079633f;
+        int r, g, b;
+        if (!centre(0.0f, 0.0f, r, g, b)    || !(near(r,0) && near(g,255) && near(b,255))) { glfwTerminate(); return fail("skybox centre yaw0/pitch0 not -Z (cyan)"); }
+        if (!centre(HALF_PI, 0.0f, r, g, b) || !(near(r,0) && near(g,255) && near(b,0)))   { glfwTerminate(); return fail("skybox yaw pi/2 not -X (green)"); }
+        if (!centre(0.0f, HALF_PI, r, g, b) || !(near(r,0) && near(g,0) && near(b,255)))   { glfwTerminate(); return fail("skybox pitch pi/2 not +Y (blue)"); }
+        if (!centre(0.0f,-HALF_PI, r, g, b) || !(near(r,255) && near(g,255) && near(b,0))) { glfwTerminate(); return fail("skybox pitch -pi/2 not -Y (yellow)"); }
+        if (!centre(3.14159265f,0.0f, r,g,b)|| !(near(r,255) && near(g,0) && near(b,255))) { glfwTerminate(); return fail("skybox yaw pi not +Z (magenta)"); }
+        std::fprintf(stderr, "gl_smoke OK: Skybox samples all 6 faces with yaw/pitch rotation\n");
     }
 
     glfwDestroyWindow(win);

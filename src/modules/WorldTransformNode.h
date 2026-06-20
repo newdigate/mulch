@@ -12,13 +12,14 @@ namespace oss {
 class WorldTransformNode : public Node {
 public:
     WorldTransformNode() : Node("World Transform") {
-        addInput("rate", PortType::Float, 0.5f, -2.0f, 2.0f);   // rad/s
+        addInput("rate", PortType::Float, 0.5f, -2.0f, 2.0f);    // yaw spin rate (rad/s)
+        addInput("pitch", PortType::Float, 0.0f, -1.5f, 1.5f);   // pitch tilt angle (radians)
         addOutput("transform", PortType::Transform);
     }
 
     void evaluate(EvalContext& ctx) override {
         angle_ += ctx.dt * ctx.in<float>(0);
-        ctx.out<Transform>(0, Transform{angle_, true});
+        ctx.out<Transform>(0, Transform{angle_, ctx.in<float>(1), true});
     }
 
 private:
