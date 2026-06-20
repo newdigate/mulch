@@ -91,6 +91,14 @@ Texture nodes render a fragment shader into their own framebuffer; audio and MID
 nodes carry samples and events; geometry flows as GL vertex-buffer handles. The
 graph is evaluated once per frame in topological order.
 
+### Save / Load
+
+The toolbar's **Save** / **Load** buttons (with the filename field, default `project.oss`)
+write and read a project file: every node (type, canvas position, and control values),
+all connections, the transport (tempo + loop), and the automation (the Automation node's
+curves and the right-click parameter-automation channels). Playback position is not saved —
+a loaded project opens paused at the start. The `.oss` format is plain line-based text.
+
 ## Test
 
 ```bash

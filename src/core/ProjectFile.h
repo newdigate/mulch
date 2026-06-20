@@ -28,13 +28,13 @@ struct ProjectDoc {
 std::string serializeProject(const ProjectDoc& d);
 bool        parseProject(const std::string& text, ProjectDoc& out);   // false on bad header/numbers
 
-ProjectDoc  captureProject(const Graph& g);                            // (next task)
+ProjectDoc  captureProject(const Graph& g);
 
 using NodeFactory = std::function<std::unique_ptr<Node>(const std::string&)>;
 using NodeInit    = std::function<void(Node&)>;
-void restoreProject(const ProjectDoc& d, Graph& g, const NodeFactory& factory, const NodeInit& init);  // (next task)
+void restoreProject(const ProjectDoc& d, Graph& g, const NodeFactory& factory, const NodeInit& init);
 
-std::string saveProject(const Graph& g);                                                                // (next task)
-bool        loadProject(const std::string& text, Graph& g, const NodeFactory& f, const NodeInit& i);    // (next task)
+std::string saveProject(const Graph& g);
+bool        loadProject(const std::string& text, Graph& g, const NodeFactory& f, const NodeInit& i);
 
 } // namespace oss
