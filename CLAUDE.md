@@ -158,6 +158,15 @@ CMake 4.x, it's relaxed with `CMAKE_POLICY_VERSION_MINIMUM 3.5` around its
   `encode/decodeCurve` in `core/AutoCurve.h`. `Graph::clear()` empties the graph but keeps
   `nextId_` monotonic (the editor's placement cache assumes ids are never reused). The toolbar
   (`src/ui/TransportBar.cpp`) drives it via `Application::saveProjectToFile`/`loadProjectFromFile`.
+- **Preferences** — app-global settings live in the GL-free `core/Preferences` (audio
+  output/input device ids + enabled-MIDI-port name sets), persisted to `preferences.oss`
+  (separate from projects) and flowed to nodes via `EvalContext::prefs` (like `Transport`,
+  passed by `Graph::evaluate`; `Application` owns the object via `Graph::setPreferences`). The
+  **Audio Out/In** nodes keep their libsoundio context alive and reopen the device when
+  `audio*DeviceId` changes; **MIDI In** merges all enabled input ports and **MIDI Out** fans
+  out to all enabled output ports, reopening when the enabled set changes (virtual-port
+  fallback when none selected). The `PreferencesPanel` (`src/ui/`) enumerates devices/ports
+  (soundio/rtmidi confined to its `.cpp`) into Audio Output / Audio Input / MIDI tabs.
 - **Texture nodes** derive from `ShaderNode` (`src/gfx/ShaderNode.h`): render a
   fragment shader into their own FBO and publish a `TexRef` on output 0. `ColourNode`
   is the minimal example — declare ports, override `setUniforms()`, call `render(ctx)`.
