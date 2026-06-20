@@ -44,7 +44,11 @@ struct NodeEditorPanel::Impl {
 
 NodeEditorPanel::NodeEditorPanel() : impl_(std::make_unique<Impl>()) {
     ed::Config cfg;
-    cfg.SettingsFile = nullptr;   // don't write a NodeEditor.json
+    cfg.SettingsFile = nullptr;       // don't write a NodeEditor.json
+    cfg.NavigateButtonIndex = 2;      // pan the canvas with a middle-mouse drag (default was right)
+    cfg.EnableSmoothZoom = true;      // continuous wheel/trackpad zoom; the default integer-step
+                                      // mode rounds fractional trackpad deltas to 0 (near-unusable
+                                      // zoom on macOS). SmoothZoomPower defaults to a Mac-tuned 1.1.
     impl_->ctx = ed::CreateEditor(&cfg);
 }
 
