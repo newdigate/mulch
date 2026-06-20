@@ -1,8 +1,8 @@
 #pragma once
+#include <string>
 #include <vector>
 #include "core/Node.h"
 #include "core/Value.h"
-#include "core/LazyInit.h"
 #include "audio/SpscRingBuffer.h"
 
 // libsoundio types, kept opaque so <soundio/soundio.h> stays out of this header.
@@ -28,8 +28,11 @@ public:
     void evaluate(EvalContext& ctx) override;
 
 private:
-    bool ensureStarted();                                  // lazy device open
-    bool openDevice();
+    bool ensureDevice(const std::string& wantId);
+    bool openContext();
+    bool openStream(const std::string& wantId);
+    void closeStream();
+    int  findInputDeviceById(const std::string& id);
     static void readCallback(SoundIoInStream* is, int frameMin, int frameMax);
     static void errorCallback(SoundIoInStream* is, int err);
 
@@ -40,10 +43,11 @@ private:
     SpscRingBuffer<float> ring_{1 << 14};   // RT producer (capture) -> graph consumer
     std::vector<float>    block_;           // interleaved capture (main thread only)
     std::vector<float>    outL_, outR_;     // deinterleaved mono left / right
-
     int  sampleRate_ = 48000;
     int  channels_   = 1;        // captured channel count (1 or 2)
-    LazyInit lazy_;
+    std::string currentDeviceId_;
+    bool streamOpen_    = false;
+    bool contextFailed_ = false;
 };
 
 } // namespace oss

@@ -1,4 +1,5 @@
 #include "modules/AudioOutputNode.h"
+#include "core/Preferences.h"
 #include <soundio/soundio.h>
 #include <algorithm>
 #include <cstddef>
@@ -13,16 +14,13 @@ AudioOutputNode::AudioOutputNode() : Node("Audio Out") {
 }
 
 AudioOutputNode::~AudioOutputNode() {
-    // Destroy the stream FIRST: this stops the real-time callback so it cannot
-    // touch ring_/scratch_ after they are gone (members are destroyed after this
-    // body runs). Then release the device and context.
-    if (outstream_) soundio_outstream_destroy(outstream_);
-    if (device_)    soundio_device_unref(device_);
-    if (soundio_)   soundio_destroy(soundio_);
+    closeStream();                       // destroys the stream (stops the RT callback) then unrefs the device
+    if (soundio_) soundio_destroy(soundio_);
 }
 
 void AudioOutputNode::evaluate(EvalContext& ctx) {
-    if (!ensureStarted()) return;          // no device -> silent no-op
+    std::string want = ctx.prefs ? ctx.prefs->audioOutputDeviceId : std::string();
+    if (!ensureDevice(want)) return;     // no device -> silent no-op
     soundio_flush_events(soundio_);        // pump device events (non-blocking)
 
     AudioRef l = ctx.in<AudioRef>(0);
@@ -43,49 +41,76 @@ void AudioOutputNode::evaluate(EvalContext& ctx) {
     ring_.push(stereoScratch_.data(), n * 2);            // overflow dropped, never blocks
 }
 
-bool AudioOutputNode::ensureStarted() {
-    return lazy_.ensure([this] { return openDevice(); });
+bool AudioOutputNode::ensureDevice(const std::string& wantId) {
+    if (!soundio_) {
+        if (contextFailed_) return false;
+        if (!openContext()) { contextFailed_ = true; return false; }
+    }
+    if (streamOpen_ && currentDeviceId_ == wantId) return true;
+    closeStream();
+    return openStream(wantId);
 }
 
-bool AudioOutputNode::openDevice() {
+bool AudioOutputNode::openContext() {
     soundio_ = soundio_create();
     if (!soundio_) return false;
     if (int err = soundio_connect(soundio_)) {
         std::fprintf(stderr, "[AudioOut] connect failed: %s\n", soundio_strerror(err));
+        soundio_destroy(soundio_); soundio_ = nullptr;
         return false;
     }
-    soundio_flush_events(soundio_);        // populate the device list
+    soundio_flush_events(soundio_);
+    return true;
+}
 
-    int idx = soundio_default_output_device_index(soundio_);
+int AudioOutputNode::findOutputDeviceById(const std::string& id) {
+    int n = soundio_output_device_count(soundio_);
+    for (int i = 0; i < n; ++i) {
+        SoundIoDevice* d = soundio_get_output_device(soundio_, i);
+        bool match = d && !d->is_raw && d->id && id == d->id;
+        if (d) soundio_device_unref(d);
+        if (match) return i;
+    }
+    return -1;
+}
+
+bool AudioOutputNode::openStream(const std::string& wantId) {
+    soundio_flush_events(soundio_);
+    int idx = wantId.empty() ? -1 : findOutputDeviceById(wantId);
+    if (idx < 0) idx = soundio_default_output_device_index(soundio_);
     if (idx < 0) { std::fprintf(stderr, "[AudioOut] no output device\n"); return false; }
     device_ = soundio_get_output_device(soundio_, idx);
     if (!device_) return false;
 
     sampleRate_ = soundio_device_nearest_sample_rate(device_, 48000);
-
     outstream_ = soundio_outstream_create(device_);
-    if (!outstream_) return false;
+    if (!outstream_) { closeStream(); return false; }
     outstream_->format         = SoundIoFormatFloat32NE;
     outstream_->sample_rate    = sampleRate_;
     outstream_->write_callback = &AudioOutputNode::writeCallback;
     outstream_->error_callback = &AudioOutputNode::errorCallback;
     outstream_->userdata       = this;
     outstream_->name           = "shader-streamer";
-
     if (int err = soundio_outstream_open(outstream_)) {
         std::fprintf(stderr, "[AudioOut] open failed: %s\n", soundio_strerror(err));
-        return false;
+        closeStream(); return false;
     }
-    // Preallocate the audio-thread scratch buffer so the callback never allocates.
     scratch_.assign(4096, 0.0f);
-
     if (int err = soundio_outstream_start(outstream_)) {
         std::fprintf(stderr, "[AudioOut] start failed: %s\n", soundio_strerror(err));
-        return false;
+        closeStream(); return false;
     }
-    std::fprintf(stderr, "[AudioOut] playing on default device: %d Hz, %d ch\n",
-                 sampleRate_, outstream_->layout.channel_count);
+    currentDeviceId_ = wantId;
+    streamOpen_ = true;
+    std::fprintf(stderr, "[AudioOut] playing on '%s': %d Hz, %d ch\n",
+                 device_->name ? device_->name : "?", sampleRate_, outstream_->layout.channel_count);
     return true;
+}
+
+void AudioOutputNode::closeStream() {
+    if (outstream_) { soundio_outstream_destroy(outstream_); outstream_ = nullptr; }
+    if (device_)    { soundio_device_unref(device_);         device_    = nullptr; }
+    streamOpen_ = false;
 }
 
 // Runs on libsoundio's real-time thread: no allocation, locks, or I/O here.

@@ -1,8 +1,8 @@
 #pragma once
+#include <string>
 #include <vector>
 #include "core/Node.h"
 #include "core/Value.h"
-#include "core/LazyInit.h"
 #include "audio/SpscRingBuffer.h"
 
 // libsoundio types, kept opaque so <soundio/soundio.h> stays out of this header.
@@ -26,8 +26,11 @@ public:
     void evaluate(EvalContext& ctx) override;
 
 private:
-    bool ensureStarted();                                   // lazy device open
-    bool openDevice();
+    bool ensureDevice(const std::string& wantId);   // open context (once) + ensure the right stream
+    bool openContext();
+    bool openStream(const std::string& wantId);
+    void closeStream();
+    int  findOutputDeviceById(const std::string& id);
     static void writeCallback(SoundIoOutStream* os, int frameMin, int frameMax);
     static void errorCallback(SoundIoOutStream* os, int err);
 
@@ -35,12 +38,13 @@ private:
     SoundIoDevice*    device_    = nullptr;
     SoundIoOutStream* outstream_ = nullptr;
 
-    SpscRingBuffer<float> ring_{1 << 14};   // interleaved stereo floats; producer/consumer
-    std::vector<float>    scratch_;         // preallocated; touched only on RT thread
-    std::vector<float>    stereoScratch_;   // main thread: interleave left+right before push
-
-    LazyInit lazy_;
+    SpscRingBuffer<float> ring_{1 << 14};
+    std::vector<float>    scratch_;
+    std::vector<float>    stereoScratch_;
     int  sampleRate_ = 48000;
+    std::string currentDeviceId_;       // id the stream is currently open on ("" = default)
+    bool streamOpen_    = false;
+    bool contextFailed_ = false;        // no audio context -> stay a silent no-op
 };
 
 } // namespace oss
