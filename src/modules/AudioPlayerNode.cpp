@@ -6,12 +6,15 @@
 
 namespace oss {
 
-AudioPlayerNode::AudioPlayerNode() : Node("Audio File"), outBuf_(kMaxBlock * 2, 0.0f) {
+AudioPlayerNode::AudioPlayerNode() : Node("Audio File") {
     addInput("file", PortType::String, std::string(""));
     addInput("rate", PortType::Float,  1.0f, -2.0f, 2.0f);   // signed: negative = reverse
     addInput("play", PortType::Bool,   true);
     addInput("loop", PortType::Bool,   true);
-    addOutput("audio", PortType::Audio);                      // 48 kHz stereo
+    addOutput("left",  PortType::Audio);
+    addOutput("right", PortType::Audio);
+    outL_.assign(kMaxBlock, 0.0f);
+    outR_.assign(kMaxBlock, 0.0f);
 }
 
 void AudioPlayerNode::evaluate(EvalContext& ctx) {
@@ -41,7 +44,12 @@ void AudioPlayerNode::evaluate(EvalContext& ctx) {
         }
     }
 
-    if (!haveClip_) { ctx.out<AudioRef>(0, AudioRef{}); lastN_ = 0; return; }
+    if (!haveClip_) {
+        ctx.out<AudioRef>(0, AudioRef{});
+        ctx.out<AudioRef>(1, AudioRef{});
+        lastN_ = 0;
+        return;
+    }
 
     double prev = playhead_;
     if (play) playhead_ += (double)rate * (double)ctx.dt;
@@ -71,9 +79,10 @@ void AudioPlayerNode::evaluate(EvalContext& ctx) {
 
 void AudioPlayerNode::emitAudio(EvalContext& ctx, double t0, double t1) {
     int n = std::clamp((int)std::lround(sampleRate_ * (double)ctx.dt), 1, kMaxBlock);
-    std::size_t frames = clip_.frames();
+    std::size_t frames = clip_.frames();        // AudioClip (stereo) - unchanged
     if (!haveClip_ || frames < 2 || t0 == t1) {
-        std::fill(outBuf_.begin(), outBuf_.begin() + (std::size_t)n * 2, 0.0f);
+        std::fill(outL_.begin(), outL_.begin() + n, 0.0f);
+        std::fill(outR_.begin(), outR_.begin() + n, 0.0f);
     } else {
         // Map each output frame (half-open) to source time and linearly sample the
         // clip. t1<t0 (reverse) naturally reads the clip backwards.
@@ -87,12 +96,13 @@ void AudioPlayerNode::emitAudio(EvalContext& ctx, double t0, double t1) {
                 L = clip_.samples[(std::size_t)i0 * 2]     * (1 - fr) + clip_.samples[((std::size_t)i0 + 1) * 2]     * fr;
                 R = clip_.samples[(std::size_t)i0 * 2 + 1] * (1 - fr) + clip_.samples[((std::size_t)i0 + 1) * 2 + 1] * fr;
             }
-            outBuf_[(std::size_t)j * 2]     = L;
-            outBuf_[(std::size_t)j * 2 + 1] = R;
+            outL_[(std::size_t)j] = L;
+            outR_[(std::size_t)j] = R;
         }
     }
     lastN_ = n;
-    ctx.out<AudioRef>(0, AudioRef{outBuf_.data(), (std::size_t)n * 2, sampleRate_, 2});
+    ctx.out<AudioRef>(0, AudioRef{outL_.data(), (std::size_t)n, sampleRate_});
+    ctx.out<AudioRef>(1, AudioRef{outR_.data(), (std::size_t)n, sampleRate_});
 }
 
 void AudioPlayerNode::updateStatus(bool play, float rate) {

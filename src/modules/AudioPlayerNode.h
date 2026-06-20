@@ -8,7 +8,8 @@
 
 namespace oss {
 
-// Plays an audio file (named by its string input) as 48 kHz stereo. The file is
+// Plays an audio file (named by its string input) as 48 kHz, deinterleaved to two
+// mono outputs (left, right). The file is
 // decoded into memory on a worker thread; once loaded, a source-time playhead is
 // advanced by rate*dt each frame and the output block is read from the clip with
 // linear interpolation. The signed `rate` gives variable speed and, when
@@ -22,7 +23,8 @@ public:
 
     // Test/inspection accessors.
     double   playhead() const { return playhead_; }
-    AudioRef audioOut() const { return AudioRef{outBuf_.data(), (std::size_t)lastN_ * 2, sampleRate_, 2}; }
+    AudioRef leftOut()  const { return AudioRef{outL_.data(), (std::size_t)lastN_, sampleRate_}; }
+    AudioRef rightOut() const { return AudioRef{outR_.data(), (std::size_t)lastN_, sampleRate_}; }
 
 private:
     void emitAudio(EvalContext& ctx, double t0, double t1);
@@ -38,8 +40,8 @@ private:
     double      playhead_   = 0.0;             // source position in seconds
     double      duration_   = 0.0;
 
-    std::vector<float> outBuf_;                // interleaved stereo (kMaxBlock*2)
-    int         lastN_ = 0;                    // frames emitted last evaluate
+    std::vector<float> outL_, outR_;           // mono left / right (kMaxBlock each)
+    int         lastN_ = 0;                    // samples emitted last evaluate
 };
 
 } // namespace oss

@@ -726,13 +726,14 @@ int main() {
         bool sawAudio = false;
         for (int f = 0; f < 400 && !sawAudio; ++f) {     // poll while the worker decodes
             g.evaluate(1.0f / 60.0f);
-            AudioRef o = an->audioOut();
-            if (o.channels == 2)
-                for (std::size_t i = 0; i < o.count; ++i)
-                    if (o.samples[i] > 0.01f || o.samples[i] < -0.01f) { sawAudio = true; break; }
+            AudioRef oL = an->leftOut();
+            AudioRef oR = an->rightOut();
+            if (oL.count > 0 && oR.count > 0)
+                for (std::size_t i = 0; i < oL.count; ++i)
+                    if (std::fabs(oL.samples[i]) > 0.01f || std::fabs(oR.samples[i]) > 0.01f) { sawAudio = true; break; }
             if (!sawAudio) std::this_thread::sleep_for(std::chrono::milliseconds(2));
         }
-        if (!sawAudio) { glfwTerminate(); return fail("audio player produced no stereo audio"); }
+        if (!sawAudio) { glfwTerminate(); return fail("audio player produced no audio"); }
 
         for (int f = 0; f < 10; ++f) g.evaluate(1.0f / 60.0f);   // play forward a bit
         double fwd = an->playhead();
