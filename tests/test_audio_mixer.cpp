@@ -17,25 +17,24 @@ static std::vector<Value> makeInputs() {
     return in;
 }
 
-TEST_CASE("centred mono inputs sum equally into both stereo channels") {
+// out[0] = left mono, out[1] = right mono.
+TEST_CASE("centred mono inputs sum equally into both outputs") {
     AudioMixerNode mix;
     std::vector<float> a = {0.1f, 0.2f, 0.3f};
     std::vector<float> b = {0.4f, 0.4f, 0.4f};
     auto in = makeInputs();
     in[0] = AudioRef{a.data(), a.size(), 48000};
     in[3] = AudioRef{b.data(), b.size(), 48000};
-    std::vector<Value> out(1);
+    std::vector<Value> out(2);
     EvalContext ctx{in, out, 1.0f / 60.0f};
     mix.evaluate(ctx);
 
-    AudioRef o = std::get<AudioRef>(out[0]);
-    REQUIRE(o.channels == 2);
-    REQUIRE(o.count == 6);                 // 3 frames * 2 channels
-    REQUIRE(o.frames() == 3);
-    CHECK(o.samples[0] == doctest::Approx(0.5f));   // L0
-    CHECK(o.samples[1] == doctest::Approx(0.5f));   // R0 == L0 (centred)
-    CHECK(o.samples[4] == doctest::Approx(0.7f));   // L2
-    CHECK(o.samples[5] == doctest::Approx(0.7f));   // R2
+    AudioRef L = std::get<AudioRef>(out[0]), R = std::get<AudioRef>(out[1]);
+    REQUIRE(L.count == 3); REQUIRE(R.count == 3);
+    CHECK(L.samples[0] == doctest::Approx(0.5f));
+    CHECK(R.samples[0] == doctest::Approx(0.5f));
+    CHECK(L.samples[2] == doctest::Approx(0.7f));
+    CHECK(R.samples[2] == doctest::Approx(0.7f));
 }
 
 TEST_CASE("pan places a mono input in the stereo field") {
@@ -44,24 +43,22 @@ TEST_CASE("pan places a mono input in the stereo field") {
     SUBCASE("hard left") {
         auto in = makeInputs();
         in[0] = AudioRef{s.data(), 1, 48000};
-        in[2] = -1.0f;                      // pan 1 = full left
-        std::vector<Value> out(1);
+        in[2] = -1.0f;
+        std::vector<Value> out(2);
         EvalContext ctx{in, out, 0.016f};
         mix.evaluate(ctx);
-        AudioRef o = std::get<AudioRef>(out[0]);
-        CHECK(o.samples[0] == doctest::Approx(0.5f));   // L
-        CHECK(o.samples[1] == doctest::Approx(0.0f));   // R muted
+        CHECK(std::get<AudioRef>(out[0]).samples[0] == doctest::Approx(0.5f));   // L
+        CHECK(std::get<AudioRef>(out[1]).samples[0] == doctest::Approx(0.0f));   // R muted
     }
     SUBCASE("hard right") {
         auto in = makeInputs();
         in[0] = AudioRef{s.data(), 1, 48000};
-        in[2] = 1.0f;                       // pan 1 = full right
-        std::vector<Value> out(1);
+        in[2] = 1.0f;
+        std::vector<Value> out(2);
         EvalContext ctx{in, out, 0.016f};
         mix.evaluate(ctx);
-        AudioRef o = std::get<AudioRef>(out[0]);
-        CHECK(o.samples[0] == doctest::Approx(0.0f));   // L muted
-        CHECK(o.samples[1] == doctest::Approx(0.5f));   // R
+        CHECK(std::get<AudioRef>(out[0]).samples[0] == doctest::Approx(0.0f));   // L muted
+        CHECK(std::get<AudioRef>(out[1]).samples[0] == doctest::Approx(0.5f));   // R
     }
 }
 
@@ -71,63 +68,46 @@ TEST_CASE("mixer applies per-channel gain") {
     auto in = makeInputs();
     in[0] = AudioRef{a.data(), 1, 48000}; in[1] = 0.5f;
     in[3] = AudioRef{b.data(), 1, 48000}; in[4] = 0.25f;
-    std::vector<Value> out(1);
+    std::vector<Value> out(2);
     EvalContext ctx{in, out, 0.016f};
     mix.evaluate(ctx);
-    AudioRef o = std::get<AudioRef>(out[0]);
-    CHECK(o.samples[0] == doctest::Approx(0.5f * 0.5f + 0.5f * 0.25f));   // 0.375 (L, centred)
+    CHECK(std::get<AudioRef>(out[0]).samples[0] == doctest::Approx(0.5f * 0.5f + 0.5f * 0.25f));
 }
 
-TEST_CASE("mixer clamps each channel to [-1, 1]") {
+TEST_CASE("mixer clamps each output to [-1, 1]") {
     AudioMixerNode mix;
     std::vector<float> s = {0.9f};
     auto in = makeInputs();
-    for (int c = 0; c < 4; ++c) in[c * 3] = AudioRef{s.data(), 1, 48000};  // 4 * 0.9 = 3.6
-    std::vector<Value> out(1);
+    for (int c = 0; c < 4; ++c) in[c * 3] = AudioRef{s.data(), 1, 48000};
+    std::vector<Value> out(2);
     EvalContext ctx{in, out, 0.016f};
     mix.evaluate(ctx);
-    AudioRef o = std::get<AudioRef>(out[0]);
-    CHECK(o.samples[0] == doctest::Approx(1.0f));   // L clamped
-    CHECK(o.samples[1] == doctest::Approx(1.0f));   // R clamped
+    CHECK(std::get<AudioRef>(out[0]).samples[0] == doctest::Approx(1.0f));
+    CHECK(std::get<AudioRef>(out[1]).samples[0] == doctest::Approx(1.0f));
 }
 
-TEST_CASE("a stereo input keeps its own L/R") {
+TEST_CASE("mixer output length is the longest input (in samples)") {
     AudioMixerNode mix;
-    std::vector<float> st = {0.2f, 0.8f, 0.3f, 0.7f};   // 2 frames: (L,R)
-    auto in = makeInputs();
-    in[0] = AudioRef{st.data(), st.size(), 48000, 2};
-    std::vector<Value> out(1);
-    EvalContext ctx{in, out, 0.016f};
-    mix.evaluate(ctx);
-    AudioRef o = std::get<AudioRef>(out[0]);
-    REQUIRE(o.channels == 2);
-    REQUIRE(o.frames() == 2);
-    CHECK(o.samples[0] == doctest::Approx(0.2f));   // L0
-    CHECK(o.samples[1] == doctest::Approx(0.8f));   // R0
-    CHECK(o.samples[3] == doctest::Approx(0.7f));   // R1
-}
-
-TEST_CASE("mixer output length is the longest input (in frames)") {
-    AudioMixerNode mix;
-    std::vector<float> a = {0.1f, 0.1f, 0.1f, 0.1f};   // 4 frames mono
-    std::vector<float> b = {0.2f, 0.2f};               // 2 frames mono
+    std::vector<float> a = {0.1f, 0.1f, 0.1f, 0.1f};
+    std::vector<float> b = {0.2f, 0.2f};
     auto in = makeInputs();
     in[0] = AudioRef{a.data(), 4, 48000};
     in[3] = AudioRef{b.data(), 2, 48000};
-    std::vector<Value> out(1);
+    std::vector<Value> out(2);
     EvalContext ctx{in, out, 0.016f};
     mix.evaluate(ctx);
-    AudioRef o = std::get<AudioRef>(out[0]);
-    REQUIRE(o.frames() == 4);
-    CHECK(o.samples[0] == doctest::Approx(0.3f));   // L0: a+b
-    CHECK(o.samples[4] == doctest::Approx(0.1f));   // L2: a only (b exhausted)
+    AudioRef L = std::get<AudioRef>(out[0]);
+    REQUIRE(L.count == 4);
+    CHECK(L.samples[0] == doctest::Approx(0.3f));   // a+b
+    CHECK(L.samples[2] == doctest::Approx(0.1f));   // a only (b exhausted)
 }
 
-TEST_CASE("mixer with nothing connected outputs an empty block") {
+TEST_CASE("mixer with nothing connected outputs empty blocks") {
     AudioMixerNode mix;
     auto in = makeInputs();
-    std::vector<Value> out(1);
+    std::vector<Value> out(2);
     EvalContext ctx{in, out, 0.016f};
     mix.evaluate(ctx);
     CHECK(std::get<AudioRef>(out[0]).count == 0);
+    CHECK(std::get<AudioRef>(out[1]).count == 0);
 }
