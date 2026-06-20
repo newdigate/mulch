@@ -272,6 +272,7 @@ add_executable(core_tests
   tests/test_pitch_graph.cpp
   tests/test_cube_map.cpp
   tests/test_vertex_shaders.cpp
+  tests/test_color_hsv.cpp
   src/core/Node.cpp
   src/core/Graph.cpp
   src/core/AutomationStore.cpp

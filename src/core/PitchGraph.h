@@ -2,11 +2,9 @@
 #include <vector>
 #include <glm/vec3.hpp>
 #include "core/Value.h"
+#include "core/ColorHsv.h"
 
 namespace oss {
-
-// HSV (each component in [0,1]; hue wraps) -> RGB in [0,1]. GL-free.
-glm::vec3 hsvToRgb(float h, float s, float v);
 
 // Rolling MIDI note history -> a scrolling pitch-vs-time line graph (GL-free). Notes are
 // horizontal segments at their pitch; pitch class picks a rainbow hue, velocity the
