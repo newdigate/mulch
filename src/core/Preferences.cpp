@@ -15,6 +15,13 @@ void setListed(std::vector<std::string>& v, const std::string& n, bool on) {
 }
 } // namespace
 
+void clampTextureSize(int& w, int& h) {
+    if (w < 320)  w = 320;
+    if (w > 1920) w = 1920;
+    if (h < 240)  h = 240;
+    if (h > 1080) h = 1080;
+}
+
 bool Preferences::midiInputEnabled(const std::string& n) const  { return listed(enabledMidiInputs, n); }
 void Preferences::setMidiInputEnabled(const std::string& n, bool on)  { setListed(enabledMidiInputs, n, on); }
 bool Preferences::midiOutputEnabled(const std::string& n) const { return listed(enabledMidiOutputs, n); }
@@ -26,6 +33,7 @@ std::string serializePreferences(const Preferences& p) {
     if (!p.audioInputDeviceId.empty())  out += "audio-in "  + p.audioInputDeviceId  + "\n";
     for (const std::string& n : p.enabledMidiInputs)  out += "midi-in "  + n + "\n";
     for (const std::string& n : p.enabledMidiOutputs) out += "midi-out " + n + "\n";
+    out += "texture-size " + std::to_string(p.textureWidth) + " " + std::to_string(p.textureHeight) + "\n";
     return out;
 }
 
@@ -43,6 +51,12 @@ bool parsePreferences(const std::string& text, Preferences& out) {
         else if (kw == "audio-in")  out.audioInputDeviceId  = rest;
         else if (kw == "midi-in"  && !rest.empty()) out.enabledMidiInputs.push_back(rest);
         else if (kw == "midi-out" && !rest.empty()) out.enabledMidiOutputs.push_back(rest);
+        else if (kw == "texture-size") {
+            std::istringstream rs(rest);
+            int w = 0, h = 0;
+            rs >> w >> h;
+            if (!rs.fail()) { clampTextureSize(w, h); out.textureWidth = w; out.textureHeight = h; }
+        }
     }
     return true;
 }
