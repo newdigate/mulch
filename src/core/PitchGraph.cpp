@@ -4,23 +4,6 @@
 
 namespace oss {
 
-glm::vec3 hsvToRgb(float h, float s, float v) {
-    h = h - std::floor(h);                 // wrap to [0,1)
-    float i = std::floor(h * 6.0f);
-    float f = h * 6.0f - i;
-    float p = v * (1.0f - s);
-    float q = v * (1.0f - s * f);
-    float t = v * (1.0f - s * (1.0f - f));
-    switch (((int)i) % 6) {
-        case 0:  return glm::vec3(v, t, p);
-        case 1:  return glm::vec3(q, v, p);
-        case 2:  return glm::vec3(p, v, t);
-        case 3:  return glm::vec3(p, q, v);
-        case 4:  return glm::vec3(t, p, v);
-        default: return glm::vec3(v, p, q);
-    }
-}
-
 namespace {
 constexpr int         kLoNote = 24, kHiNote = 96;   // C1..C7, log-frequency (by note)
 constexpr std::size_t kMaxNotes = 512;

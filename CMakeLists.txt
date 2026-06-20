@@ -195,6 +195,7 @@ set(APP_SOURCES
   src/core/MidiFile.cpp
   src/core/Oscilloscope.cpp
   src/core/PitchGraph.cpp
+  src/core/VertexTrail.cpp
   src/audio/FFT.cpp
   src/audio/SignalGenerator.cpp
   src/audio/AcidVoice.cpp
@@ -272,12 +273,15 @@ add_executable(core_tests
   tests/test_pitch_graph.cpp
   tests/test_cube_map.cpp
   tests/test_vertex_shaders.cpp
+  tests/test_color_hsv.cpp
+  tests/test_vertex_trail.cpp
   src/core/Node.cpp
   src/core/Graph.cpp
   src/core/AutomationStore.cpp
   src/core/MidiFile.cpp
   src/core/Oscilloscope.cpp
   src/core/PitchGraph.cpp
+  src/core/VertexTrail.cpp
   src/audio/FFT.cpp
   src/audio/SignalGenerator.cpp
   src/audio/AcidVoice.cpp
@@ -294,6 +298,7 @@ add_executable(gl_smoke
   src/core/Graph.cpp
   src/core/AutomationStore.cpp
   src/core/PitchGraph.cpp
+  src/core/VertexTrail.cpp
   src/gfx/GLUtil.cpp
   src/gfx/Framebuffer.cpp
   src/gfx/FullscreenPass.cpp

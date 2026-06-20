@@ -31,6 +31,8 @@
 #include "modules/WorldTransformNode.h"
 #include "modules/SkyboxNode.h"
 #include "modules/DeformNode.h"
+#include "modules/VertexTrailNode.h"
+#include "core/ColorHsv.h"
 #include "modules/VertexShaderNode.h"
 #include "core/VertexShaders.h"
 #include "gfx/VideoDecoder.h"
@@ -1028,6 +1030,50 @@ int main() {
             if (!g.connect(vsId, 0, dId, 3)) { glfwTerminate(); return fail("Shader edge VertexShader->Deform did not connect"); }
         }
         std::fprintf(stderr, "gl_smoke OK: Deform applies a vertex shader via transform feedback\n");
+    }
+
+    // --- Scenario: Vertex Trail queues snapshots, offset in z + hue-rotated by age ---
+    // Push the same 1-vertex Pos3 input 3 frames; the trail holds 3 copies at z = 0.3 / 0.8 / 1.3
+    // with colours red / hue 0.1 / hue 0.2. Read the output VBO back and verify.
+    {
+        const float inPos[3] = { 0.1f, 0.2f, 0.3f };
+        GLuint inVbo = 0;
+        glGenBuffers(1, &inVbo); glBindBuffer(GL_ARRAY_BUFFER, inVbo);
+        glBufferData(GL_ARRAY_BUFFER, sizeof(inPos), inPos, GL_STATIC_DRAW);
+        glBindBuffer(GL_ARRAY_BUFFER, 0);
+
+        Graph g;
+        auto tr = std::make_unique<VertexTrailNode>();
+        tr->inputDefault(0) = VertexRef{ inVbo, 1, Primitive::Lines, VertexFormat::Pos3 };
+        tr->inputDefault(1) = 8.0f;    // max frames
+        tr->inputDefault(2) = 0.5f;    // z spacing
+        tr->inputDefault(3) = 0.1f;    // hue rate
+        tr->initGL();
+        int tId = g.addNode(std::move(tr));
+        auto* tn = dynamic_cast<VertexTrailNode*>(g.findNode(tId));
+        for (int f = 0; f < 3; ++f) g.evaluate(1.0f / 60.0f);
+
+        VertexRef out = tn->output();
+        if (out.vbo == 0 || out.count != 3 || out.format != VertexFormat::Pos3Color3) {
+            glDeleteBuffers(1, &inVbo); glfwTerminate(); return fail("Vertex Trail wrong output shape");
+        }
+        float o[18];
+        glBindBuffer(GL_ARRAY_BUFFER, out.vbo);
+        glGetBufferSubData(GL_ARRAY_BUFFER, 0, 18 * sizeof(float), o);
+        glBindBuffer(GL_ARRAY_BUFFER, 0);
+        auto af = [](float a, float b) { return std::fabs(a - b) < 1e-3f; };
+        glm::vec3 c1 = hsvToRgb(0.1f, 1.0f, 1.0f);   // age 1
+        glm::vec3 c2 = hsvToRgb(0.2f, 1.0f, 1.0f);   // age 2
+        bool ok =
+            af(o[0],0.1f)  && af(o[1],0.2f) && af(o[2],0.3f) && af(o[3],1.0f)  && af(o[4],0.0f)  && af(o[5],0.0f)   &&  // age0 red
+            af(o[6],0.1f)  && af(o[7],0.2f) && af(o[8],0.8f) && af(o[9],c1.x)  && af(o[10],c1.y) && af(o[11],c1.z)  &&  // age1
+            af(o[12],0.1f) && af(o[13],0.2f)&& af(o[14],1.3f)&& af(o[15],c2.x) && af(o[16],c2.y) && af(o[17],c2.z);     // age2
+        if (!ok) {
+            std::fprintf(stderr, "Vertex Trail got z=(%.3f,%.3f,%.3f)\n", o[2], o[8], o[14]);
+            glDeleteBuffers(1, &inVbo); glfwTerminate(); return fail("Vertex Trail z-offset/hue wrong");
+        }
+        glDeleteBuffers(1, &inVbo);
+        std::fprintf(stderr, "gl_smoke OK: Vertex Trail queued snapshots with z-offset + hue rotation\n");
     }
 
     glfwDestroyWindow(win);
