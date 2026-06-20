@@ -7,7 +7,7 @@
 
 namespace oss {
 
-enum class PortType { Texture, Colour, Float, Bool, Audio, String, Midi, Vertex, Transform };
+enum class PortType { Texture, Colour, Float, Bool, Audio, String, Midi, Vertex, Transform, Shader };
 
 // Reference to a GL texture produced by a node. `id` is a GL texture name kept
 // as a plain unsigned int so this header (and all of core/) stays GL-free.
@@ -72,8 +72,12 @@ struct Transform {
     bool  active = false;
 };
 
+// A GLSL vertex-shader source carried on a Shader edge (a string, so core/ stays GL-free).
+// Produced by a Vertex Shader node; consumed by a Deform node.
+struct ShaderRef { std::string vertexSrc; };
+
 // Each alternative corresponds to a PortType value (mapped type-safely by typeOf).
-using Value = std::variant<float, bool, glm::vec4, std::string, TexRef, AudioRef, MidiRef, VertexRef, Transform>;
+using Value = std::variant<float, bool, glm::vec4, std::string, TexRef, AudioRef, MidiRef, VertexRef, Transform, ShaderRef>;
 
 inline PortType typeOf(const Value& v) {
     return std::visit([](auto&& arg) -> PortType {
@@ -86,7 +90,8 @@ inline PortType typeOf(const Value& v) {
         else if constexpr (std::is_same_v<T, AudioRef>)    return PortType::Audio;
         else if constexpr (std::is_same_v<T, MidiRef>)     return PortType::Midi;
         else if constexpr (std::is_same_v<T, VertexRef>)   return PortType::Vertex;
-        else                                                return PortType::Transform;
+        else if constexpr (std::is_same_v<T, Transform>)   return PortType::Transform;
+        else                                                return PortType::Shader;   // ShaderRef
     }, v);
 }
 
@@ -101,6 +106,7 @@ inline const char* portTypeName(PortType t) {
         case PortType::Midi:    return "Midi";
         case PortType::Vertex:  return "Vertex";
         case PortType::Transform: return "Transform";
+        case PortType::Shader:    return "Shader";
     }
     return "?";
 }
