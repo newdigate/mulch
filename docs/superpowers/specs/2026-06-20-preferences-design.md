@@ -5,8 +5,9 @@
 
 ## Goal
 
-A **Preferences** window with a tab group (Audio + MIDI) for selecting the audio output/input
-device (sound card) and enabling which MIDI interfaces are used. Changes apply **live** — the
+A **Preferences** window with a tab group (Audio Output · Audio Input · MIDI) for selecting the
+audio output device (sound card), the audio input device, and enabling which MIDI interfaces are
+used. Changes apply **live** — the
 running Audio/MIDI nodes reopen their device/ports immediately. Preferences are app-global,
 persisted to a `preferences.oss` text file, and structured so future settings slot in.
 
@@ -92,10 +93,10 @@ is open* (cheap string compare when unchanged):
 ### Unit 5 — `src/ui/PreferencesPanel.{h,cpp}` (new)
 
 `void draw(Preferences& prefs, const std::function<void()>& onChange, bool* open);` — an
-`ImGui::Begin("Preferences", open)` window with `BeginTabBar`:
-- **Audio tab:** an "Output device" combo and an "Input device" combo. Entries: *System default*
-  (id `""`) + each enumerated device `{id, name}`. Selecting one sets the matching
-  `audio*DeviceId` and calls `onChange`.
+`ImGui::Begin("Preferences", open)` window with a `BeginTabBar` of three separate tabs:
+- **Audio Output tab:** an "Output device" combo. Entries: *System default* (id `""`) + each
+  enumerated output device `{id, name}`. Selecting one sets `audioOutputDeviceId` and calls `onChange`.
+- **Audio Input tab:** an "Input device" combo, same shape, setting `audioInputDeviceId`.
 - **MIDI tab:** a checkbox per available MIDI **input** port and per **output** port; toggling
   calls `prefs.setMidi{Input,Output}Enabled(name, on)` then `onChange`.
 - The panel owns the enumerated lists, refreshed **on open + a Refresh button** (not every
@@ -147,8 +148,7 @@ Startup: read preferences.oss → prefs_ ;  any panel change → write preferenc
 ## Docs
 
 - **README.md** — a short **Preferences** note: the toolbar **Prefs** button opens a window with
-  Audio (output/input device) and MIDI (enable interfaces) tabs; choices apply live and persist to
-  `preferences.oss`.
+  Audio Output, Audio Input, and MIDI tabs; choices apply live and persist to `preferences.oss`.
 - **CLAUDE.md** — an Architecture bullet: a GL-free `core/Preferences` (app-global, persisted to
   `preferences.oss`, separate from projects) flows to nodes via `EvalContext::prefs` (like
   `Transport`); Audio Out/In reopen their libsoundio device and MIDI In/Out reopen their rtmidi
