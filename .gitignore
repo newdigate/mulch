@@ -3,3 +3,4 @@
 .cache/
 compile_commands.json
 imgui.ini
+/preferences.oss          # machine-local Preferences (audio/MIDI device ids), written to CWD
