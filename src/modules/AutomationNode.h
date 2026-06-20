@@ -1,5 +1,6 @@
 #pragma once
 #include <cstddef>
+#include <cstdlib>
 #include <string>
 #include "core/Node.h"
 #include "core/Value.h"
@@ -42,6 +43,33 @@ public:
     float outMin(int c) const { return outMin_[c]; }
     float outMax(int c) const { return outMax_[c]; }
     void  setOutRange(int c, float lo, float hi) { outMin_[c] = lo; outMax_[c] = hi; }
+
+    // Persist the 4 channels as "outMin:outMax:curve" blocks joined by '|'.
+    std::string saveState() const override {
+        std::string s;
+        for (int c = 0; c < kChannels; ++c) {
+            if (c) s += '|';
+            s += std::to_string(outMin_[c]) + ':' + std::to_string(outMax_[c]) + ':' + encodeCurve(curve_[c]);
+        }
+        return s;
+    }
+    void loadState(const std::string& s) override {
+        std::size_t pos = 0;
+        for (int c = 0; c < kChannels; ++c) {
+            if (pos > s.size()) break;
+            std::size_t bar = s.find('|', pos);
+            std::string block = s.substr(pos, bar == std::string::npos ? std::string::npos : bar - pos);
+            std::size_t a = block.find(':');
+            std::size_t b = (a == std::string::npos) ? std::string::npos : block.find(':', a + 1);
+            if (a != std::string::npos && b != std::string::npos) {
+                try { outMin_[c] = std::stof(block.substr(0, a));
+                      outMax_[c] = std::stof(block.substr(a + 1, b - a - 1)); } catch (...) {}
+                curve_[c] = decodeCurve(block.substr(b + 1));
+            }
+            if (bar == std::string::npos) break;
+            pos = bar + 1;
+        }
+    }
 
 private:
     AutoCurve curve_[kChannels];

@@ -24,6 +24,15 @@ void Graph::removeNode(int nodeId) {
     markDirty();
 }
 
+void Graph::clear() {
+    connections_.clear();
+    nodes_.clear();
+    outputs_.clear();
+    automation_.clear();
+    markDirty();
+    // nextId_ is intentionally NOT reset.
+}
+
 Node* Graph::findNode(int nodeId) const {
     for (auto& n : nodes_) if (n->id() == nodeId) return n.get();
     return nullptr;

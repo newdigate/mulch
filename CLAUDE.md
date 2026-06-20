@@ -148,6 +148,16 @@ CMake 4.x, it's relaxed with `CMAKE_POLICY_VERSION_MINIMUM 3.5` around its
   `k·hue-rate`. The HSV helpers live in the GL-free header-only `core/ColorHsv.h` (`hsvToRgb`
   + `rgbToHsv`), now shared with `PitchGraph`. Unit-tested in `core_tests`; the readback +
   queue + offsets are `gl_smoke`-verified by reading the output buffer back.
+- **Project save/load** — the GL-free `core/ProjectFile` reads/writes a `.oss` project (a
+  line-based text format) via an intermediate `ProjectDoc` POD, so parse→rebuild is atomic.
+  `captureProject` reads the graph (nodes' type `name()`, `pos`, control-type input defaults,
+  `saveState()`), connections, transport, and the `AutomationStore` channels;
+  `restoreProject` rebuilds through a `makeNode` factory + an `initGL` callback (so core stays
+  GL-free), remapping in-file ids → fresh ids. The `Node::saveState/loadState` hook persists
+  non-port state (only the Automation node uses it, for its curves); the curve text codec is
+  `encode/decodeCurve` in `core/AutoCurve.h`. `Graph::clear()` empties the graph but keeps
+  `nextId_` monotonic (the editor's placement cache assumes ids are never reused). The toolbar
+  (`src/ui/TransportBar.cpp`) drives it via `Application::saveProjectToFile`/`loadProjectFromFile`.
 - **Texture nodes** derive from `ShaderNode` (`src/gfx/ShaderNode.h`): render a
   fragment shader into their own FBO and publish a `TexRef` on output 0. `ColourNode`
   is the minimal example — declare ports, override `setUniforms()`, call `render(ctx)`.

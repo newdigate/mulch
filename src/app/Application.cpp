@@ -35,6 +35,9 @@
 #include "modules/VideoPlayerNode.h"
 #include "modules/WireframeNode.h"
 #include "ui/TransportBar.h"
+#include "core/ProjectFile.h"
+#include <fstream>
+#include <sstream>
 
 namespace oss {
 
@@ -108,8 +111,30 @@ int Application::addNodeOfType(const std::string& type, glm::vec2 pos) {
     return graph_.addNode(std::move(node));
 }
 
+bool Application::saveProjectToFile(const std::string& path) {
+    std::ofstream f(path);
+    if (!f) return false;
+    f << saveProject(graph_);
+    return (bool)f;
+}
+
+bool Application::loadProjectFromFile(const std::string& path) {
+    std::ifstream f(path);
+    if (!f) return false;
+    std::stringstream ss; ss << f.rdbuf();
+    return loadProject(ss.str(), graph_,
+                       [](const std::string& t){ return makeNode(t); },
+                       [](Node& n){ n.initGL(); });
+}
+
 void Application::frame(float dt) {
-    drawTransportBar(graph_.transport());   // top toolbar: tempo + play/stop/scrub
+    ProjectBarIO io;
+    io.filename = filename_;
+    io.filenameLen = sizeof(filename_);
+    io.onSave = [this]{ projectStatus_ = saveProjectToFile(filename_) ? (std::string("saved ") + filename_) : "save failed"; };
+    io.onLoad = [this]{ projectStatus_ = loadProjectFromFile(filename_) ? (std::string("loaded ") + filename_) : "load failed"; };
+    io.status = projectStatus_;
+    drawTransportBar(graph_.transport(), &io);   // top toolbar: tempo + play/stop/scrub
     editor_.draw(graph_, [this](const std::string& t, glm::vec2 p){ return addNodeOfType(t, p); });
     automation_.draw(graph_);                // automation timeline window
     graph_.evaluate(dt);                     // advances the transport by dt

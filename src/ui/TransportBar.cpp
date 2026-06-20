@@ -5,7 +5,7 @@
 
 namespace oss {
 
-void drawTransportBar(Transport& t) {
+void drawTransportBar(Transport& t, ProjectBarIO* io) {
     // A menu bar lays its items out horizontally, so the buttons, tempo field,
     // and read-out all sit on one row without explicit SameLine calls.
     if (!ImGui::BeginMainMenuBar()) return;
@@ -48,6 +48,16 @@ void drawTransportBar(Transport& t) {
     float le = (float)t.loopEndBar;
     if (ImGui::InputFloat("##loopEnd", &le, 0.0f, 0.0f, "%.2f")) t.loopEndBar = le;
     ImGui::TextUnformatted("bars");
+
+    if (io) {
+        ImGui::Separator();
+        ImGui::SetNextItemWidth(160.0f);
+        if (io->filename) ImGui::InputText("##projfile", io->filename, io->filenameLen);
+        if (ImGui::Button("Save") && io->onSave) io->onSave();
+        ImGui::SameLine();
+        if (ImGui::Button("Load") && io->onLoad) io->onLoad();
+        if (!io->status.empty()) { ImGui::SameLine(); ImGui::TextUnformatted(io->status.c_str()); }
+    }
 
     ImGui::EndMainMenuBar();
 }

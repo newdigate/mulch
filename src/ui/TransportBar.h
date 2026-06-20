@@ -1,13 +1,26 @@
 #pragma once
+#include <cstddef>
+#include <functional>
+#include <string>
 
 namespace oss {
 
 struct Transport;
 
-// Draws the transport toolbar as a top main-menu bar: Play/Pause, Stop, Rewind,
-// Fast-forward, an editable decimal tempo field, and the song position read out
-// as bars.beats, beats, and minutes:seconds.milliseconds. Mutates `t` in place
-// (button presses and tempo edits). Call inside an active ImGui frame.
-void drawTransportBar(Transport& t);
+// Optional Save/Load controls drawn at the right of the transport bar. When null,
+// the bar shows only transport controls.
+struct ProjectBarIO {
+    char*       filename = nullptr;     // editable filename buffer
+    std::size_t filenameLen = 0;
+    std::function<void()> onSave;
+    std::function<void()> onLoad;
+    std::string status;                 // shown after the buttons
+};
+
+// Draws the transport toolbar (Play/Pause, Stop, Rewind, Fast-forward, tempo, loop,
+// position read-out) as a top main-menu bar; when `io` is non-null also draws a
+// filename field + Save/Load buttons + status. Mutates `t` in place. Call inside an
+// active ImGui frame.
+void drawTransportBar(Transport& t, ProjectBarIO* io = nullptr);
 
 } // namespace oss

@@ -9,6 +9,7 @@
 #include <memory>
 #include <glm/vec4.hpp>
 #include "core/Graph.h"
+#include "core/ProjectFile.h"
 #include "modules/ColourNode.h"
 #include "modules/MixNode.h"
 #include "modules/CompositorNode.h"
@@ -1074,6 +1075,40 @@ int main() {
         }
         glDeleteBuffers(1, &inVbo);
         std::fprintf(stderr, "gl_smoke OK: Vertex Trail queued snapshots with z-offset + hue rotation\n");
+    }
+
+    // --- Scenario: project save/load round-trips a real graph through a factory + initGL ---
+    {
+        auto factory = [](const std::string& t) -> std::unique_ptr<Node> {
+            if (t == "Colour") return std::make_unique<ColourNode>();
+            if (t == "Output") return std::make_unique<OutputNode>();
+            return nullptr;
+        };
+        auto init = [](Node& n){ n.initGL(); };
+
+        Graph g;
+        auto col = std::make_unique<ColourNode>();
+        col->inputDefault(0) = Value(glm::vec4(0.25f, 0.5f, 0.75f, 1.0f));   // a known colour
+        col->initGL();
+        auto out = std::make_unique<OutputNode>(); out->initGL();
+        int cId = g.addNode(std::move(col));
+        int oId = g.addNode(std::move(out));
+        if (!g.connect(cId, 0, oId, 0)) { glfwTerminate(); return fail("save/load: connect Colour->Output"); }
+
+        std::string text = saveProject(g);
+
+        Graph g2;
+        if (!loadProject(text, g2, factory, init)) { glfwTerminate(); return fail("save/load: loadProject returned false"); }
+        if (g2.nodes().size() != 2 || g2.connections().size() != 1) { glfwTerminate(); return fail("save/load: graph shape not restored"); }
+        Node* col2 = nullptr;
+        for (auto& np : g2.nodes()) if (np->name() == "Colour") col2 = np.get();
+        if (!col2) { glfwTerminate(); return fail("save/load: Colour node missing after load"); }
+        glm::vec4 c = std::get<glm::vec4>(col2->inputDefault(0));
+        if (!(std::fabs(c.x - 0.25f) < 1e-4f && std::fabs(c.y - 0.5f) < 1e-4f && std::fabs(c.z - 0.75f) < 1e-4f)) {
+            glfwTerminate(); return fail("save/load: Colour control value not restored");
+        }
+        g2.evaluate(1.0f / 60.0f);   // the restored + initGL'd graph evaluates without crashing
+        std::fprintf(stderr, "gl_smoke OK: project save/load round-trips a real graph\n");
     }
 
     glfwDestroyWindow(win);

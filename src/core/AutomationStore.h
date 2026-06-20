@@ -40,6 +40,7 @@ public:
 
     void remove(int nodeId, int port);   // drop the channel for node+port (if any)
     void removeNode(int nodeId);          // drop all channels targeting a node
+    void clear() { channels_.clear(); lengthBars_ = 8.0f; }   // drop all channels; reset length
 
     const std::vector<UiAutomationChannel>& channels() const { return channels_; }
     std::vector<UiAutomationChannel>&        channels()       { return channels_; }

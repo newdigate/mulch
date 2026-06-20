@@ -23,11 +23,16 @@ public:
     TexRef outputTexture() const;     // the OutputNode's current texture (for the output window)
     Graph& graph() { return graph_; }
 
+    bool saveProjectToFile(const std::string& path);
+    bool loadProjectFromFile(const std::string& path);
+
 private:
     GLFWwindow* window_;   // reserved for framebuffer-size / HiDPI queries
     Graph graph_;
     NodeEditorPanel editor_;
     AutomationPanel automation_;
+    char        filename_[256] = "project.oss";
+    std::string projectStatus_;
 };
 
 // Factory used by the app and the add-node menu.
