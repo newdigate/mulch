@@ -59,12 +59,14 @@ to see it; or `Mesh Loader → Shaded Render → Output` to spin a 3D model.
 | **Mix** | blend two textures by a factor |
 | **Compositor** | blend two textures with a selectable operator (23 modes): add/subtract/difference/exclusion, multiply/screen/overlay, darken/lighten, dodge/burn, hard/soft light, divide/average, the HSL hue/saturation/color/luminosity, and bitwise and/or/xor; plus `opacity` |
 | **Spectrograph** | audio → FFT → texture (and a 3D line-strip vertex buffer) |
-| **Oscilloscope** | turns audio into an oscilloscope trace as geometry → Vertex: `mode` (Waveform / X-Y vectorscope), a rising-edge `trigger` so a steady tone stands still, `window` (ms), and `gain`. Wire `geometry` into **Wireframe** to view it |
+| **Oscilloscope** | turns audio into an oscilloscope trace as geometry → Vertex: `left`/`right` mono inputs, `mode` (Waveform / X-Y vectorscope), a rising-edge `trigger` so a steady tone stands still, `window` (ms), and `gain`. Wire `geometry` into **Wireframe** to view it |
 | **Sine** | pure sine-wave audio source |
 | **Acid Bass** | 303-style monophonic synth: MIDI in → mono audio. Saw/square VCO + sub-osc → 4-pole resonant ladder filter (decay · env-mod · accent) → VCA → distortion, with note slide, filter FM (VCA → cutoff), filter key-tracking, and output `level`. Every control is an input port |
-| **Audio File** | play an audio file — mp3, wav, flac, m4a, ogg, … (any FFmpeg format), decoded to 48 kHz stereo → audio; signed `rate` (negative = reverse), variable speed, loop |
-| **Audio In / Out** | capture the mic/line-in (stereo if available) / play to the default device, in stereo (libsoundio) |
-| **Audio Mix** | four inputs, each with gain + pan → one stereo mix (pan mono sources into the stereo field) |
+| **Audio File** | play an audio file — mp3, wav, flac, m4a, ogg, … (any FFmpeg format), decoded to 48 kHz stereo → `left`/`right` mono outputs; signed `rate` (negative = reverse), variable speed, loop |
+| **Audio In / Out** | capture the mic/line-in / play to the default device (libsoundio); stereo carried as `left`/`right` mono ports |
+| **Audio Mix** | four inputs, each with gain + pan → `left`/`right` mono outputs (pan mono sources into the stereo field) |
+| **Mono to Stereo** | pan a mono signal into a `left`/`right` pair (`pan` −1..1) |
+| **Stereo to Mono** | downmix a `left`/`right` pair to one mono signal (`balance` control) |
 | **MIDI In / Out** | hardware or virtual MIDI ports (RtMidi) |
 | **MIDI File** | streams a Standard MIDI File (.mid) synced to the project BPM → MIDI: anchor `start offset` (bars), `loop` + `loop length` (bars), and `mute 1`…`mute 16` toggles per channel. The file's own tempo is ignored. Wire `out` into a synth (e.g. **Acid Bass**) |
 | **Step Seq** | 16-step drum sequencer → MIDI; `sync` toggle locks the step rate to the project BPM over musical divisions (1/4 … 1/32, incl. dotted + triplet), or runs free at its own `tempo` |
@@ -79,7 +81,7 @@ to see it; or `Mesh Loader → Shaded Render → Output` to spin a 3D model.
 | **Skybox** | 6 face textures (`+X`…`-Z`) → a cubemap background texture; rotated by a self-`rotation` yaw-spin or the shared **World Transform** (yaw + pitch). Wire `out` into **Output**, or composite a Wireframe / Shaded Render scene over it |
 | **Vertex Shader** | pick a preset transform (Identity / Twist / Wave / Bulge) → a **Shader** edge (a new input kind carrying a GLSL vertex shader). Wire `shader` into a **Deform** node |
 | **Deform** | runs a vertex shader (the `shader` input) over a vertex buffer via GPU transform feedback → a colored vertex buffer; `position` and `colour` drive the shader. Wire `geometry` into **Wireframe** / **Shaded Render** |
-| **Recorder** | inline tap: passes video + audio through unchanged while recording them to a movie file (H.264/AAC mp4, mono or stereo per the input); toggle `record`, set `file` |
+| **Recorder** | inline tap: passes video + `left`/`right` audio through unchanged while recording them to a movie file (H.264/AAC mp4, interleaved stereo from the two mono sides); toggle `record`, set `file` |
 | **Output** | marks the texture shown in the Output window |
 | **Automation** | 4 stream channels (Float outputs you wire), each a mouse-drawn curve over song time (bars), sampled at the transport position. Plus ui channels created by right-clicking any node's Float parameter — bound directly to that control. Edited in the **Automation** window |
 | **LFO** | low-frequency oscillator → a Float modulation signal: pick a waveform (sine/triangle/square/ramp up/down/sample & hold), run it free (Hz) or BPM-synced (32 bars … 1/64 bar), and map it into a `[min, max]` range. Every control is an input port, so waveform/rate/sync can be driven by another node — chain LFOs. Wire `out` into any Float parameter (e.g. a Sine's `amp`) |

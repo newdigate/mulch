@@ -29,9 +29,13 @@ CMake 4.x, it's relaxed with `CMAKE_POLICY_VERSION_MINIMUM 3.5` around its
 - **`Value`** (`src/core/Value.h`) is the one currency on every edge:
   `std::variant<float, bool, glm::vec4, std::string, TexRef, AudioRef, MidiRef, VertexRef>`.
   `PortType` enumerates the same set; `typeOf(Value)` maps variant → PortType.
-  Connections only join ports of equal `PortType`. Audio is interleaved float in
-  `AudioRef` (`channels` = 1 mono or 2 stereo L,R,L,R; `count` = total samples,
-  `frames()` = per-channel) — nodes upmix/downmix at the boundaries as needed.
+  Connections only join ports of equal `PortType`. Audio edges are **mono**:
+  `AudioRef` is `{samples, count, sampleRate}` and `count` is the sample count;
+  **stereo is two separate `left`/`right` mono edges**, with nodes exposing split
+  `left`/`right` ports. The GL-free `core/AudioPan.h` pan/downmix laws
+  (`panGains`/`downmixGains`) back **Audio Mix** and the new **Mono to Stereo** /
+  **Stereo to Mono** bridges; `AudioClip`/`AudioFile` stay stereo internally (the
+  Audio Player deinterleaves to its two outputs).
   `Transform` carries a shared rotation with an `active` flag, so a renderer can
   tell a connected World Transform from the inactive default and fall back to
   self-rotation when nothing is wired in.
@@ -169,8 +173,9 @@ CMake 4.x, it's relaxed with `CMAKE_POLICY_VERSION_MINIMUM 3.5` around its
 - **`VideoEncoder` (`src/gfx/VideoEncoder.{h,cpp}`) is its mirror** — a GL-free
   FFmpeg muxer writing RGBA frames + interleaved float audio (mono or stereo) to
   an H.264/AAC mp4. The `RecorderNode` is a pass-through tap (video/audio in → same
-  out) that reads back the input texture and feeds the encoder while `record` is on,
-  capturing whatever channel count the input audio carries.
+  out) that reads back the input texture and feeds the encoder while `record` is on;
+  it takes `left`/`right` mono inputs and records an interleaved stereo track
+  (mirroring a lone connected side).
 - **`AudioFile` (`src/audio/AudioFile.{h,cpp}`)** decodes a whole audio file to a
   48 kHz stereo float buffer (FFmpeg, GL-free). The `AudioPlayerNode` plays it with
   a playhead advanced by rate*dt, reading the buffer with linear interpolation for
