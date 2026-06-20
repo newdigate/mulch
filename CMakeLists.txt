@@ -226,6 +226,7 @@ set(APP_SOURCES
   src/ui/PortWidgets.cpp
   src/ui/TransportBar.cpp
   src/ui/AutomationPanel.cpp
+  src/ui/PreferencesPanel.cpp
   src/app/Application.cpp
 )
 

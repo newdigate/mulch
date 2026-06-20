@@ -56,6 +56,10 @@ void drawTransportBar(Transport& t, ProjectBarIO* io) {
         if (ImGui::Button("Save") && io->onSave) io->onSave();
         ImGui::SameLine();
         if (ImGui::Button("Load") && io->onLoad) io->onLoad();
+        if (io->showPreferences) {
+            ImGui::SameLine();
+            if (ImGui::Button("Prefs")) *io->showPreferences = !*io->showPreferences;
+        }
         if (!io->status.empty()) { ImGui::SameLine(); ImGui::TextUnformatted(io->status.c_str()); }
     }
 
