@@ -141,6 +141,13 @@ CMake 4.x, it's relaxed with `CMAKE_POLICY_VERSION_MINIMUM 3.5` around its
   `position`/`colour` uniforms; `aColor` pinned to 0 when the input has no colour). Both
   live in the new **Shader** node category. Unit-tested in `core_tests`; the transform
   feedback is `gl_smoke`-verified by reading the output buffer back.
+- **Vertex Trail** — `VertexTrailNode` (`src/modules/VertexTrailNode.h`, header-only) keeps a
+  GL-free `core/VertexTrail` queue of geometry snapshots (read back from the input VBO each
+  frame with `glGetBufferSubData`), emitting one combined `Pos3Color3` buffer where the
+  snapshot of age `k` (0 = newest) is offset by `k·z-spacing` in Z and hue-rotated by
+  `k·hue-rate`. The HSV helpers live in the GL-free header-only `core/ColorHsv.h` (`hsvToRgb`
+  + `rgbToHsv`), now shared with `PitchGraph`. Unit-tested in `core_tests`; the readback +
+  queue + offsets are `gl_smoke`-verified by reading the output buffer back.
 - **Texture nodes** derive from `ShaderNode` (`src/gfx/ShaderNode.h`): render a
   fragment shader into their own FBO and publish a `TexRef` on output 0. `ColourNode`
   is the minimal example — declare ports, override `setUniforms()`, call `render(ctx)`.
