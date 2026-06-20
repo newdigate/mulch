@@ -1,5 +1,9 @@
 #include "core/ProjectFile.h"
 #include <sstream>
+#include "core/Graph.h"
+#include "core/Node.h"
+#include "core/AutomationStore.h"
+#include <unordered_map>
 
 namespace oss {
 
@@ -112,6 +116,72 @@ bool parseProject(const std::string& text, ProjectDoc& out) {
         }
         // unknown keyword -> ignored (forward compatible)
     }
+    return true;
+}
+
+ProjectDoc captureProject(const Graph& g) {
+    ProjectDoc d;
+    const Transport& t = g.transport();
+    d.bpm = t.bpm; d.beatsPerBar = t.beatsPerBar; d.looping = t.looping;
+    d.loopStartBar = t.loopStartBar; d.loopEndBar = t.loopEndBar;
+    d.lengthBars = g.automation().lengthBars();
+    for (const auto& np : g.nodes()) {
+        DocNode dn; dn.id = np->id(); dn.x = np->pos.x; dn.y = np->pos.y; dn.type = np->name();
+        const std::vector<Port>& ins = np->inputs();
+        for (std::size_t i = 0; i < ins.size(); ++i) {
+            PortType pt = typeOf(ins[i].defaultValue);
+            if (pt == PortType::Float || pt == PortType::Bool || pt == PortType::Colour || pt == PortType::String)
+                dn.inputs.push_back({(int)i, ins[i].defaultValue});
+        }
+        dn.state = np->saveState();
+        d.nodes.push_back(std::move(dn));
+    }
+    for (const Connection& c : g.connections()) d.connections.push_back(c);
+    for (const UiAutomationChannel& ch : g.automation().channels())
+        d.autos.push_back({ch.nodeId, ch.port, ch.outMin, ch.outMax, ch.curve});
+    return d;
+}
+
+void restoreProject(const ProjectDoc& d, Graph& g, const NodeFactory& factory, const NodeInit& init) {
+    g.clear();
+    std::unordered_map<int, int> idMap;
+    for (const DocNode& dn : d.nodes) {
+        std::unique_ptr<Node> node = factory(dn.type);
+        if (!node) continue;                                  // unknown type -> skip
+        node->pos = glm::vec2(dn.x, dn.y);
+        for (const DocInput& di : dn.inputs) {
+            if (di.port >= 0 && (std::size_t)di.port < node->inputs().size()) {
+                Value& slot = node->inputDefault((std::size_t)di.port);
+                if (typeOf(slot) == typeOf(di.value)) slot = di.value;   // type-safe set
+            }
+        }
+        node->loadState(dn.state);
+        init(*node);
+        idMap[dn.id] = g.addNode(std::move(node));
+    }
+    for (const Connection& c : d.connections) {
+        auto s = idMap.find(c.srcNode), t = idMap.find(c.dstNode);
+        if (s != idMap.end() && t != idMap.end()) g.connect(s->second, c.srcPort, t->second, c.dstPort);
+    }
+    Transport& tr = g.transport();
+    tr.bpm = d.bpm; tr.beatsPerBar = d.beatsPerBar; tr.looping = d.looping;
+    tr.loopStartBar = d.loopStartBar; tr.loopEndBar = d.loopEndBar;
+    tr.seconds = 0.0; tr.playing = false;
+    g.automation().setLengthBars(d.lengthBars);
+    for (const DocAuto& a : d.autos) {
+        auto it = idMap.find(a.nodeId);
+        if (it == idMap.end()) continue;
+        UiAutomationChannel* ch = g.automation().add(g, it->second, a.port);
+        if (ch) { ch->curve = a.curve; ch->outMin = a.outMin; ch->outMax = a.outMax; }
+    }
+}
+
+std::string saveProject(const Graph& g) { return serializeProject(captureProject(g)); }
+
+bool loadProject(const std::string& text, Graph& g, const NodeFactory& f, const NodeInit& i) {
+    ProjectDoc d;
+    if (!parseProject(text, d)) return false;
+    restoreProject(d, g, f, i);
     return true;
 }
 
