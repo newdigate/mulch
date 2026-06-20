@@ -48,6 +48,12 @@ public:
     // (e.g. a loader's progress/result). Empty by default.
     virtual std::string statusLine() const { return std::string(); }
 
+    // Persist/restore editable state that is NOT an input port. Default empty: every
+    // node whose controls are all input ports needs nothing here. Only the Automation
+    // node overrides these (its curves). The string is opaque to the project file.
+    virtual std::string saveState() const { return std::string(); }
+    virtual void        loadState(const std::string& /*s*/) {}
+
 protected:
     void addInput(std::string n, PortType t, Value def) {
         inputs_.push_back({std::move(n), Direction::Input, t, std::move(def)});

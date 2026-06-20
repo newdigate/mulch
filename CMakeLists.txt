@@ -275,6 +275,7 @@ add_executable(core_tests
   tests/test_vertex_shaders.cpp
   tests/test_color_hsv.cpp
   tests/test_vertex_trail.cpp
+  tests/test_project_enablers.cpp
   src/core/Node.cpp
   src/core/Graph.cpp
   src/core/AutomationStore.cpp

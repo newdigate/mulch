@@ -24,6 +24,11 @@ public:
     int  addNode(std::unique_ptr<Node> node);
     void removeNode(int nodeId);
 
+    // Empty the graph for a fresh load: drop all nodes, connections, cached outputs,
+    // and automation channels. Keeps nextId_ MONOTONIC (ids are never reused -- the
+    // editor's placement cache relies on that), so a loaded graph gets fresh ids.
+    void clear();
+
     // Returns false and makes no change if ports are invalid, types differ,
     // the input is already connected, or the edge would create a cycle.
     bool connect(int srcNode, int srcPort, int dstNode, int dstPort);

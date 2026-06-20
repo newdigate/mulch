@@ -1,5 +1,6 @@
 #pragma once
 #include <cstddef>
+#include <string>
 #include <vector>
 
 namespace oss {
@@ -27,5 +28,30 @@ struct AutoCurve {
         return points.back().value;
     }
 };
+
+// Inline text codec for an AutoCurve: comma-joined "bar,value" pairs (empty curve -> "").
+// Used by the project file and the Automation node's saveState. GL-free.
+inline std::string encodeCurve(const AutoCurve& c) {
+    std::string s;
+    for (std::size_t i = 0; i < c.points.size(); ++i) {
+        if (i) s += ',';
+        s += std::to_string(c.points[i].bar) + ',' + std::to_string(c.points[i].value);
+    }
+    return s;
+}
+inline AutoCurve decodeCurve(const std::string& s) {
+    AutoCurve c;
+    std::vector<float> nums;
+    std::size_t pos = 0;
+    while (pos <= s.size()) {
+        std::size_t comma = s.find(',', pos);
+        std::string tok = s.substr(pos, comma == std::string::npos ? std::string::npos : comma - pos);
+        if (!tok.empty()) { try { nums.push_back(std::stof(tok)); } catch (...) {} }
+        if (comma == std::string::npos) break;
+        pos = comma + 1;
+    }
+    for (std::size_t i = 0; i + 1 < nums.size(); i += 2) c.points.push_back({nums[i], nums[i + 1]});
+    return c;
+}
 
 } // namespace oss
