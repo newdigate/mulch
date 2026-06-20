@@ -3,8 +3,17 @@
 #include <imgui.h>
 #include <soundio/soundio.h>
 #include <RtMidi.h>
+#include <string>
 
 namespace oss {
+
+namespace {
+struct Res { int w, h; const char* label; };
+const Res kResolutions[] = {
+    {320, 240, "320 x 240"}, {640, 480, "640 x 480"},
+    {1280, 720, "1280 x 720"}, {1920, 1080, "1920 x 1080"},
+};
+}
 
 void PreferencesPanel::refresh() {
     outDevices_.clear(); inDevices_.clear(); midiIns_.clear(); midiOuts_.clear();
@@ -72,6 +81,19 @@ void PreferencesPanel::draw(Preferences& prefs, const std::function<void()>& onC
             for (const std::string& name : midiOuts_) {
                 bool on = prefs.midiOutputEnabled(name);
                 if (ImGui::Checkbox((name + "##out").c_str(), &on)) { prefs.setMidiOutputEnabled(name, on); onChange(); }
+            }
+            ImGui::EndTabItem();
+        }
+        if (ImGui::BeginTabItem("Video")) {
+            int curW = prefs.textureWidth, curH = prefs.textureHeight;
+            std::string cur = std::to_string(curW) + " x " + std::to_string(curH);
+            for (const Res& r : kResolutions) if (r.w == curW && r.h == curH) cur = r.label;
+            if (ImGui::BeginCombo("Streaming texture size", cur.c_str())) {
+                for (const Res& r : kResolutions) {
+                    bool sel = (r.w == curW && r.h == curH);
+                    if (ImGui::Selectable(r.label, sel)) { prefs.textureWidth = r.w; prefs.textureHeight = r.h; onChange(); }
+                }
+                ImGui::EndCombo();
             }
             ImGui::EndTabItem();
         }
