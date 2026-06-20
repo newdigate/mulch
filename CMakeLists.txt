@@ -249,6 +249,7 @@ add_executable(core_tests
   tests/test_ring_buffer.cpp
   tests/test_audio_mixer.cpp
   tests/test_audio_pan.cpp
+  tests/test_audio_bridges.cpp
   tests/test_arpeggiator.cpp
   tests/test_step_sequencer.cpp
   tests/test_midi_merge.cpp
