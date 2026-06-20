@@ -1,6 +1,7 @@
 #include "modules/WireframeNode.h"
 #include "gfx/GLUtil.h"
 #include "gfx/Canvas.h"
+#include "core/Preferences.h"
 #include "core/Value.h"
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>
@@ -54,6 +55,10 @@ void WireframeNode::initGL() {
 }
 
 void WireframeNode::evaluate(EvalContext& ctx) {
+    int texW = ctx.prefs ? ctx.prefs->textureWidth  : kCanvasW;
+    int texH = ctx.prefs ? ctx.prefs->textureHeight : kCanvasH;
+    if (fbo_.width() != texW || fbo_.height() != texH) fbo_.create(texW, texH);
+
     VertexRef geo = ctx.in<VertexRef>(0);
 
     // A connected World Transform overrides the node's own spin so several

@@ -1,6 +1,7 @@
 #include "gfx/ShaderNode.h"
 #include "gfx/GLUtil.h"
 #include "gfx/Canvas.h"
+#include "core/Preferences.h"
 #include "core/Value.h"
 
 namespace oss {
@@ -26,6 +27,9 @@ void ShaderNode::initGL() {
 }
 
 void ShaderNode::render(EvalContext& ctx) {
+    int w = ctx.prefs ? ctx.prefs->textureWidth  : kCanvasW;
+    int h = ctx.prefs ? ctx.prefs->textureHeight : kCanvasH;
+    if (fbo_.width() != w || fbo_.height() != h) fbo_.create(w, h);
     fbo_.bind();
     glUseProgram(program_);
     setUniforms(ctx);
