@@ -37,7 +37,7 @@ private:
 
     SpscRingBuffer<float> ring_{1 << 14};   // interleaved stereo floats; producer/consumer
     std::vector<float>    scratch_;         // preallocated; touched only on RT thread
-    std::vector<float>    stereoScratch_;   // main thread: upmix mono -> stereo before push
+    std::vector<float>    stereoScratch_;   // main thread: interleave left+right before push
 
     LazyInit lazy_;
     int  sampleRate_ = 48000;

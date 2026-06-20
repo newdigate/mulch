@@ -622,7 +622,7 @@ int main() {
         Graph g;
         auto col = std::make_unique<ColourNode>();
         auto recN = std::make_unique<RecorderNode>();
-        recN->inputDefault(3) = std::string("build/_rec_node.mp4");   // file
+        recN->inputDefault(4) = std::string("build/_rec_node.mp4");   // file
         auto out = std::make_unique<OutputNode>();
         col->initGL(); recN->initGL(); out->initGL();
         int cId = g.addNode(std::move(col));
@@ -643,9 +643,9 @@ int main() {
         }
         int vw = passed.w, vh = passed.h;
 
-        rn->inputDefault(2) = true;                          // record on
+        rn->inputDefault(3) = true;                          // record on
         for (int f = 0; f < 12; ++f) g.evaluate(1.0f / 60.0f);
-        rn->inputDefault(2) = false;                         // record off -> finalise file
+        rn->inputDefault(3) = false;                         // record off -> finalise file
         g.evaluate(1.0f / 60.0f);
 
         VideoDecoder dec2;
@@ -657,9 +657,8 @@ int main() {
         if (got2 == 0) { glfwTerminate(); return fail("recorded file decoded no frames"); }
         std::fprintf(stderr, "gl_smoke OK: Recorder passed video through and wrote a decodable %dx%d mp4\n", vw, vh);
 
-        // (c) End-to-end: two sines panned through the Mixer feed the Recorder's
-        // audio; the recorded file must contain an audio track. (The Mixer now emits
-        // mono on port 0; a later task rewires this to record stereo from L/R.)
+        // (c) Stereo end-to-end: two sines panned through the Mixer feed the
+        // Recorder's L/R audio; the recorded file must be a 2-channel movie.
         {
             Graph gs;
             auto col2 = std::make_unique<ColourNode>();
@@ -669,7 +668,7 @@ int main() {
             mix->inputDefault(2) = -1.0f;   // pan 1 -> hard left
             mix->inputDefault(5) =  1.0f;   // pan 2 -> hard right
             auto rec2 = std::make_unique<RecorderNode>();
-            rec2->inputDefault(3) = std::string("build/_rec_stereo_node.mp4");
+            rec2->inputDefault(4) = std::string("build/_rec_stereo_node.mp4");
             col2->initGL(); s1->initGL(); s2->initGL(); mix->initGL(); rec2->initGL();
             int cId2 = gs.addNode(std::move(col2));
             int s1Id = gs.addNode(std::move(s1));
@@ -677,22 +676,22 @@ int main() {
             int mId  = gs.addNode(std::move(mix));
             int r2Id = gs.addNode(std::move(rec2));
             if (!gs.connect(s1Id, 0, mId, 0) || !gs.connect(s2Id, 0, mId, 3) ||
-                !gs.connect(cId2, 0, r2Id, 0) || !gs.connect(mId, 0, r2Id, 1)) {
+                !gs.connect(cId2, 0, r2Id, 0) || !gs.connect(mId, 0, r2Id, 1) || !gs.connect(mId, 1, r2Id, 2)) {
                 glfwTerminate(); return fail("connect stereo record graph");
             }
             auto* rn2 = dynamic_cast<RecorderNode*>(gs.findNode(r2Id));
-            rn2->inputDefault(2) = true;                          // record on
+            rn2->inputDefault(3) = true;                          // record on
             for (int f = 0; f < 16; ++f) gs.evaluate(1.0f / 60.0f);
-            rn2->inputDefault(2) = false;                        // record off -> finalise
+            rn2->inputDefault(3) = false;                        // record off -> finalise
             gs.evaluate(1.0f / 60.0f);
 
             VideoDecoder d3; std::string e3;
             if (!d3.open("build/_rec_stereo_node.mp4", e3)) { glfwTerminate(); return fail(("stereo recording did not open: " + e3).c_str()); }
-            if (!d3.hasAudio() || d3.audioChannels() < 1) { glfwTerminate(); return fail("graph recording should have an audio track"); }
+            if (!d3.hasAudio() || d3.audioChannels() != 2) { glfwTerminate(); return fail("graph recording should be stereo (2 channels)"); }
             VideoFrame vf3; std::vector<float> au3; double s3 = 0; bool v3 = false; int got3 = 0;
             while (got3 < 3 && d3.decodeFrame(vf3, au3, s3, v3)) ++got3;
             if (got3 == 0) { glfwTerminate(); return fail("stereo recording decoded no frames"); }
-            std::fprintf(stderr, "gl_smoke OK: Sine->Mixer(pan)->Recorder wrote a movie with audio\n");
+            std::fprintf(stderr, "gl_smoke OK: Sine->Mixer(pan)->Recorder wrote a stereo movie\n");
         }
     }
 
