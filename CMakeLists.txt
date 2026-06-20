@@ -192,6 +192,7 @@ set(APP_SOURCES
   src/core/Node.cpp
   src/core/Graph.cpp
   src/core/AutomationStore.cpp
+  src/core/ProjectFile.cpp
   src/core/MidiFile.cpp
   src/core/Oscilloscope.cpp
   src/core/PitchGraph.cpp
@@ -276,9 +277,11 @@ add_executable(core_tests
   tests/test_color_hsv.cpp
   tests/test_vertex_trail.cpp
   tests/test_project_enablers.cpp
+  tests/test_project_file.cpp
   src/core/Node.cpp
   src/core/Graph.cpp
   src/core/AutomationStore.cpp
+  src/core/ProjectFile.cpp
   src/core/MidiFile.cpp
   src/core/Oscilloscope.cpp
   src/core/PitchGraph.cpp
@@ -298,6 +301,7 @@ add_executable(gl_smoke
   src/core/Node.cpp
   src/core/Graph.cpp
   src/core/AutomationStore.cpp
+  src/core/ProjectFile.cpp
   src/core/PitchGraph.cpp
   src/core/VertexTrail.cpp
   src/gfx/GLUtil.cpp
