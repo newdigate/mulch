@@ -1,11 +1,14 @@
 #pragma once
+#include <string>
+#include <vector>
 #include "core/Node.h"
 #include "core/Value.h"
-#include "core/LazyInit.h"
 
 class RtMidiOut;   // opaque; <RtMidi.h> stays out of this header
 
 namespace oss {
+
+struct Preferences;
 
 // MIDI sink: sends the channel messages on its MIDI input to a hardware or
 // virtual MIDI output port via RtMidi (synchronous, on the graph thread). The
@@ -18,10 +21,10 @@ public:
     void evaluate(EvalContext& ctx) override;
 
 private:
-    bool ensureStarted();
-    bool openDevice();
-    RtMidiOut* midiout_ = nullptr;
-    LazyInit lazy_;
+    void syncPorts(const Preferences* prefs);
+    void closeAll();
+    std::vector<RtMidiOut*>  outs_;
+    std::vector<std::string> open_;
 };
 
 } // namespace oss
