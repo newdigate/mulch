@@ -16,6 +16,10 @@ public:
     Transport&       transport()       { return transport_; }
     const Transport& transport() const { return transport_; }
 
+    // App-global preferences (audio/MIDI device selection), passed to every node via
+    // EvalContext. Not owned -- Application owns the Preferences object.
+    void setPreferences(const Preferences* p) { prefs_ = p; }
+
     // UI-automation channels + the global song length (the Automation window).
     AutomationStore&       automation()       { return automation_; }
     const AutomationStore& automation() const { return automation_; }
@@ -57,6 +61,7 @@ private:
     mutable bool             orderDirty_ = true;
 
     Transport transport_;
+    const Preferences* prefs_ = nullptr;
     AutomationStore automation_;
     std::unordered_map<int, std::vector<Value>> outputs_;  // per-frame node outputs
 };
