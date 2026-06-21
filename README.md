@@ -105,6 +105,8 @@ The toolbar **Prefs** button opens a Preferences window with **Audio Output**, *
 and **MIDI** tabs: pick the output/input sound card and enable which MIDI interfaces are used.
 Changes apply live (the running audio/MIDI nodes reopen their device/ports) and persist to a
 `preferences.oss` file in the working directory.
+A **Video** tab sets the streaming-texture resolution (320×240, 640×480, 1280×720, or
+1920×1080); the change applies live — every render-to-texture node recreates its framebuffer.
 
 ## Test
 

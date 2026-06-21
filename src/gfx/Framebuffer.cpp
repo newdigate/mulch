@@ -10,6 +10,9 @@ Framebuffer::~Framebuffer() {
 }
 
 void Framebuffer::create(int w, int h, bool depth) {
+    if (tex_)   { glDeleteTextures(1, &tex_);        tex_   = 0; }
+    if (depth_) { glDeleteRenderbuffers(1, &depth_); depth_ = 0; }
+    if (fbo_)   { glDeleteFramebuffers(1, &fbo_);    fbo_   = 0; }
     w_ = w; h_ = h;
     glGenTextures(1, &tex_);
     glBindTexture(GL_TEXTURE_2D, tex_);

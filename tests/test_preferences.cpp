@@ -41,3 +41,32 @@ TEST_CASE("MIDI enable helpers are idempotent add/remove") {
     CHECK(p.midiOutputEnabled("out B"));
     CHECK_FALSE(p.midiOutputEnabled("missing"));
 }
+
+TEST_CASE("texture-size round-trips, defaults, and clamps on parse") {
+    Preferences p; p.textureWidth = 640; p.textureHeight = 480;
+    Preferences r;
+    REQUIRE(parsePreferences(serializePreferences(p), r));
+    CHECK(r.textureWidth == 640);
+    CHECK(r.textureHeight == 480);
+
+    Preferences d;                                   // no texture-size line -> 1280x720 default
+    REQUIRE(parsePreferences("oss-prefs 1\n", d));
+    CHECK(d.textureWidth == 1280);
+    CHECK(d.textureHeight == 720);
+
+    Preferences big;                                 // clamp high
+    REQUIRE(parsePreferences("oss-prefs 1\ntexture-size 5000 5000\n", big));
+    CHECK(big.textureWidth == 1920);
+    CHECK(big.textureHeight == 1080);
+
+    Preferences small;                               // clamp low
+    REQUIRE(parsePreferences("oss-prefs 1\ntexture-size 0 0\n", small));
+    CHECK(small.textureWidth == 320);
+    CHECK(small.textureHeight == 240);
+}
+
+TEST_CASE("clampTextureSize bounds") {
+    int w = 0, h = 0; clampTextureSize(w, h); CHECK(w == 320); CHECK(h == 240);
+    w = 5000; h = 5000; clampTextureSize(w, h); CHECK(w == 1920); CHECK(h == 1080);
+    w = 640;  h = 480;  clampTextureSize(w, h); CHECK(w == 640);  CHECK(h == 480);
+}

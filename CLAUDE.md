@@ -167,6 +167,9 @@ CMake 4.x, it's relaxed with `CMAKE_POLICY_VERSION_MINIMUM 3.5` around its
   out to all enabled output ports, reopening when the enabled set changes (virtual-port
   fallback when none selected). The `PreferencesPanel` (`src/ui/`) enumerates devices/ports
   (soundio/rtmidi confined to its `.cpp`) into Audio Output / Audio Input / MIDI tabs.
+  It also carries the streaming-texture resolution (`textureWidth/Height`): `ShaderNode`,
+  `WireframeNode`, and `ShadedRenderNode` recreate their FBO when it changes (fallback
+  `kCanvasW×kCanvasH` when `prefs` is null), and `gfx/Framebuffer::create` is re-creation-safe.
 - **Texture nodes** derive from `ShaderNode` (`src/gfx/ShaderNode.h`): render a
   fragment shader into their own FBO and publish a `TexRef` on output 0. `ColourNode`
   is the minimal example — declare ports, override `setUniforms()`, call `render(ctx)`.

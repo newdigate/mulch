@@ -11,6 +11,8 @@ struct Preferences {
     std::string audioInputDeviceId;                  // "" = system default
     std::vector<std::string> enabledMidiInputs;      // hardware port names
     std::vector<std::string> enabledMidiOutputs;
+    int textureWidth  = 1280;    // streaming-texture (render FBO) resolution
+    int textureHeight = 720;
 
     bool midiInputEnabled(const std::string& name) const;
     void setMidiInputEnabled(const std::string& name, bool on);   // idempotent add/remove
@@ -20,5 +22,8 @@ struct Preferences {
 
 std::string serializePreferences(const Preferences& p);
 bool        parsePreferences(const std::string& text, Preferences& out);   // false on bad header
+
+// Clamp a requested streaming-texture size to sane bounds: [320,1920] x [240,1080].
+void clampTextureSize(int& w, int& h);
 
 } // namespace oss
