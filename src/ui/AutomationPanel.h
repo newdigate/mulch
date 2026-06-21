@@ -25,6 +25,9 @@ private:
     std::map<long, bool> open_;       // group collapse state, keyed by header key
     long dragLane_  = -1;             // stable key of the lane being edited (-1 = none)
     int  dragPoint_ = -1;             // index of the dragged point in that lane
+    long selLane_    = -1;            // stable key of the lane with a selected point (-1 = none)
+    int  selPoint_   = -1;            // index of the selected point in that lane
+    int  dragHandle_ = 0;             // what the current drag moves: 0 = point, 1 = out-handle, 2 = in-handle
     float zoomX_ = 1.0f;              // horizontal zoom (scales px-per-bar)
     float zoomY_ = 1.0f;              // vertical zoom (scales lane height)
 };

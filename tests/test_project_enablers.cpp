@@ -14,6 +14,14 @@ TEST_CASE("encodeCurve / decodeCurve round-trip") {
     CHECK(r.points[1].bar == doctest::Approx(2.0f));
     CHECK(r.points[1].value == doctest::Approx(0.8f));
     CHECK(decodeCurve(encodeCurve(AutoCurve{})).points.empty());   // empty round-trips
+
+    AutoCurve h;
+    AutoPoint hp{1.0f, 0.4f}; hp.outDBar = 0.25f; hp.outDValue = -0.1f;
+    h.points = { hp, {3.0f, 0.6f} };
+    AutoCurve hr = decodeCurve(encodeCurve(h));
+    REQUIRE(hr.points.size() == 2);
+    CHECK(hr.points[0].outDBar   == doctest::Approx(0.25f));
+    CHECK(hr.points[0].outDValue == doctest::Approx(-0.1f));
 }
 
 TEST_CASE("AutomationNode saveState / loadState round-trips curves + ranges") {
