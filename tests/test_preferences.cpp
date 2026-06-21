@@ -82,8 +82,25 @@ TEST_CASE("sync fields round-trip and clamp mode") {
     CHECK(r.syncOutMode == 1);
     CHECK(r.syncOutDest == "IAC Bus 2");
 
-    Preferences c;     // out-of-range mode clamps to 0 (this pass supports 0..1)
+    Preferences c;     // out-of-range mode clamps to 0 (modes are 0..2)
     REQUIRE(parsePreferences("oss-prefs 1\nsync-in 7 Something\n", c));
     CHECK(c.syncInMode == 0);
     CHECK(c.syncInSource == "Something");
+}
+
+TEST_CASE("MTC sync mode + frame rate round-trip and clamp") {
+    Preferences p;
+    p.syncInMode = 2;  p.syncInSource = "MTC In";    // mode 2 = MTC
+    p.syncOutMode = 2; p.syncOutDest = "MTC Out";
+    p.syncFrameRate = 2;                              // 29.97 df
+    Preferences r;
+    REQUIRE(parsePreferences(serializePreferences(p), r));
+    CHECK(r.syncInMode == 2);
+    CHECK(r.syncOutMode == 2);
+    CHECK(r.syncFrameRate == 2);
+
+    Preferences c;     // mode 3 is out of range -> clamps to 0; frame rate 9 -> 0
+    REQUIRE(parsePreferences("oss-prefs 1\nsync-in 3 X\nsync-rate 9\n", c));
+    CHECK(c.syncInMode == 0);
+    CHECK(c.syncFrameRate == 0);
 }

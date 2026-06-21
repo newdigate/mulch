@@ -98,7 +98,7 @@ void PreferencesPanel::draw(Preferences& prefs, const std::function<void()>& onC
             ImGui::EndTabItem();
         }
         if (ImGui::BeginTabItem("Sync")) {
-            const char* modes[] = { "Off", "Beat Clock" };
+            const char* modes[] = { "Off", "Beat Clock", "MTC" };
             auto portCombo = [&](const char* label, std::vector<std::string>& ports, std::string& cur) {
                 if (ImGui::BeginCombo(label, cur.empty() ? "None" : cur.c_str())) {
                     if (ImGui::Selectable("None", cur.empty())) { cur.clear(); onChange(); }
@@ -110,12 +110,17 @@ void PreferencesPanel::draw(Preferences& prefs, const std::function<void()>& onC
                 }
             };
             ImGui::TextUnformatted("Receive (slave)");
-            if (ImGui::Combo("In mode", &prefs.syncInMode, modes, 2)) onChange();
+            if (ImGui::Combo("In mode", &prefs.syncInMode, modes, 3)) onChange();
             portCombo("Sync source", midiIns_, prefs.syncInSource);
             ImGui::Separator();
             ImGui::TextUnformatted("Send (master)");
-            if (ImGui::Combo("Out mode", &prefs.syncOutMode, modes, 2)) onChange();
+            if (ImGui::Combo("Out mode", &prefs.syncOutMode, modes, 3)) onChange();
             portCombo("Sync destination", midiOuts_, prefs.syncOutDest);
+            if (prefs.syncInMode == 2 || prefs.syncOutMode == 2) {
+                ImGui::Separator();
+                const char* rates[] = { "24", "25", "29.97 df", "30" };
+                if (ImGui::Combo("Frame rate", &prefs.syncFrameRate, rates, 4)) onChange();
+            }
             ImGui::EndTabItem();
         }
         ImGui::EndTabBar();

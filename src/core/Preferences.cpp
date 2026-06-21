@@ -36,6 +36,7 @@ std::string serializePreferences(const Preferences& p) {
     out += "texture-size " + std::to_string(p.textureWidth) + " " + std::to_string(p.textureHeight) + "\n";
     out += "sync-in "  + std::to_string(p.syncInMode)  + " " + p.syncInSource + "\n";
     out += "sync-out " + std::to_string(p.syncOutMode) + " " + p.syncOutDest  + "\n";
+    out += "sync-rate " + std::to_string(p.syncFrameRate) + "\n";
     return out;
 }
 
@@ -62,14 +63,18 @@ bool parsePreferences(const std::string& text, Preferences& out) {
         else if (kw == "sync-in") {
             std::istringstream rs(rest); int mode = 0; rs >> mode;
             std::string name; std::getline(rs >> std::ws, name);
-            out.syncInMode   = (mode < 0 || mode > 1) ? 0 : mode;
+            out.syncInMode   = (mode < 0 || mode > 2) ? 0 : mode;
             out.syncInSource = name;
         }
         else if (kw == "sync-out") {
             std::istringstream rs(rest); int mode = 0; rs >> mode;
             std::string name; std::getline(rs >> std::ws, name);
-            out.syncOutMode = (mode < 0 || mode > 1) ? 0 : mode;
+            out.syncOutMode = (mode < 0 || mode > 2) ? 0 : mode;
             out.syncOutDest = name;
+        }
+        else if (kw == "sync-rate") {
+            std::istringstream rs(rest); int fr = 3; rs >> fr;
+            out.syncFrameRate = (fr < 0 || fr > 3) ? 0 : fr;
         }
     }
     return true;

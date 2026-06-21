@@ -193,7 +193,14 @@ CMake 4.x, it's relaxed with `CMAKE_POLICY_VERSION_MINIMUM 3.5` around its
   makes `advance()` a no-op), and sends clock to the selected output from a **dedicated timer
   thread** that solely owns the out port (started in the ctor, joined in the dtor before the
   port is freed). Configured by the Preferences `syncIn/Out` fields + the **Sync** tab; ticked
-  from `Application::frame` before `graph_.evaluate`. (MTC is the planned Pass-2 mode.)
+  from `Application::frame` before `graph_.evaluate`.
+  **MTC** is the second mode (`syncIn/OutMode == 2`): the GL-free `core/MidiTimecode`
+  (`MtcReader` + SMPTE↔seconds incl. proper 29.97 drop-frame, quarter-frame + full-frame codec,
+  unit-tested) mirrors `core/MidiClock`. `MidiSyncEngine` routes quarter-frame/full-frame messages
+  to the `MtcReader` to drive `Transport::seconds`/`playing` (NOT `bpm` — MTC has no tempo), and
+  the sender thread emits quarter-frames at the frame rate + a full-frame on locate. The send rate
+  is the `syncFrameRate` pref (24/25/29.97df/30); receive auto-detects it from the stream. The Sync
+  tab gains the MTC option + a frame-rate combo.
 - **Texture nodes** derive from `ShaderNode` (`src/gfx/ShaderNode.h`): render a
   fragment shader into their own FBO and publish a `TexRef` on output 0. `ColourNode`
   is the minimal example — declare ports, override `setUniforms()`, call `render(ctx)`.
