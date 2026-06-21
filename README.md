@@ -109,7 +109,10 @@ a loaded project opens paused at the start. The `.oss` format is plain line-base
 The toolbar **Prefs** button opens a Preferences window with **Audio Output**, **Audio Input**,
 and **MIDI** tabs: pick the output/input sound card and enable which MIDI interfaces are used.
 Changes apply live (the running audio/MIDI nodes reopen their device/ports) and persist to a
-`preferences.oss` file in the working directory.
+`preferences.oss` file in the working directory. The Audio Output tab also has an **Audio buffer
+(ms)** control (20–500) that sizes the output ring: higher trades latency for under-run headroom,
+lower tightens latency. The per-frame audio block now tracks frame time, so a slow render frame no
+longer starves the output.
 A **Video** tab sets the streaming-texture resolution (320×240, 640×480, 1280×720, or
 1920×1080); the change applies live — every render-to-texture node recreates its framebuffer.
 A **Sync** tab can drive the transport from an external MIDI **Beat Clock** (receive 24-PPQN

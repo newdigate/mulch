@@ -201,6 +201,16 @@ CMake 4.x, it's relaxed with `CMAKE_POLICY_VERSION_MINIMUM 3.5` around its
   the sender thread emits quarter-frames at the frame rate + a full-frame on locate. The send rate
   is the `syncFrameRate` pref (24/25/29.97df/30); receive auto-detects it from the stream. The Sync
   tab gains the MTC option + a frame-rate combo.
+- **Audio block sizing** — the GL-free `audio/AudioBlock.h` is the one source of truth for the
+  per-frame audio block: `audioBlockFrames(sampleRate, dt)` returns `round(sampleRate·min(dt,
+  kMaxAudioDt))` clamped to `[1, kAudioMaxBlock]` (the `dt` clamp is audio-local, so a slow/stalled
+  frame still produces a full block and can't drain the output ring). Every audio source node
+  (Sine, Acid Bass, Audio/Video Player) and the pass-through mixers share it. `AudioOutputNode`'s
+  ring is a `unique_ptr<SpscRingBuffer>` sized from `Preferences::audioBufferMs` via
+  `audioRingFloats`, recreated when the device or buffer length changes (the RT callback is stopped
+  during reopen). `app/ThreadPriority.h`'s `setThisThreadTimeCritical()` (macOS QoS) raises the MIDI
+  sender thread. This is **Phase A** of the audio-decouple roadmap (B = audio-subgraph
+  compile/snapshot, C = dedicated audio thread, D = render frame-drop).
 - **Texture nodes** derive from `ShaderNode` (`src/gfx/ShaderNode.h`): render a
   fragment shader into their own FBO and publish a `TexRef` on output 0. `ColourNode`
   is the minimal example — declare ports, override `setUniforms()`, call `render(ctx)`.
