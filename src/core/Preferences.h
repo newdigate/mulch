@@ -13,6 +13,7 @@ struct Preferences {
     std::vector<std::string> enabledMidiOutputs;
     int textureWidth  = 1280;    // streaming-texture (render FBO) resolution
     int textureHeight = 720;
+    int audioBufferMs = 150;     // output ring length (ms); trades latency for under-run headroom [20,500]
     int         syncInMode  = 0;   // 0 = Off, 1 = Beat Clock, 2 = MTC
     std::string syncInSource;      // MIDI input port name
     int         syncOutMode = 0;   // 0 = Off, 1 = Beat Clock, 2 = MTC
