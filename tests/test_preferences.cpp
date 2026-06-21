@@ -82,7 +82,7 @@ TEST_CASE("sync fields round-trip and clamp mode") {
     CHECK(r.syncOutMode == 1);
     CHECK(r.syncOutDest == "IAC Bus 2");
 
-    Preferences c;     // out-of-range mode clamps to 0 (this pass supports 0..1)
+    Preferences c;     // out-of-range mode clamps to 0 (modes are 0..2)
     REQUIRE(parsePreferences("oss-prefs 1\nsync-in 7 Something\n", c));
     CHECK(c.syncInMode == 0);
     CHECK(c.syncInSource == "Something");
