@@ -97,6 +97,27 @@ void PreferencesPanel::draw(Preferences& prefs, const std::function<void()>& onC
             }
             ImGui::EndTabItem();
         }
+        if (ImGui::BeginTabItem("Sync")) {
+            const char* modes[] = { "Off", "Beat Clock" };
+            auto portCombo = [&](const char* label, std::vector<std::string>& ports, std::string& cur) {
+                if (ImGui::BeginCombo(label, cur.empty() ? "None" : cur.c_str())) {
+                    if (ImGui::Selectable("None", cur.empty())) { cur.clear(); onChange(); }
+                    for (const std::string& nm : ports) {
+                        bool sel = (nm == cur);
+                        if (ImGui::Selectable((nm + std::string("##") + label).c_str(), sel)) { cur = nm; onChange(); }
+                    }
+                    ImGui::EndCombo();
+                }
+            };
+            ImGui::TextUnformatted("Receive (slave)");
+            if (ImGui::Combo("In mode", &prefs.syncInMode, modes, 2)) onChange();
+            portCombo("Sync source", midiIns_, prefs.syncInSource);
+            ImGui::Separator();
+            ImGui::TextUnformatted("Send (master)");
+            if (ImGui::Combo("Out mode", &prefs.syncOutMode, modes, 2)) onChange();
+            portCombo("Sync destination", midiOuts_, prefs.syncOutDest);
+            ImGui::EndTabItem();
+        }
         ImGui::EndTabBar();
     }
     ImGui::End();
