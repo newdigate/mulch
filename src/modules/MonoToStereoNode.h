@@ -5,6 +5,7 @@
 #include "core/Node.h"
 #include "core/Value.h"
 #include "core/AudioPan.h"
+#include "audio/AudioBlock.h"
 
 namespace oss {
 
@@ -12,7 +13,7 @@ namespace oss {
 // (left, right). `pan` -1..1 (0 = centre). GL-free.
 class MonoToStereoNode : public Node {
 public:
-    MonoToStereoNode() : Node("Mono to Stereo"), bufL_(kMaxBlock, 0.0f), bufR_(kMaxBlock, 0.0f) {
+    MonoToStereoNode() : Node("Mono to Stereo"), bufL_(kAudioMaxBlock, 0.0f), bufR_(kAudioMaxBlock, 0.0f) {
         addInput("mono", PortType::Audio, AudioRef{});
         addInput("pan",  PortType::Float, 0.0f, -1.0f, 1.0f);
         addOutput("left",  PortType::Audio);
@@ -21,7 +22,7 @@ public:
     void evaluate(EvalContext& ctx) override {
         AudioRef m = ctx.in<AudioRef>(0);
         PanGains g = panGains(ctx.in<float>(1));
-        std::size_t n = m.samples ? std::min(m.count, (std::size_t)kMaxBlock) : 0;
+        std::size_t n = m.samples ? std::min(m.count, (std::size_t)kAudioMaxBlock) : 0;
         int sr = (m.samples && m.sampleRate > 0) ? m.sampleRate : 48000;
         for (std::size_t i = 0; i < n; ++i) {
             float s = m.samples[i];
@@ -32,7 +33,6 @@ public:
         ctx.out<AudioRef>(1, AudioRef{bufR_.data(), n, sr});
     }
 private:
-    static constexpr int kMaxBlock = 8192;
     std::vector<float> bufL_, bufR_;
 };
 

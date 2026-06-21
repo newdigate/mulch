@@ -104,3 +104,19 @@ TEST_CASE("MTC sync mode + frame rate round-trip and clamp") {
     CHECK(c.syncInMode == 0);
     CHECK(c.syncFrameRate == 0);
 }
+
+TEST_CASE("audio buffer ms round-trips and clamps") {
+    Preferences p; p.audioBufferMs = 200;
+    Preferences r;
+    REQUIRE(parsePreferences(serializePreferences(p), r));
+    CHECK(r.audioBufferMs == 200);
+    Preferences c;
+    REQUIRE(parsePreferences("oss-prefs 1\naudio-buffer 5\n", c));
+    CHECK(c.audioBufferMs == 20);          // clamps up to the floor
+    Preferences d;
+    REQUIRE(parsePreferences("oss-prefs 1\naudio-buffer 9999\n", d));
+    CHECK(d.audioBufferMs == 500);         // clamps down to the ceiling
+    Preferences e;
+    REQUIRE(parsePreferences("oss-prefs 1\n", e));
+    CHECK(e.audioBufferMs == 150);         // default when the line is absent
+}

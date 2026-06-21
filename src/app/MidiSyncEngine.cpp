@@ -1,4 +1,5 @@
 #include "app/MidiSyncEngine.h"
+#include "app/ThreadPriority.h"
 #include "core/Transport.h"
 #include "core/Preferences.h"
 #include "core/MidiTimecode.h"
@@ -104,6 +105,7 @@ void MidiSyncEngine::update(Transport& t, const Preferences& p, double dt) {
 }
 
 void MidiSyncEngine::senderLoop() {
+    setThisThreadTimeCritical();   // the timing thread preempts ordinary threads
     RtMidiOut*  out = nullptr;
     std::string openPort;
     int         lastMode = -1;

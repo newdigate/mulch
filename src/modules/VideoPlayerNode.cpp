@@ -1,12 +1,13 @@
 #include "modules/VideoPlayerNode.h"
 #include "core/Value.h"
+#include "audio/AudioBlock.h"
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
 
 namespace oss {
 
-VideoPlayerNode::VideoPlayerNode() : Node("Video Player"), outBuf_(kMaxBlock, 0.0f) {
+VideoPlayerNode::VideoPlayerNode() : Node("Video Player"), outBuf_(kAudioMaxBlock, 0.0f) {
     addInput("file", PortType::String, std::string(""));   // .mp4/.mov/... path
     addInput("rate", PortType::Float,  1.0f, -2.0f, 2.0f); // signed: negative = reverse
     addInput("play", PortType::Bool,   true);
@@ -212,7 +213,7 @@ void VideoPlayerNode::uploadFrame(const Frame& f) {
 }
 
 void VideoPlayerNode::emitAudio(EvalContext& ctx, double t0, double t1) {
-    int n = std::clamp((int)std::lround(outRate_ * (double)ctx.dt), 1, kMaxBlock);
+    int n = audioBlockFrames(outRate_, ctx.dt);
     if (!audioValid_ || audio_.size() < 2 || t0 == t1) {
         std::fill(outBuf_.begin(), outBuf_.begin() + n, 0.0f);
     } else {

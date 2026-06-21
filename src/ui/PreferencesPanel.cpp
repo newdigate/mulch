@@ -64,6 +64,9 @@ void PreferencesPanel::draw(Preferences& prefs, const std::function<void()>& onC
     if (ImGui::BeginTabBar("prefs_tabs")) {
         if (ImGui::BeginTabItem("Audio Output")) {
             deviceCombo("Output device", outDevices_, prefs.audioOutputDeviceId);
+            ImGui::SetNextItemWidth(160.0f);
+            if (ImGui::SliderInt("Audio buffer (ms)", &prefs.audioBufferMs, 20, 500)) onChange();
+            ImGui::TextDisabled("Higher = more under-run headroom + latency; lower = tighter latency.");
             ImGui::EndTabItem();
         }
         if (ImGui::BeginTabItem("Audio Input")) {

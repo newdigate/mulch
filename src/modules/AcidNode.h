@@ -6,6 +6,7 @@
 #include "core/Node.h"
 #include "core/Value.h"
 #include "audio/AcidVoice.h"
+#include "audio/AudioBlock.h"
 
 namespace oss {
 
@@ -17,7 +18,7 @@ namespace oss {
 //   11 = key track, 12 = distortion, 13 = level.
 class AcidNode : public Node {
 public:
-    AcidNode() : Node("Acid Bass"), buffer_(kMaxBlock, 0.0f) {
+    AcidNode() : Node("Acid Bass"), buffer_(kAudioMaxBlock, 0.0f) {
         addInput("midi", PortType::Midi, MidiRef{});
         addChoiceInput("waveform", {"Saw", "Square"}, 0);
         addInput("cutoff",     PortType::Float, 800.0f, 20.0f,  12000.0f);
@@ -57,13 +58,12 @@ public:
         voice_.setDistortion(ctx.in<float>(12));
         voice_.setLevel(ctx.in<float>(13));
 
-        int n = std::clamp((int)std::lround(sampleRate_ * (double)ctx.dt), 1, kMaxBlock);
+        int n = audioBlockFrames(sampleRate_, ctx.dt);
         voice_.process(buffer_.data(), n);
         ctx.out<AudioRef>(0, AudioRef{buffer_.data(), (std::size_t)n, sampleRate_});
     }
 
 private:
-    static constexpr int kMaxBlock = 2048;
     int sampleRate_ = 48000;
     AcidVoice voice_;
     std::vector<float> buffer_;   // owns the samples the AudioRef points at

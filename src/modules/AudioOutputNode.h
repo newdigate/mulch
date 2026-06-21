@@ -1,6 +1,7 @@
 #pragma once
 #include <string>
 #include <vector>
+#include <memory>
 #include "core/Node.h"
 #include "core/Value.h"
 #include "audio/SpscRingBuffer.h"
@@ -26,9 +27,9 @@ public:
     void evaluate(EvalContext& ctx) override;
 
 private:
-    bool ensureDevice(const std::string& wantId);   // open context (once) + ensure the right stream
+    bool ensureDevice(const std::string& wantId, int wantBufferMs);   // open context (once) + ensure the right stream
     bool openContext();
-    bool openStream(const std::string& wantId);
+    bool openStream(const std::string& wantId, int wantBufferMs);
     void closeStream();
     int  findOutputDeviceById(const std::string& id);
     static void writeCallback(SoundIoOutStream* os, int frameMin, int frameMax);
@@ -38,11 +39,12 @@ private:
     SoundIoDevice*    device_    = nullptr;
     SoundIoOutStream* outstream_ = nullptr;
 
-    SpscRingBuffer<float> ring_{1 << 14};
+    std::unique_ptr<SpscRingBuffer<float>> ring_;   // sized from Preferences::audioBufferMs at open
     std::vector<float>    scratch_;
     std::vector<float>    stereoScratch_;
     int  sampleRate_ = 48000;
     std::string currentDeviceId_;       // id the stream is currently open on ("" = default)
+    int  currentBufferMs_ = -1;          // buffer ms the stream is currently open with
     bool streamOpen_    = false;
     bool contextFailed_ = false;        // no audio context -> stay a silent no-op
 };

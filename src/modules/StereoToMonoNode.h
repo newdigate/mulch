@@ -5,6 +5,7 @@
 #include "core/Node.h"
 #include "core/Value.h"
 #include "core/AudioPan.h"
+#include "audio/AudioBlock.h"
 
 namespace oss {
 
@@ -12,7 +13,7 @@ namespace oss {
 // output. `balance` -1..1 (0 = equal average). Output clamped to [-1,1]. GL-free.
 class StereoToMonoNode : public Node {
 public:
-    StereoToMonoNode() : Node("Stereo to Mono"), buf_(kMaxBlock, 0.0f) {
+    StereoToMonoNode() : Node("Stereo to Mono"), buf_(kAudioMaxBlock, 0.0f) {
         addInput("left",    PortType::Audio, AudioRef{});
         addInput("right",   PortType::Audio, AudioRef{});
         addInput("balance", PortType::Float, 0.0f, -1.0f, 1.0f);
@@ -24,7 +25,7 @@ public:
         PanGains g = downmixGains(ctx.in<float>(2));
         std::size_t nL = L.samples ? L.count : 0;
         std::size_t nR = R.samples ? R.count : 0;
-        std::size_t n  = std::min(std::max(nL, nR), (std::size_t)kMaxBlock);
+        std::size_t n  = std::min(std::max(nL, nR), (std::size_t)kAudioMaxBlock);
         int sr = (L.samples && L.sampleRate > 0) ? L.sampleRate
                : (R.samples && R.sampleRate > 0) ? R.sampleRate : 48000;
         for (std::size_t i = 0; i < n; ++i) {
@@ -35,7 +36,6 @@ public:
         ctx.out<AudioRef>(0, AudioRef{buf_.data(), n, sr});
     }
 private:
-    static constexpr int kMaxBlock = 8192;
     std::vector<float> buf_;
 };
 

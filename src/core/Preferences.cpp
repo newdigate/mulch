@@ -34,6 +34,7 @@ std::string serializePreferences(const Preferences& p) {
     for (const std::string& n : p.enabledMidiInputs)  out += "midi-in "  + n + "\n";
     for (const std::string& n : p.enabledMidiOutputs) out += "midi-out " + n + "\n";
     out += "texture-size " + std::to_string(p.textureWidth) + " " + std::to_string(p.textureHeight) + "\n";
+    out += "audio-buffer " + std::to_string(p.audioBufferMs) + "\n";
     out += "sync-in "  + std::to_string(p.syncInMode)  + " " + p.syncInSource + "\n";
     out += "sync-out " + std::to_string(p.syncOutMode) + " " + p.syncOutDest  + "\n";
     out += "sync-rate " + std::to_string(p.syncFrameRate) + "\n";
@@ -59,6 +60,12 @@ bool parsePreferences(const std::string& text, Preferences& out) {
             int w = 0, h = 0;
             rs >> w >> h;
             if (!rs.fail()) { clampTextureSize(w, h); out.textureWidth = w; out.textureHeight = h; }
+        }
+        else if (kw == "audio-buffer") {
+            std::istringstream rs(rest); int ms = 150; rs >> ms;
+            if (ms < 20)  ms = 20;
+            if (ms > 500) ms = 500;
+            out.audioBufferMs = ms;
         }
         else if (kw == "sync-in") {
             std::istringstream rs(rest); int mode = 0; rs >> mode;
