@@ -56,6 +56,15 @@ public:
     virtual std::string saveState() const { return std::string(); }
     virtual void        loadState(const std::string& /*s*/) {}
 
+    // Optional button bank, rendered by the node editor as a row of buttons under the
+    // node's name (GL-free: ints/strings only). Default = none. A node exposes preset/
+    // mode buttons by overriding these; the editor calls onButtonPressed() on a click.
+    virtual int         buttonCount() const { return 0; }       // 0 = no buttons
+    virtual std::string buttonLabel(int /*i*/) const { return std::string(); }
+    virtual int         buttonActive() const { return -1; }     // index drawn highlighted
+    virtual int         buttonPending() const { return -1; }    // index drawn as "pending"
+    virtual void        onButtonPressed(int /*i*/) {}           // a button was clicked
+
 protected:
     void addInput(std::string n, PortType t, Value def) {
         inputs_.push_back({std::move(n), Direction::Input, t, std::move(def)});

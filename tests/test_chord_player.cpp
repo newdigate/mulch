@@ -7,9 +7,9 @@
 
 using namespace oss;
 
-// 28 float inputs: each pattern defaults to C(0)/oct4/maj(0); globals Auto/Bar/len8/pat1.
+// 30 inputs: 24 step controls (C/oct4/maj), globals Auto/Bar/len8/pat1, switch=Bar, select=none.
 static std::vector<Value> defaultInputs() {
-    std::vector<Value> in(28);
+    std::vector<Value> in(30);
     for (int p = 0; p < 8; ++p) {
         in[3 * p + 0] = 0.0f;   // root C
         in[3 * p + 1] = 4.0f;   // oct 4
@@ -19,6 +19,8 @@ static std::vector<Value> defaultInputs() {
     in[25] = 0.0f;   // quantize Bar
     in[26] = 8.0f;   // length 8
     in[27] = 0.0f;   // pattern 1 (index 0)
+    in[28] = 2.0f;   // switch = Bar (irrelevant unless a preset switch is requested)
+    in[29] = MidiRef{};   // select: no MIDI
     return in;
 }
 
@@ -113,4 +115,98 @@ TEST_CASE("pausing the transport flushes all sounding notes") {
     CHECK(countNoteOns(e) == 0);
     auto e2 = runFrame(node, in, t);                 // still paused -> nothing left
     CHECK(e2.empty());
+}
+
+TEST_CASE("a button selects a preset immediately and re-fires the chord") {
+    ChordPlayerNode node;
+    auto in = defaultInputs();
+    in[28] = 0.0f;                                   // switch = Immediate
+    Transport t; t.bpm = 120.0; t.play(); t.seconds = 0.0;
+    runFrame(node, in, t);                           // preset 1 plays C maj
+    CHECK(node.buttonActive() == 0);
+    node.onButtonPressed(2);                         // request preset 3 (jazz default content)
+    CHECK(node.buttonPending() == 2);
+    auto e = runFrame(node, in, t);                  // immediate switch + re-fire
+    CHECK(node.buttonActive() == 2);
+    CHECK(node.buttonPending() == -1);
+    CHECK(countNoteOffs(e) == 3);                    // released the old C maj
+    CHECK(countNoteOns(e) >= 1);                     // fired preset 3's chord
+    CHECK(noteOns(e) != std::vector<int>{60, 64, 67});   // and it is not C maj
+}
+
+TEST_CASE("Bar switch quantize defers the preset change to the next bar") {
+    ChordPlayerNode node;
+    auto in = defaultInputs();
+    in[28] = 2.0f;                                   // switch = Bar
+    Transport t; t.bpm = 120.0; t.play();            // 2.0 s/bar
+    t.seconds = 0.0; runFrame(node, in, t);          // bar 0, preset 1
+    node.onButtonPressed(1);                         // request preset 2 mid-bar
+    t.seconds = 1.0; runFrame(node, in, t);          // still bar 0 -> no switch
+    CHECK(node.buttonActive() == 0);
+    CHECK(node.buttonPending() == 1);
+    t.seconds = 2.0; runFrame(node, in, t);          // bar 1 -> switch
+    CHECK(node.buttonActive() == 1);
+    CHECK(node.buttonPending() == -1);
+}
+
+TEST_CASE("a select-MIDI note switches preset (C..G), other notes ignored") {
+    ChordPlayerNode node;
+    auto in = defaultInputs();
+    in[28] = 0.0f;                                   // Immediate
+    Transport t; t.bpm = 120.0; t.play(); t.seconds = 0.0;
+    runFrame(node, in, t);                           // preset 1 active
+    std::vector<MidiEvent> sel = { midiNoteOn(64, 100) };   // 64 = E, pc 4 -> preset index 4
+    in[29] = MidiRef{ sel.data(), sel.size() };
+    runFrame(node, in, t);
+    CHECK(node.buttonActive() == 4);
+    std::vector<MidiEvent> sel2 = { midiNoteOn(70, 100) };  // 70 = A#, pc 10 -> ignored
+    in[29] = MidiRef{ sel2.data(), sel2.size() };
+    runFrame(node, in, t);
+    CHECK(node.buttonActive() == 4);                 // unchanged
+    in[29] = MidiRef{};
+}
+
+TEST_CASE("saveState / loadState round-trips presets (incl. edits) and active index") {
+    ChordPlayerNode a;
+    auto in = defaultInputs(); in[28] = 0.0f;        // Immediate
+    Transport t; t.bpm = 120.0; t.play(); t.seconds = 0.0;
+    in[3 * 0 + 2] = 8.0f;                            // edit active preset (0) step 0 chord -> dom7
+    runFrame(a, in, t);                              // captureActive stores the edit into presets_[0]
+    std::string s = a.saveState();
+    ChordPlayerNode b; b.loadState(s);
+    CHECK(b.saveState() == s);                       // non-default content round-trips faithfully
+
+    ChordPlayerNode c;                               // active index survives
+    c.onButtonPressed(5);
+    auto in2 = defaultInputs(); in2[28] = 0.0f;
+    Transport t2;                                    // not playing -> immediate switch
+    runFrame(c, in2, t2);
+    ChordPlayerNode d; d.loadState(c.saveState());
+    CHECK(d.buttonActive() == 5);
+
+    ChordPlayerNode e; e.loadState("");              // empty load leaves constructor defaults intact
+    CHECK(e.buttonActive() == 0);
+}
+
+TEST_CASE("each default preset holds a playable chord") {
+    ChordPlayerNode node;
+    auto in = defaultInputs(); in[28] = 0.0f;        // Immediate
+    Transport t; t.bpm = 120.0; t.play(); t.seconds = 0.0;
+    runFrame(node, in, t);
+    for (int p = 1; p < 8; ++p) {                    // presets 2..8 keep their defaults until active
+        node.onButtonPressed(p);
+        auto ev = runFrame(node, in, t);
+        CHECK(node.buttonActive() == p);
+        CHECK(countNoteOns(ev) >= 1);                // a valid chord fired on switch
+    }
+}
+
+TEST_CASE("the button hook reports counts and selection") {
+    ChordPlayerNode node;
+    CHECK(node.buttonCount() == 8);
+    CHECK(node.buttonLabel(0) == "1");
+    CHECK(node.buttonLabel(7) == "8");
+    CHECK(node.buttonActive() == 0);
+    node.onButtonPressed(3);
+    CHECK(node.buttonPending() == 3);                // requested but not yet applied
 }

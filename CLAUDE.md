@@ -100,13 +100,20 @@ CMake 4.x, it's relaxed with `CMAKE_POLICY_VERSION_MINIMUM 3.5` around its
   `SignalGenerator` fallback + the VBO, and publishes a `VertexRef` on output 0 → wire
   into the Wireframe renderer. The trace math is unit-tested in `core_tests`.
 - **Chord Player** — `ChordPlayerNode` (`src/modules/ChordPlayerNode.h`, header-only,
-  GL-free) holds 8 patterns (root pitch-class + octave + chord name from the 14-chord
-  GL-free `core/Chords.h`) and emits one at a time as a chord (simultaneous note-ons) on
-  its `midi` output, switching on a transport-synced Bar/Beat boundary — auto-progressing
-  `unitAbs % length` (stateless from `transport.bars()`, so loop-robust) or manually
-  selected. It tracks the sounding chord's exact notes and releases them on every
-  switch / stop, so nothing hangs; wire it into the Arpeggiator (which folds the chord's
-  note-ons into its held set) or any synth. Unit-tested in `core_tests`.
+  GL-free) holds **8 presets**, each a full 8-step chord progression (root pitch-class +
+  octave + chord name from the 14-chord GL-free `core/Chords.h`, + a loop length). `presets_[8]`
+  is the playback source of truth; the active preset is mirrored into the existing per-step input
+  ports and captured back each frame, so the inline editors edit the active preset in place
+  (playback reads the struct, not `ctx.in`, so a same-frame switch fires the right chord). Within
+  the active preset it emits one step at a time as a chord (simultaneous note-ons) on its `midi`
+  output, auto-stepping `unitAbs % length` (stateless from `transport.bars()`, so loop-robust) or
+  manually selected. Switch the active preset via the 8 buttons (a generic GL-free `Node`
+  button-bank hook — `buttonCount/buttonLabel/buttonActive/buttonPending` + `onButtonPressed`,
+  rendered by `NodeEditorPanel`), a `select` MIDI input (note pitch-class C–G → preset), or a
+  load; the switch lands on a `switch` quantize boundary (Immediate/Beat/Bar/4 Bars). It tracks
+  the sounding chord's exact notes and releases them on every switch / stop, so nothing hangs;
+  `saveState` carries all 8 presets + the active index. Wire it into the Arpeggiator (which folds
+  the chord's note-ons into its held set) or any synth. Unit-tested in `core_tests`.
 - **Compositor** — `CompositorNode` (`src/modules/CompositorNode.h`, header-only) is a
   `ShaderNode` that blends two input textures with a selectable operator. The 23 blend
   modes (arithmetic, the Photoshop-standard separable set, the HSL non-separable
