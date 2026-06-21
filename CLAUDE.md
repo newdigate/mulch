@@ -62,6 +62,14 @@ CMake 4.x, it's relaxed with `CMAKE_POLICY_VERSION_MINIMUM 3.5` around its
   (`src/ui/NodeEditorPanel.cpp`); `Graph::evaluate` calls `AutomationStore::apply`
   each frame to write the sampled value straight into the control's input default
   (skipping connected inputs). A channel's kind is structural — there is no switch.
+  The breakpoint curve's segments are cubic **Bézier**: each `AutoPoint` carries in/out
+  tangent-handle offsets + a `broken` flag, sampled as a monotonic-time function
+  (`bezierControls` clamps the control bars monotonic + bisection in `bezierSampleSegment`,
+  with a linear fast-path for retracted handles so untouched curves stay exactly linear).
+  The text codec is versioned (`b1;` prefix) and backward-compatible (legacy `bar,value,…`
+  still decodes). Only `AutoCurve` + the Automation panel (point selection + handle drag,
+  aligned/breakable) changed — the two samplers, the `AutomationStore`, and `ProjectFile`
+  inherit Bézier through `sample()` / `encode`/`decodeCurve`.
 - **Choice input ports** — a `Float` input can carry dropdown labels
   (`Port::choices`, built with `Node::addChoiceInput(name, labels, defaultIndex)`);
   the editor renders it as a combo whose value is the selected index

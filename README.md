@@ -47,6 +47,11 @@ with the mouse (click to add, drag to move, right-click to delete); a channel's 
 header carries its output range, a clear button, and (for ui channels) a delete. A
 channel's kind is fixed by how it was created.
 
+Curve segments are cubic Bézier: select a breakpoint to reveal its tangent handles, drag a
+handle to shape the curve (the two stay aligned for a smooth pass-through), Alt-drag to break
+the tangent for a sharp corner, and right-click a handle to reset it. Curves with untouched
+handles stay straight lines, and older projects load unchanged.
+
 Try it: wire `Sine → Audio Out` to hear a tone and `Sine → Spectrograph → Output`
 to see it; or `Mesh Loader → Shaded Render → Output` to spin a 3D model.
 
