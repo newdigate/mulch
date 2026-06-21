@@ -6,6 +6,7 @@
 #include "modules/AutomationNode.h"
 #include <imgui.h>
 #include <algorithm>
+#include <cmath>
 #include <cstdio>
 #include <string>
 #include <vector>
@@ -185,6 +186,7 @@ void AutomationPanel::draw(Graph& graph) {
                 if (ImGui::SmallButton("clr")) {
                     r.pts->clear();
                     if (dragLane_ == r.key) { dragLane_ = -1; dragPoint_ = -1; }
+                    if (selLane_  == r.key) { selLane_  = -1; selPoint_  = -1; }
                 }
                 if (r.uich) {
                     ImGui::SameLine();
@@ -208,6 +210,25 @@ void AutomationPanel::draw(Graph& graph) {
     const ImVec2 o = ImGui::GetItemRectMin();
     ImDrawList*  dl = ImGui::GetWindowDrawList();
     auto X = [&](float bar) { return o.x + bar * pxPerBar; };
+    auto laneYv  = [&](std::size_t i, float v) {
+        float tp = o.y + y[i] + inset, bp = o.y + y[i] + hgt[i] - inset;
+        return bp - v * (bp - tp);
+    };
+    auto laneVal = [&](std::size_t i, float py) {
+        float tp = o.y + y[i] + inset, bp = o.y + y[i] + hgt[i] - inset;
+        return (bp - py) / (bp - tp);
+    };
+    const float stubPx = 26.0f;   // retracted handles draw as a short, grabbable stub
+    auto outTipS = [&](std::size_t i, const AutoPoint& sp) {
+        return (sp.outDBar != 0.0f || sp.outDValue != 0.0f)
+            ? ImVec2(X(sp.bar + sp.outDBar), laneYv(i, sp.value + sp.outDValue))
+            : ImVec2(X(sp.bar) + stubPx, laneYv(i, sp.value));
+    };
+    auto inTipS = [&](std::size_t i, const AutoPoint& sp) {
+        return (sp.inDBar != 0.0f || sp.inDValue != 0.0f)
+            ? ImVec2(X(sp.bar + sp.inDBar), laneYv(i, sp.value + sp.inDValue))
+            : ImVec2(X(sp.bar) - stubPx, laneYv(i, sp.value));
+    };
 
     // Row backgrounds (lanes alternate by lane position, not absolute row index).
     int laneStripe = 0;
@@ -244,6 +265,30 @@ void AutomationPanel::draw(Graph& graph) {
         dl->AddLine(ImVec2(X(p->back().bar), Yv(p->back().value)), ImVec2(o.x + contentW, Yv(p->back().value)), col, 2.0f);
         for (auto& pt : *p) dl->AddCircleFilled(ImVec2(X(pt.bar), Yv(pt.value)), 4.0f, col);
     }
+    // Selected point's tangent handles (drawn only for the selected lane/point).
+    if (selLane_ >= 0 && selPoint_ >= 0) {
+        for (std::size_t i = 0; i < rows.size(); ++i) {
+            if (rows[i].kind != Row::Lane || rows[i].key != selLane_) continue;
+            auto* p = rows[i].pts;
+            if (selPoint_ < (int)p->size()) {
+                const AutoPoint& sp = (*p)[selPoint_];
+                ImVec2 pc(X(sp.bar), laneYv(i, sp.value));
+                const ImU32 hcol = IM_COL32(232, 232, 244, 230);
+                if (selPoint_ + 1 < (int)p->size()) {            // out-handle (segment to the right exists)
+                    ImVec2 tp = outTipS(i, sp);
+                    dl->AddLine(pc, tp, hcol, 1.0f);
+                    dl->AddRectFilled(ImVec2(tp.x - 3, tp.y - 3), ImVec2(tp.x + 3, tp.y + 3), hcol);
+                }
+                if (selPoint_ > 0) {                             // in-handle (segment to the left exists)
+                    ImVec2 tp = inTipS(i, sp);
+                    dl->AddLine(pc, tp, hcol, 1.0f);
+                    dl->AddRectFilled(ImVec2(tp.x - 3, tp.y - 3), ImVec2(tp.x + 3, tp.y + 3), hcol);
+                }
+                dl->AddCircle(pc, 6.0f, hcol, 0, 1.5f);          // ring marks the selected point
+            }
+            break;
+        }
+    }
     // Playhead across the ruler + all lanes.
     float phx = X(std::clamp((float)graph.transport().bars(), 0.0f, length));
     dl->AddLine(ImVec2(phx, o.y), ImVec2(phx, o.y + totalH), IM_COL32(255, 80, 80, 220), 2.0f);
@@ -264,32 +309,70 @@ void AutomationPanel::draw(Graph& graph) {
         }
         return -1;
     };
+    auto hitHandle = [&](std::size_t i) -> int {
+        if (rows[i].key != selLane_ || selPoint_ < 0) return 0;
+        auto* p = rows[i].pts;
+        if (selPoint_ >= (int)p->size()) return 0;
+        const AutoPoint& sp = (*p)[selPoint_];
+        if (selPoint_ + 1 < (int)p->size()) {
+            ImVec2 t = outTipS(i, sp);
+            if ((m.x - t.x) * (m.x - t.x) + (m.y - t.y) * (m.y - t.y) <= 7.0f * 7.0f) return 1;
+        }
+        if (selPoint_ > 0) {
+            ImVec2 t = inTipS(i, sp);
+            if ((m.x - t.x) * (m.x - t.x) + (m.y - t.y) * (m.y - t.y) <= 7.0f * 7.0f) return 2;
+        }
+        return 0;
+    };
     int hoverRow = -1;
     for (std::size_t i = 0; i < rows.size(); ++i)
         if (rows[i].kind == Row::Lane && m.y >= o.y + y[i] && m.y < o.y + y[i] + hgt[i]) { hoverRow = (int)i; break; }
 
     if (hovered && hoverRow >= 0 && ImGui::IsMouseClicked(ImGuiMouseButton_Right)) {
-        auto* p = rows[hoverRow].pts; int h = hitPoint(hoverRow);
-        if (h >= 0) {
-            p->erase(p->begin() + h);
-            // keep an in-progress drag on this lane pointing at the right point
-            if (dragLane_ == rows[hoverRow].key) {
-                if (h < dragPoint_)      --dragPoint_;
-                else if (h == dragPoint_) { dragLane_ = -1; dragPoint_ = -1; }
+        int hh = hitHandle((std::size_t)hoverRow);
+        if (hh != 0) {
+            AutoPoint& sp = (*rows[hoverRow].pts)[selPoint_];
+            if (hh == 1) { sp.outDBar = 0.0f; sp.outDValue = 0.0f; }   // retract the handle
+            else         { sp.inDBar  = 0.0f; sp.inDValue  = 0.0f; }
+        } else {
+            auto* p = rows[hoverRow].pts; int h = hitPoint(hoverRow);
+            if (h >= 0) {
+                p->erase(p->begin() + h);
+                // keep an in-progress drag on this lane pointing at the right point
+                if (dragLane_ == rows[hoverRow].key) {
+                    if (h < dragPoint_)      --dragPoint_;
+                    else if (h == dragPoint_) { dragLane_ = -1; dragPoint_ = -1; }
+                }
+                // keep the selection valid after a delete on its lane
+                if (selLane_ == rows[hoverRow].key) {
+                    if (h < selPoint_)       --selPoint_;
+                    else if (h == selPoint_) { selLane_ = -1; selPoint_ = -1; }
+                }
             }
         }
     }
     if (hovered && hoverRow >= 0 && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
-        auto* p = rows[hoverRow].pts; int h = hitPoint(hoverRow);
-        if (h >= 0) { dragLane_ = rows[hoverRow].key; dragPoint_ = h; }
-        else {
-            AutoPoint np{ std::clamp(toBar(m.x), 0.0f, length),
-                          std::clamp(rowVal(hoverRow, m.y), 0.0f, 1.0f) };
-            auto it = std::lower_bound(p->begin(), p->end(), np,
-                                       [](const AutoPoint& a, const AutoPoint& b) { return a.bar < b.bar; });
-            dragLane_ = rows[hoverRow].key; dragPoint_ = (int)(it - p->begin());
-            p->insert(it, np);
+        int hh = hitHandle((std::size_t)hoverRow);
+        if (hh != 0) {                                   // grab the selected point's handle
+            dragLane_ = selLane_; dragPoint_ = selPoint_; dragHandle_ = hh;
+        } else {
+            auto* p = rows[hoverRow].pts; int h = hitPoint(hoverRow);
+            if (h >= 0) {                                // select + start moving an existing point
+                dragLane_ = rows[hoverRow].key; dragPoint_ = h; dragHandle_ = 0;
+                selLane_  = rows[hoverRow].key; selPoint_  = h;
+            } else {                                     // add a new (linear) point + select it
+                AutoPoint np{ std::clamp(toBar(m.x), 0.0f, length),
+                              std::clamp(rowVal(hoverRow, m.y), 0.0f, 1.0f) };
+                auto it = std::lower_bound(p->begin(), p->end(), np,
+                                           [](const AutoPoint& a, const AutoPoint& b) { return a.bar < b.bar; });
+                int idx = (int)(it - p->begin());
+                p->insert(it, np);
+                dragLane_ = rows[hoverRow].key; dragPoint_ = idx; dragHandle_ = 0;
+                selLane_  = rows[hoverRow].key; selPoint_  = idx;
+            }
         }
+    } else if (hovered && hoverRow < 0 && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
+        selLane_ = -1; selPoint_ = -1;                   // clicked empty space -> deselect
     }
     // Continue an in-progress drag by re-finding its lane each frame from the stable
     // lane key -- so the drag survives the cursor leaving the lane vertically, and a
@@ -301,22 +384,69 @@ void AutomationPanel::draw(Graph& graph) {
         if (dr >= 0) {
             auto* p = rows[dr].pts;
             if (dragPoint_ < (int)p->size()) {
-                float nb = std::clamp(toBar(m.x), 0.0f, length);
-                float nv = std::clamp(rowVal((std::size_t)dr, m.y), 0.0f, 1.0f);
-                if (dragPoint_ > 0)                 nb = std::max(nb, (*p)[dragPoint_ - 1].bar + 1e-4f);
-                if (dragPoint_ + 1 < (int)p->size()) nb = std::min(nb, (*p)[dragPoint_ + 1].bar - 1e-4f);
-                (*p)[dragPoint_].bar = nb; (*p)[dragPoint_].value = nv;
+                if (dragHandle_ == 0) {
+                    // ---- move the point (unchanged, neighbour-clamped) ----
+                    float nb = std::clamp(toBar(m.x), 0.0f, length);
+                    float nv = std::clamp(rowVal((std::size_t)dr, m.y), 0.0f, 1.0f);
+                    if (dragPoint_ > 0)                  nb = std::max(nb, (*p)[dragPoint_ - 1].bar + 1e-4f);
+                    if (dragPoint_ + 1 < (int)p->size()) nb = std::min(nb, (*p)[dragPoint_ + 1].bar - 1e-4f);
+                    (*p)[dragPoint_].bar = nb; (*p)[dragPoint_].value = nv;
+                } else {
+                    // ---- drag a tangent handle ----
+                    AutoPoint& sp = (*p)[dragPoint_];
+                    int n = (int)p->size();
+                    bool out = (dragHandle_ == 1);
+                    if (ImGui::GetIO().KeyAlt) sp.broken = true;     // Alt-drag breaks alignment (sticky)
+                    // primary handle: offset from cursor, clamped into its segment + lane
+                    float nv = std::clamp(laneVal((std::size_t)dr, m.y), 0.0f, 1.0f) - sp.value;
+                    if (out) {
+                        float nb = std::max(0.0f, toBar(m.x) - sp.bar);
+                        if (dragPoint_ + 1 < n) nb = std::min(nb, (*p)[dragPoint_ + 1].bar - sp.bar);
+                        sp.outDBar = nb; sp.outDValue = nv;
+                    } else {
+                        float nb = std::min(0.0f, toBar(m.x) - sp.bar);
+                        if (dragPoint_ > 0)     nb = std::max(nb, (*p)[dragPoint_ - 1].bar - sp.bar);
+                        sp.inDBar = nb; sp.inDValue = nv;
+                    }
+                    // align the opposite handle in SCREEN space (preserve its length) unless broken
+                    bool haveOpp = out ? (dragPoint_ > 0) : (dragPoint_ + 1 < n);
+                    if (!sp.broken && haveOpp) {
+                        ImVec2 pcS(X(sp.bar), laneYv((std::size_t)dr, sp.value));
+                        ImVec2 priS = out ? outTipS((std::size_t)dr, sp) : inTipS((std::size_t)dr, sp);
+                        ImVec2 oppS = out ? inTipS((std::size_t)dr, sp)  : outTipS((std::size_t)dr, sp);
+                        float dx = priS.x - pcS.x, dy = priS.y - pcS.y;
+                        float len = std::sqrt(dx * dx + dy * dy);
+                        float odx = oppS.x - pcS.x, ody = oppS.y - pcS.y;
+                        float oppLen = std::sqrt(odx * odx + ody * ody);
+                        if (len > 1e-3f) {
+                            float tx = pcS.x - dx / len * oppLen;
+                            float ty = pcS.y - dy / len * oppLen;
+                            float ob = toBar(tx) - sp.bar;
+                            float ov = std::clamp(laneVal((std::size_t)dr, ty), 0.0f, 1.0f) - sp.value;
+                            if (out) {                                  // opposite is the in-handle (backward)
+                                ob = std::min(0.0f, ob);
+                                if (dragPoint_ > 0) ob = std::max(ob, (*p)[dragPoint_ - 1].bar - sp.bar);
+                                sp.inDBar = ob; sp.inDValue = ov;
+                            } else {                                    // opposite is the out-handle (forward)
+                                ob = std::max(0.0f, ob);
+                                if (dragPoint_ + 1 < n) ob = std::min(ob, (*p)[dragPoint_ + 1].bar - sp.bar);
+                                sp.outDBar = ob; sp.outDValue = ov;
+                            }
+                        }
+                    }
+                }
             }
         }
     }
-    if (!ImGui::IsMouseDown(ImGuiMouseButton_Left)) { dragLane_ = -1; dragPoint_ = -1; }
+    if (!ImGui::IsMouseDown(ImGuiMouseButton_Left)) { dragLane_ = -1; dragPoint_ = -1; dragHandle_ = 0; }
 
     ImGui::EndChild();
 
     if (pendingDelNode >= 0) store.remove(pendingDelNode, pendingDelPort);
 
-    ImGui::TextDisabled("Click a lane to add a point, drag to move, right-click to delete. "
-                        "Click a group header to collapse. Red line = transport playhead.");
+    ImGui::TextDisabled("Click a lane to add/select a point, drag to move, right-click to delete. "
+                        "Select a point to reveal its Bezier handles; drag a handle to curve, "
+                        "Alt-drag to break, right-click a handle to reset. Red line = playhead.");
     ImGui::End();
 }
 
