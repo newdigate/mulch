@@ -6,7 +6,60 @@
 namespace oss {
 
 // One automation breakpoint: a normalised value in [0,1] at a song position (bars).
-struct AutoPoint { float bar = 0.0f; float value = 0.0f; };
+// Tangent handles are stored as (bar, value) offsets from the point: out* shapes the
+// cubic segment toward the next point, in* toward the previous. All-zero handles => a
+// straight (linear) segment. 'broken' lets the editor move the two handles independently;
+// otherwise it keeps them colinear. New points default to retracted (linear).
+struct AutoPoint {
+    float bar = 0.0f, value = 0.0f;
+    float outDBar = 0.0f, outDValue = 0.0f;   // handle toward the next point (shapes the segment to the right)
+    float inDBar  = 0.0f, inDValue  = 0.0f;   // handle toward the previous point (shapes the segment to the left)
+    bool  broken  = false;                    // false = editor keeps in/out colinear (aligned)
+};
+
+// One Bézier control point in (bar, value) space.
+struct CurvePt { float bar = 0.0f, value = 0.0f; };
+
+// The four cubic-Bézier control points for the segment between a (left) and b (right),
+// with the control *bars* clamped monotonic (c[0].bar <= c[1].bar <= c[2].bar <= c[3].bar)
+// so x(t) is non-decreasing and the curve is a single-valued function of bar. Shared by
+// sampling and the editor's drawing so the drawn curve always matches the sampled one.
+inline void bezierControls(const AutoPoint& a, const AutoPoint& b, CurvePt c[4]) {
+    float b1 = a.bar + a.outDBar;
+    if (b1 < a.bar) b1 = a.bar;
+    if (b1 > b.bar) b1 = b.bar;
+    float b2 = b.bar + b.inDBar;
+    if (b2 < b1)    b2 = b1;
+    if (b2 > b.bar) b2 = b.bar;
+    c[0] = { a.bar, a.value };
+    c[1] = { b1,    a.value + a.outDValue };
+    c[2] = { b2,    b.value + b.inDValue };
+    c[3] = { b.bar, b.value };
+}
+
+// Sample the cubic segment between a and b at song position `bar` (a.bar <= bar <= b.bar).
+// Linear fast-path when both facing handles are retracted (bit-exact with the old linear
+// curve); otherwise solve x(t)=bar by bisection on the monotonic control polygon, return y(t).
+inline float bezierSampleSegment(const AutoPoint& a, const AutoPoint& b, float bar) {
+    float span = b.bar - a.bar;
+    if (span <= 0.0f) return a.value;
+    if (a.outDBar == 0.0f && a.outDValue == 0.0f && b.inDBar == 0.0f && b.inDValue == 0.0f)
+        return a.value + (bar - a.bar) / span * (b.value - a.value);
+    CurvePt c[4];
+    bezierControls(a, b, c);
+    auto cubic = [](float p0, float p1, float p2, float p3, float t) {
+        float u = 1.0f - t;
+        return u*u*u*p0 + 3.0f*u*u*t*p1 + 3.0f*u*t*t*p2 + t*t*t*p3;
+    };
+    float lo = 0.0f, hi = 1.0f;
+    for (int i = 0; i < 24; ++i) {
+        float t = 0.5f * (lo + hi);
+        float x = cubic(c[0].bar, c[1].bar, c[2].bar, c[3].bar, t);
+        if (x < bar) lo = t; else hi = t;
+    }
+    float t = 0.5f * (lo + hi);
+    return cubic(c[0].value, c[1].value, c[2].value, c[3].value, t);
+}
 
 // A piecewise-linear breakpoint curve over song bars, sampled to [0,1]. Points are
 // kept sorted by bar (callers maintain the ordering); sample() holds the first and
@@ -19,11 +72,8 @@ struct AutoCurve {
         if (bar <= points.front().bar) return points.front().value;
         if (bar >= points.back().bar)  return points.back().value;
         for (std::size_t i = 0; i + 1 < points.size(); ++i) {
-            if (bar >= points[i].bar && bar <= points[i + 1].bar) {
-                float span = points[i + 1].bar - points[i].bar;
-                float t = span > 0.0f ? (bar - points[i].bar) / span : 0.0f;
-                return points[i].value + t * (points[i + 1].value - points[i].value);
-            }
+            if (bar >= points[i].bar && bar <= points[i + 1].bar)
+                return bezierSampleSegment(points[i], points[i + 1], bar);
         }
         return points.back().value;
     }
