@@ -70,3 +70,20 @@ TEST_CASE("clampTextureSize bounds") {
     w = 5000; h = 5000; clampTextureSize(w, h); CHECK(w == 1920); CHECK(h == 1080);
     w = 640;  h = 480;  clampTextureSize(w, h); CHECK(w == 640);  CHECK(h == 480);
 }
+
+TEST_CASE("sync fields round-trip and clamp mode") {
+    Preferences p;
+    p.syncInMode = 1;  p.syncInSource = "IAC Bus 1";
+    p.syncOutMode = 1; p.syncOutDest = "IAC Bus 2";
+    Preferences r;
+    REQUIRE(parsePreferences(serializePreferences(p), r));
+    CHECK(r.syncInMode == 1);
+    CHECK(r.syncInSource == "IAC Bus 1");
+    CHECK(r.syncOutMode == 1);
+    CHECK(r.syncOutDest == "IAC Bus 2");
+
+    Preferences c;     // out-of-range mode clamps to 0 (this pass supports 0..1)
+    REQUIRE(parsePreferences("oss-prefs 1\nsync-in 7 Something\n", c));
+    CHECK(c.syncInMode == 0);
+    CHECK(c.syncInSource == "Something");
+}

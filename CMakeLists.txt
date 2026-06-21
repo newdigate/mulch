@@ -193,6 +193,7 @@ set(APP_SOURCES
   src/core/Graph.cpp
   src/core/AutomationStore.cpp
   src/core/Preferences.cpp
+  src/core/MidiClock.cpp
   src/core/ProjectFile.cpp
   src/core/MidiFile.cpp
   src/core/Oscilloscope.cpp
@@ -227,6 +228,7 @@ set(APP_SOURCES
   src/ui/TransportBar.cpp
   src/ui/AutomationPanel.cpp
   src/ui/PreferencesPanel.cpp
+  src/app/MidiSyncEngine.cpp
   src/app/Application.cpp
 )
 
@@ -281,10 +283,12 @@ add_executable(core_tests
   tests/test_project_enablers.cpp
   tests/test_project_file.cpp
   tests/test_preferences.cpp
+  tests/test_midi_clock.cpp
   src/core/Node.cpp
   src/core/Graph.cpp
   src/core/AutomationStore.cpp
   src/core/Preferences.cpp
+  src/core/MidiClock.cpp
   src/core/ProjectFile.cpp
   src/core/MidiFile.cpp
   src/core/Oscilloscope.cpp

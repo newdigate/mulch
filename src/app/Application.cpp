@@ -153,6 +153,7 @@ void Application::frame(float dt) {
     editor_.draw(graph_, [this](const std::string& t, glm::vec2 p){ return addNodeOfType(t, p); });
     automation_.draw(graph_);                // automation timeline window
     preferences_.draw(prefs_, [this]{ savePreferences(); }, &showPreferences_);
+    syncEngine_.update(graph_.transport(), prefs_, dt);   // MIDI clock sync in/out
     graph_.evaluate(dt);                     // advances the transport by dt
 }
 

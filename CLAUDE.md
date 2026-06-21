@@ -170,6 +170,15 @@ CMake 4.x, it's relaxed with `CMAKE_POLICY_VERSION_MINIMUM 3.5` around its
   It also carries the streaming-texture resolution (`textureWidth/Height`): `ShaderNode`,
   `WireframeNode`, and `ShadedRenderNode` recreate their FBO when it changes (fallback
   `kCanvasW×kCanvasH` when `prefs` is null), and `gfx/Framebuffer::create` is re-creation-safe.
+- **MIDI sync** — the GL-free `core/MidiClock` holds the Beat Clock protocol math (a
+  `BeatClockReader` deriving tempo/position/play from timestamped 24-PPQN ticks + Start/Stop/
+  Continue + Song Position, plus SPP/message helpers; unit-tested). The app-level
+  `MidiSyncEngine` (`src/app/`, `<RtMidi.h>` confined to its `.cpp`) polls the selected sync
+  input on the main thread to drive the `Transport` via a new `Transport::externalClock` (which
+  makes `advance()` a no-op), and sends clock to the selected output from a **dedicated timer
+  thread** that solely owns the out port (started in the ctor, joined in the dtor before the
+  port is freed). Configured by the Preferences `syncIn/Out` fields + the **Sync** tab; ticked
+  from `Application::frame` before `graph_.evaluate`. (MTC is the planned Pass-2 mode.)
 - **Texture nodes** derive from `ShaderNode` (`src/gfx/ShaderNode.h`): render a
   fragment shader into their own FBO and publish a `TexRef` on output 0. `ColourNode`
   is the minimal example — declare ports, override `setUniforms()`, call `render(ctx)`.
