@@ -34,6 +34,8 @@ std::string serializePreferences(const Preferences& p) {
     for (const std::string& n : p.enabledMidiInputs)  out += "midi-in "  + n + "\n";
     for (const std::string& n : p.enabledMidiOutputs) out += "midi-out " + n + "\n";
     out += "texture-size " + std::to_string(p.textureWidth) + " " + std::to_string(p.textureHeight) + "\n";
+    out += "sync-in "  + std::to_string(p.syncInMode)  + " " + p.syncInSource + "\n";
+    out += "sync-out " + std::to_string(p.syncOutMode) + " " + p.syncOutDest  + "\n";
     return out;
 }
 
@@ -56,6 +58,18 @@ bool parsePreferences(const std::string& text, Preferences& out) {
             int w = 0, h = 0;
             rs >> w >> h;
             if (!rs.fail()) { clampTextureSize(w, h); out.textureWidth = w; out.textureHeight = h; }
+        }
+        else if (kw == "sync-in") {
+            std::istringstream rs(rest); int mode = 0; rs >> mode;
+            std::string name; std::getline(rs >> std::ws, name);
+            out.syncInMode   = (mode < 0 || mode > 1) ? 0 : mode;
+            out.syncInSource = name;
+        }
+        else if (kw == "sync-out") {
+            std::istringstream rs(rest); int mode = 0; rs >> mode;
+            std::string name; std::getline(rs >> std::ws, name);
+            out.syncOutMode = (mode < 0 || mode > 1) ? 0 : mode;
+            out.syncOutDest = name;
         }
     }
     return true;

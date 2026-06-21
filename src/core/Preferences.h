@@ -13,6 +13,10 @@ struct Preferences {
     std::vector<std::string> enabledMidiOutputs;
     int textureWidth  = 1280;    // streaming-texture (render FBO) resolution
     int textureHeight = 720;
+    int         syncInMode  = 0;   // 0 = Off, 1 = Beat Clock
+    std::string syncInSource;      // MIDI input port name
+    int         syncOutMode = 0;   // 0 = Off, 1 = Beat Clock
+    std::string syncOutDest;       // MIDI output port name
 
     bool midiInputEnabled(const std::string& name) const;
     void setMidiInputEnabled(const std::string& name, bool on);   // idempotent add/remove
