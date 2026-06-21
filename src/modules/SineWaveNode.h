@@ -5,6 +5,7 @@
 #include <vector>
 #include "core/Node.h"
 #include "core/Value.h"
+#include "audio/AudioBlock.h"
 
 namespace oss {
 
@@ -14,7 +15,7 @@ namespace oss {
 // no framebuffers -- it only produces samples.
 class SineWaveNode : public Node {
 public:
-    SineWaveNode() : Node("Sine"), buffer_(kMaxBlock, 0.0f) {
+    SineWaveNode() : Node("Sine"), buffer_(kAudioMaxBlock, 0.0f) {
         addInput("freq", PortType::Float, 220.0f, 20.0f, 2000.0f);  // Hz
         addInput("amp",  PortType::Float, 0.8f,   0.0f,  1.0f);
         addOutput("audio", PortType::Audio);
@@ -25,8 +26,7 @@ public:
         const float  amp  = ctx.in<float>(1);
         // Generate one frame's worth of samples; cap to the buffer so a long
         // frame can't overrun it (the consumer windows what it needs).
-        const int n = std::clamp(
-            (int)std::lround(sampleRate_ * (double)ctx.dt), 1, kMaxBlock);
+        const int n = audioBlockFrames(sampleRate_, ctx.dt);
         const double inc = kTwoPi * (double)freq / sampleRate_;
         for (int i = 0; i < n; ++i) {
             buffer_[i] = static_cast<float>(amp * std::sin(phase_));
@@ -37,7 +37,6 @@ public:
     }
 
 private:
-    static constexpr int    kMaxBlock = 1024;   // max samples produced per frame
     static constexpr double kTwoPi    = 6.283185307179586;
     int                sampleRate_ = 48000;
     double             phase_      = 0.0;        // radians, accumulated for continuity

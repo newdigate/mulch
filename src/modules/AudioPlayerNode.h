@@ -5,6 +5,7 @@
 #include "core/Node.h"
 #include "core/AsyncLoader.h"
 #include "audio/AudioFile.h"
+#include "audio/AudioBlock.h"
 
 namespace oss {
 
@@ -30,8 +31,6 @@ private:
     void emitAudio(EvalContext& ctx, double t0, double t1);
     void updateStatus(bool play, float rate);
 
-    static constexpr int kMaxBlock = 4096;     // frames emitted per evaluate
-
     AsyncLoader<AudioClip> loader_;            // worker-thread decode, keyed on path
     AudioClip   clip_;
     bool        haveClip_ = false;
@@ -40,7 +39,7 @@ private:
     double      playhead_   = 0.0;             // source position in seconds
     double      duration_   = 0.0;
 
-    std::vector<float> outL_, outR_;           // mono left / right (kMaxBlock each)
+    std::vector<float> outL_, outR_;           // mono left / right (kAudioMaxBlock each)
     int         lastN_ = 0;                    // samples emitted last evaluate
 };
 

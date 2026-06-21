@@ -6,6 +6,7 @@
 #include "core/Node.h"
 #include "core/Value.h"
 #include "core/AudioPan.h"
+#include "audio/AudioBlock.h"
 
 namespace oss {
 
@@ -18,7 +19,7 @@ namespace oss {
 class AudioMixerNode : public Node {
 public:
     AudioMixerNode()
-        : Node("Audio Mix"), bufL_(kMaxBlock, 0.0f), bufR_(kMaxBlock, 0.0f) {
+        : Node("Audio Mix"), bufL_(kAudioMaxBlock, 0.0f), bufR_(kAudioMaxBlock, 0.0f) {
         for (int c = 0; c < kChannels; ++c) {
             addInput("in " + std::to_string(c + 1),   PortType::Audio, AudioRef{});
             addInput("gain " + std::to_string(c + 1), PortType::Float, 1.0f, 0.0f, 2.0f);
@@ -43,7 +44,7 @@ public:
             }
         }
         if (sr == 0) sr = 48000;
-        n = std::min(n, (std::size_t)kMaxBlock);
+        n = std::min(n, (std::size_t)kAudioMaxBlock);
 
         for (std::size_t i = 0; i < n; ++i) {
             float l = 0.0f, r = 0.0f;
@@ -63,7 +64,6 @@ public:
 
 private:
     static constexpr int kChannels = 4;
-    static constexpr int kMaxBlock = 8192;   // samples
     std::vector<float> bufL_, bufR_;
 };
 

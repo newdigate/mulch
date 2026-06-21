@@ -6,6 +6,7 @@
 #include <vector>
 #include "core/Node.h"
 #include "gfx/VideoDecoder.h"
+#include "audio/AudioBlock.h"
 
 namespace oss {
 
@@ -55,7 +56,6 @@ private:
     // needs to span ~kLookahead + a little, so this also bounds memory: the cache
     // holds ~kMaxFrames decoded RGBA frames, i.e. width*height*4*kMaxFrames bytes.
     static constexpr int    kMaxFrames = 48;
-    static constexpr int    kMaxBlock  = 4096;  // max audio samples emitted per frame
 
     std::unique_ptr<VideoDecoder> dec_;
     std::string path_;

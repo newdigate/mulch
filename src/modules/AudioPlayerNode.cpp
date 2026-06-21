@@ -1,5 +1,6 @@
 #include "modules/AudioPlayerNode.h"
 #include "core/Value.h"
+#include "audio/AudioBlock.h"
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
@@ -13,8 +14,8 @@ AudioPlayerNode::AudioPlayerNode() : Node("Audio File") {
     addInput("loop", PortType::Bool,   true);
     addOutput("left",  PortType::Audio);
     addOutput("right", PortType::Audio);
-    outL_.assign(kMaxBlock, 0.0f);
-    outR_.assign(kMaxBlock, 0.0f);
+    outL_.assign(kAudioMaxBlock, 0.0f);
+    outR_.assign(kAudioMaxBlock, 0.0f);
 }
 
 void AudioPlayerNode::evaluate(EvalContext& ctx) {
@@ -78,7 +79,7 @@ void AudioPlayerNode::evaluate(EvalContext& ctx) {
 }
 
 void AudioPlayerNode::emitAudio(EvalContext& ctx, double t0, double t1) {
-    int n = std::clamp((int)std::lround(sampleRate_ * (double)ctx.dt), 1, kMaxBlock);
+    int n = audioBlockFrames(sampleRate_, ctx.dt);
     std::size_t frames = clip_.frames();        // AudioClip (stereo) - unchanged
     if (!haveClip_ || frames < 2 || t0 == t1) {
         std::fill(outL_.begin(), outL_.begin() + n, 0.0f);
