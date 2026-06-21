@@ -107,6 +107,9 @@ Changes apply live (the running audio/MIDI nodes reopen their device/ports) and 
 `preferences.oss` file in the working directory.
 A **Video** tab sets the streaming-texture resolution (320×240, 640×480, 1280×720, or
 1920×1080); the change applies live — every render-to-texture node recreates its framebuffer.
+A **Sync** tab can drive the transport from an external MIDI **Beat Clock** (receive 24-PPQN
+clock + Start/Stop/Continue + Song Position from a selected input) and send Beat Clock to a
+selected output (with a dedicated timer thread for steady ticks).
 
 ## Test
 
