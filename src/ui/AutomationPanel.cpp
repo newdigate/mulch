@@ -2,6 +2,7 @@
 #include "core/Graph.h"
 #include "core/Transport.h"
 #include "core/AutomationStore.h"
+#include "core/AutoCurve.h"
 #include "modules/AutomationNode.h"
 #include <imgui.h>
 #include <algorithm>
@@ -234,9 +235,12 @@ void AutomationPanel::draw(Graph& graph) {
         auto Yv = [&](float v) { return bt - v * (bt - t); };
         if (p->empty()) continue;
         dl->AddLine(ImVec2(o.x, Yv(p->front().value)), ImVec2(X(p->front().bar), Yv(p->front().value)), col, 2.0f);
-        for (std::size_t k = 0; k + 1 < p->size(); ++k)
-            dl->AddLine(ImVec2(X((*p)[k].bar), Yv((*p)[k].value)),
-                        ImVec2(X((*p)[k + 1].bar), Yv((*p)[k + 1].value)), col, 2.0f);
+        for (std::size_t k = 0; k + 1 < p->size(); ++k) {
+            CurvePt cc[4]; bezierControls((*p)[k], (*p)[k + 1], cc);
+            dl->AddBezierCubic(ImVec2(X(cc[0].bar), Yv(cc[0].value)), ImVec2(X(cc[1].bar), Yv(cc[1].value)),
+                               ImVec2(X(cc[2].bar), Yv(cc[2].value)), ImVec2(X(cc[3].bar), Yv(cc[3].value)),
+                               col, 2.0f, 0);
+        }
         dl->AddLine(ImVec2(X(p->back().bar), Yv(p->back().value)), ImVec2(o.x + contentW, Yv(p->back().value)), col, 2.0f);
         for (auto& pt : *p) dl->AddCircleFilled(ImVec2(X(pt.bar), Yv(pt.value)), 4.0f, col);
     }
