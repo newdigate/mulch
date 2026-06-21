@@ -115,6 +115,9 @@ A **Video** tab sets the streaming-texture resolution (320×240, 640×480, 1280�
 A **Sync** tab can drive the transport from an external MIDI **Beat Clock** (receive 24-PPQN
 clock + Start/Stop/Continue + Song Position from a selected input) and send Beat Clock to a
 selected output (with a dedicated timer thread for steady ticks).
+The Sync tab also offers **MTC** (MIDI Time Code) as a second mode: lock the transport position
+to incoming SMPTE timecode, or send it to a slave, at 24 / 25 / 29.97-drop / 30 fps (a frame-rate
+picker appears when MTC is selected). MTC carries position, not tempo.
 
 ## Test
 
