@@ -55,3 +55,34 @@ TEST_CASE("an extreme handle still samples monotonic, single-valued, no NaN") {
     CHECK(c.sample(0.0f) == doctest::Approx(0.0f));
     CHECK(c.sample(2.0f) == doctest::Approx(1.0f));
 }
+
+TEST_CASE("curve codec round-trips handles and the broken flag") {
+    AutoCurve c;
+    AutoPoint a{0.0f, 0.2f}; a.outDBar = 0.5f; a.outDValue = 0.1f; a.broken = true;
+    AutoPoint b{2.0f, 0.8f}; b.inDBar = -0.3f; b.inDValue = -0.05f;
+    c.points = { a, b };
+    AutoCurve r = decodeCurve(encodeCurve(c));
+    REQUIRE(r.points.size() == 2);
+    CHECK(r.points[0].outDBar   == doctest::Approx(0.5f));
+    CHECK(r.points[0].outDValue == doctest::Approx(0.1f));
+    CHECK(r.points[0].broken);
+    CHECK(r.points[1].inDBar    == doctest::Approx(-0.3f));
+    CHECK(r.points[1].inDValue  == doctest::Approx(-0.05f));
+    CHECK_FALSE(r.points[1].broken);
+}
+
+TEST_CASE("a legacy bar,value curve still decodes with retracted handles") {
+    AutoCurve r = decodeCurve("0.000000,0.250000,2.000000,0.750000");
+    REQUIRE(r.points.size() == 2);
+    CHECK(r.points[0].bar    == doctest::Approx(0.0f));
+    CHECK(r.points[0].value  == doctest::Approx(0.25f));
+    CHECK(r.points[1].value  == doctest::Approx(0.75f));
+    CHECK(r.points[0].outDBar == doctest::Approx(0.0f));   // handles default to retracted
+    CHECK_FALSE(r.points[0].broken);
+}
+
+TEST_CASE("the empty curve still round-trips to empty") {
+    CHECK(encodeCurve(AutoCurve{}).empty());
+    CHECK(decodeCurve(encodeCurve(AutoCurve{})).points.empty());
+    CHECK(decodeCurve("").points.empty());
+}

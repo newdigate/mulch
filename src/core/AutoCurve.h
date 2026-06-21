@@ -79,28 +79,52 @@ struct AutoCurve {
     }
 };
 
-// Inline text codec for an AutoCurve: comma-joined "bar,value" pairs (empty curve -> "").
-// Used by the project file and the Automation node's saveState. GL-free.
+// Inline text codec for an AutoCurve. New form: "b1;" then 7 comma-joined numbers per
+// point (bar,value,outDBar,outDValue,inDBar,inDValue,broken). Empty curve -> "". decode
+// sniffs the "b1;" prefix and otherwise falls back to the legacy "bar,value,..." parser,
+// so old projects + saved node state still load (with retracted handles). The encoding
+// contains no spaces / ':' / '|', so the ProjectFile line format and AutomationNode
+// saveState block format are unaffected. GL-free.
 inline std::string encodeCurve(const AutoCurve& c) {
-    std::string s;
+    if (c.points.empty()) return "";
+    std::string s = "b1;";
     for (std::size_t i = 0; i < c.points.size(); ++i) {
+        const AutoPoint& p = c.points[i];
         if (i) s += ',';
-        s += std::to_string(c.points[i].bar) + ',' + std::to_string(c.points[i].value);
+        s += std::to_string(p.bar)      + ',' + std::to_string(p.value)
+           + ',' + std::to_string(p.outDBar) + ',' + std::to_string(p.outDValue)
+           + ',' + std::to_string(p.inDBar)  + ',' + std::to_string(p.inDValue)
+           + ',' + (p.broken ? "1" : "0");
     }
     return s;
 }
 inline AutoCurve decodeCurve(const std::string& s) {
     AutoCurve c;
+    if (s.empty()) return c;
+    bool bezier = s.rfind("b1;", 0) == 0;            // starts with the version tag
+    const std::string body = bezier ? s.substr(3) : s;
     std::vector<float> nums;
     std::size_t pos = 0;
-    while (pos <= s.size()) {
-        std::size_t comma = s.find(',', pos);
-        std::string tok = s.substr(pos, comma == std::string::npos ? std::string::npos : comma - pos);
+    while (pos <= body.size()) {
+        std::size_t comma = body.find(',', pos);
+        std::string tok = body.substr(pos, comma == std::string::npos ? std::string::npos : comma - pos);
         if (!tok.empty()) { try { nums.push_back(std::stof(tok)); } catch (...) {} }
         if (comma == std::string::npos) break;
         pos = comma + 1;
     }
-    for (std::size_t i = 0; i + 1 < nums.size(); i += 2) c.points.push_back({nums[i], nums[i + 1]});
+    if (bezier) {
+        for (std::size_t i = 0; i + 6 < nums.size(); i += 7) {
+            AutoPoint p;
+            p.bar = nums[i]; p.value = nums[i + 1];
+            p.outDBar = nums[i + 2]; p.outDValue = nums[i + 3];
+            p.inDBar  = nums[i + 4]; p.inDValue  = nums[i + 5];
+            p.broken  = nums[i + 6] != 0.0f;
+            c.points.push_back(p);
+        }
+    } else {
+        for (std::size_t i = 0; i + 1 < nums.size(); i += 2)
+            c.points.push_back({ nums[i], nums[i + 1] });
+    }
     return c;
 }
 
