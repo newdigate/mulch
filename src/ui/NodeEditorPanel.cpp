@@ -78,6 +78,19 @@ void NodeEditorPanel::draw(Graph& graph,
         ImGui::TextUnformatted(n.name().c_str());
         std::string status = n.statusLine();
         if (!status.empty()) ImGui::TextDisabled("%s", status.c_str());
+        int nbtn = n.buttonCount();
+        if (nbtn > 0) {
+            int bAct = n.buttonActive(), bPend = n.buttonPending();
+            for (int b = 0; b < nbtn; ++b) {
+                if (b) ImGui::SameLine();
+                int pushed = 0;
+                if (b == bAct)        { ImGui::PushStyleColor(ImGuiCol_Button, IM_COL32(70, 130, 200, 255)); pushed = 1; }
+                else if (b == bPend)  { ImGui::PushStyleColor(ImGuiCol_Button, IM_COL32(70,  90, 110, 255)); pushed = 1; }
+                if (ImGui::SmallButton((n.buttonLabel(b) + "##btn" + std::to_string(b)).c_str()))
+                    n.onButtonPressed(b);
+                if (pushed) ImGui::PopStyleColor(pushed);
+            }
+        }
         for (std::size_t i = 0; i < n.inputs().size(); ++i) {
             ed::BeginPin(ed::PinId(pinId(n.id(), (int)i, false)), ed::PinKind::Input);
             ImGui::Text("-> %s", n.inputs()[i].name.c_str());
