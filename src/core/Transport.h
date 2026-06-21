@@ -13,6 +13,7 @@ struct Transport {
     bool   playing     = false;
     double seconds     = 0.0;     // song position in seconds (never negative)
     int    beatsPerBar = 4;       // time-signature numerator (assumes 4/4)
+    bool   externalClock = false; // driven by MIDI sync -> advance() is a no-op
 
     // Looping: when enabled, the position wraps from the loop end back to the loop
     // start. Loop bounds are in bars (musical, so they survive tempo changes).
@@ -24,6 +25,7 @@ struct Transport {
     // playing and looping, wraps back into [loopStart, loopEnd) on reaching the end
     // (carrying the overshoot, so it stays smooth across the seam).
     void advance(double dt) {
+        if (externalClock) return;   // the sync engine sets bpm/seconds/playing directly
         if (playing) seconds += dt;
         if (seconds < 0.0) seconds = 0.0;
         if (playing && looping) {
