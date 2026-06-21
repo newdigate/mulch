@@ -228,6 +228,7 @@ set(APP_SOURCES
   src/ui/TransportBar.cpp
   src/ui/AutomationPanel.cpp
   src/ui/PreferencesPanel.cpp
+  src/app/MidiSyncEngine.cpp
   src/app/Application.cpp
 )
 
