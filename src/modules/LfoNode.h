@@ -51,7 +51,9 @@ public:
              "1/32 bar", "1/64 bar"}, 8);
         addInput("min", PortType::Float, 0.0f, -1.0f, 1.0f);
         addInput("max", PortType::Float, 1.0f, -1.0f, 1.0f);
+        addInput("amplify", PortType::Float, 1.0f, 0.0f, 10.0f);   // gain for the amplified output
         addOutput("out", PortType::Float);
+        addOutput("amplified", PortType::Float);                   // = out * amplify
         shVal_ = uni_(rng_);   // seed the first Sample & Hold value
     }
 
@@ -82,7 +84,9 @@ public:
         if (newCycle) shVal_ = uni_(rng_);   // re-latch Sample & Hold each cycle
 
         double w01 = (wf == 5) ? shVal_ : lfoSample(wf, phase01);
-        ctx.out<float>(0, (float)(lo + w01 * (hi - lo)));
+        float out0 = (float)(lo + w01 * (hi - lo));
+        ctx.out<float>(0, out0);                       // "out"       -- normal, exactly as today
+        ctx.out<float>(1, out0 * ctx.in<float>(6));    // "amplified" = out0 * amplify
     }
 
 private:

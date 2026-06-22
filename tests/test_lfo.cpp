@@ -9,11 +9,11 @@
 
 using namespace oss;
 
-// The 6 input Values in port order: waveform, sync, rate Hz, rate sync, min, max.
+// The 7 input Values in port order: waveform, sync, rate Hz, rate sync, min, max, amplify.
 static std::vector<Value> lfoInputs(float waveform, bool sync, float rateHz,
-                                    float rateSync, float lo, float hi) {
+                                    float rateSync, float lo, float hi, float amplify = 1.0f) {
     return { Value(waveform), Value(sync), Value(rateHz),
-             Value(rateSync), Value(lo), Value(hi) };
+             Value(rateSync), Value(lo), Value(hi), Value(amplify) };
 }
 
 TEST_CASE("lfoSample produces the expected deterministic shapes") {
@@ -32,7 +32,7 @@ TEST_CASE("lfoSample produces the expected deterministic shapes") {
 
 TEST_CASE("free-run LFO advances phase by rate*dt") {
     LfoNode lfo;
-    std::vector<Value> out(1);
+    std::vector<Value> out(2);
     std::vector<Value> in = lfoInputs(0.0f, false, 1.0f, 8.0f, 0.0f, 1.0f);
     EvalContext c0{in, out, 0.0f};   lfo.evaluate(c0);   // phase 0 -> sine 0.5
     CHECK(std::get<float>(out[0]) == doctest::Approx(0.5f));
@@ -42,7 +42,7 @@ TEST_CASE("free-run LFO advances phase by rate*dt") {
 
 TEST_CASE("output range maps the normalised waveform into [min,max]") {
     LfoNode lfo;
-    std::vector<Value> out(1);
+    std::vector<Value> out(2);
     std::vector<Value> in = lfoInputs(0.0f, false, 1.0f, 8.0f, 0.0f, 2.0f);
     EvalContext c0{in, out, 0.0f};   lfo.evaluate(c0);   // mid 0.5 -> 1.0
     CHECK(std::get<float>(out[0]) == doctest::Approx(1.0f));
@@ -54,7 +54,7 @@ TEST_CASE("synced LFO derives phase from the transport bar position") {
     LfoNode lfo;
     Transport t; t.bpm = 120.0; t.seconds = 0.5;   // 2 s/bar -> bars = 0.25
     std::vector<Value> in = lfoInputs(0.0f, true, 1.0f, 8.0f, 0.0f, 1.0f);  // "1 bar"
-    std::vector<Value> out(1);
+    std::vector<Value> out(2);
     EvalContext ctx{in, out, 0.0f, &t};
     lfo.evaluate(ctx);
     CHECK(std::get<float>(out[0]) == doctest::Approx(1.0f));   // sine(0.25) = 1.0
@@ -62,7 +62,7 @@ TEST_CASE("synced LFO derives phase from the transport bar position") {
 
 TEST_CASE("waveform input rounds to the nearest index and clamps") {
     LfoNode lfo;
-    std::vector<Value> out(1);
+    std::vector<Value> out(2);
     {   // 1.4 -> Triangle (index 1); triangle at phase 0 = 0
         std::vector<Value> in = lfoInputs(1.4f, false, 1.0f, 8.0f, 0.0f, 1.0f);
         EvalContext ctx{in, out, 0.0f};
@@ -81,7 +81,7 @@ TEST_CASE("waveform input rounds to the nearest index and clamps") {
 
 TEST_CASE("Sample & Hold holds within a cycle and changes across cycles") {
     LfoNode lfo;
-    std::vector<Value> out(1);
+    std::vector<Value> out(2);
     auto evalSH = [&](float dt) {
         std::vector<Value> in = lfoInputs(5.0f, false, 1.0f, 8.0f, 0.0f, 1.0f);
         EvalContext ctx{in, out, dt};
@@ -103,9 +103,35 @@ TEST_CASE("Sample & Hold holds within a cycle and changes across cycles") {
 
 TEST_CASE("the LFO exposes choice ports for waveform and sync rate") {
     LfoNode lfo;
-    REQUIRE(lfo.inputs().size() == 6);
+    REQUIRE(lfo.inputs().size() == 7);
+    CHECK(lfo.outputs().size() == 2);
     CHECK(lfo.inputs()[0].choices.size() == 6);    // waveform
     CHECK(std::get<float>(lfo.inputs()[0].defaultValue) == doctest::Approx(0.0f));
     CHECK(lfo.inputs()[3].choices.size() == 15);   // rate sync
     CHECK(std::get<float>(lfo.inputs()[3].defaultValue) == doctest::Approx(8.0f));
+}
+
+TEST_CASE("amplified output is the normal output times the amplify input") {
+    LfoNode lfo;
+    std::vector<Value> out(2);
+    // Square wave (index 2) at phase 0 -> w01 = 1; min 0 max 2 -> out0 = 2.0.
+    {   // amplify = 3 -> amplified = 6.0
+        std::vector<Value> in = lfoInputs(2.0f, false, 1.0f, 8.0f, 0.0f, 2.0f, 3.0f);
+        EvalContext ctx{in, out, 0.0f};
+        lfo.evaluate(ctx);
+        CHECK(std::get<float>(out[0]) == doctest::Approx(2.0f));   // "out": normal, unchanged
+        CHECK(std::get<float>(out[1]) == doctest::Approx(6.0f));   // "amplified" = 2.0 * 3.0
+    }
+    {   // default amplify (1.0) -> amplified == out
+        std::vector<Value> in = lfoInputs(2.0f, false, 1.0f, 8.0f, 0.0f, 2.0f);
+        EvalContext ctx{in, out, 0.0f};
+        lfo.evaluate(ctx);
+        CHECK(std::get<float>(out[1]) == doctest::Approx(std::get<float>(out[0])));
+    }
+    {   // negative amplify inverts the amplified output
+        std::vector<Value> in = lfoInputs(2.0f, false, 1.0f, 8.0f, 0.0f, 2.0f, -1.0f);
+        EvalContext ctx{in, out, 0.0f};
+        lfo.evaluate(ctx);
+        CHECK(std::get<float>(out[1]) == doctest::Approx(-2.0f));   // -1 * 2.0
+    }
 }
