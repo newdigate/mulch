@@ -63,38 +63,47 @@ TEST_CASE("a Pos3Color3 snapshot keeps its colour at age 0") {
     CHECK(out[5] == doctest::Approx(0.0f));   // green preserved (age 0, no hue shift)
 }
 
-TEST_CASE("a LineStrip snapshot is emitted as independent segments, not a joined strip") {
+TEST_CASE("a uniform LineStrip trail is kept compact and drawn as one strip") {
     VertexTrail t;
-    // A 3-point strip: v0,v1,v2. As a strip it is 2 segments (v0-v1, v1-v2).
     float strip[9] = { 0.0f,0.0f,0.0f,  1.0f,1.0f,0.0f,  2.0f,2.0f,0.0f };
     t.push(strip, 3, VertexFormat::Pos3, Primitive::LineStrip);
     std::vector<float> out;
     int n = t.build(0.5f, 0.0f, out);
-
-    CHECK(n == 4);                               // 2 segments * 2 verts = 4 (expanded), not 3 (old strip)
-    CHECK(t.primitive() == Primitive::Lines);    // strip input -> independent segments on output
-    REQUIRE(out.size() == 24);                   // 4 verts * 6 floats
-    // segment 0 = (v0, v1); segment 1 = (v1, v2) -- the shared middle vertex v1 appears twice
+    CHECK(n == 3);                               // compact: 1 vertex per point (not 4 expanded)
+    CHECK(t.primitive() == Primitive::LineStrip);
+    CHECK(t.stripCount() == 1);                  // one snapshot -> one strip
+    REQUIRE(out.size() == 18);
     CHECK(out[0]  == doctest::Approx(0.0f)); CHECK(out[1]  == doctest::Approx(0.0f));   // v0
     CHECK(out[6]  == doctest::Approx(1.0f)); CHECK(out[7]  == doctest::Approx(1.0f));   // v1
-    CHECK(out[12] == doctest::Approx(1.0f)); CHECK(out[13] == doctest::Approx(1.0f));   // v1 (shared)
-    CHECK(out[18] == doctest::Approx(2.0f)); CHECK(out[19] == doctest::Approx(2.0f));   // v2
+    CHECK(out[12] == doctest::Approx(2.0f)); CHECK(out[13] == doctest::Approx(2.0f));   // v2
 }
 
-TEST_CASE("stacked LineStrip snapshots never connect across copies") {
+TEST_CASE("stacked uniform LineStrip snapshots are drawn as separate strips") {
     VertexTrail t;
     float strip[9] = { 0.0f,0.0f,0.0f,  1.0f,1.0f,0.0f,  2.0f,2.0f,0.0f };
-    t.push(strip, 3, VertexFormat::Pos3, Primitive::LineStrip);   // becomes age 1
+    t.push(strip, 3, VertexFormat::Pos3, Primitive::LineStrip);   // age 1
     t.push(strip, 3, VertexFormat::Pos3, Primitive::LineStrip);   // age 0 (newest)
     std::vector<float> out;
     int n = t.build(0.5f, 0.0f, out);
-    REQUIRE(n == 8);                             // 2 snapshots * 4 expanded verts
-    // age 0 (verts 0..3): z == 0; age 1 (verts 4..7): z == 0.5. Each segment is a consecutive pair
-    // WITHIN one snapshot, so no segment ever spans the z=0 -> z=0.5 boundary (no join).
-    CHECK(out[2]  == doctest::Approx(0.0f));     // age0 seg0 v0.z
-    CHECK(out[8]  == doctest::Approx(0.0f));     // age0 seg0 v1.z
-    CHECK(out[14] == doctest::Approx(0.0f));     // age0 seg1 v1.z
-    CHECK(out[20] == doctest::Approx(0.0f));     // age0 seg1 v2.z
-    CHECK(out[26] == doctest::Approx(0.5f));     // age1 seg0 v0.z (offset)
-    CHECK(out[44] == doctest::Approx(0.5f));     // age1 seg1 v2.z (offset)
+    CHECK(n == 6);                               // 2 snapshots * 3 compact verts (not 8 expanded)
+    CHECK(t.primitive() == Primitive::LineStrip);
+    CHECK(t.stripCount() == 2);                  // each snapshot is its own strip (Wireframe multi-draws)
+    CHECK(out[2]  == doctest::Approx(0.0f));     // age0 v0.z
+    CHECK(out[14] == doctest::Approx(0.0f));     // age0 v2.z
+    CHECK(out[20] == doctest::Approx(0.5f));     // age1 v0.z (offset)
+    CHECK(out[32] == doctest::Approx(0.5f));     // age1 v2.z (offset)
+}
+
+TEST_CASE("a LineStrip trail with varying vertex counts falls back to independent segments") {
+    VertexTrail t;
+    float strip3[9] = { 0.0f,0.0f,0.0f,  1.0f,1.0f,0.0f,  2.0f,2.0f,0.0f };
+    float strip2[6] = { 0.0f,0.0f,0.0f,  1.0f,1.0f,0.0f };
+    t.push(strip3, 3, VertexFormat::Pos3, Primitive::LineStrip);   // age 1, N=3
+    t.push(strip2, 2, VertexFormat::Pos3, Primitive::LineStrip);   // age 0, N=2
+    std::vector<float> out;
+    int n = t.build(0.5f, 0.0f, out);
+    // mixed counts -> expand each strip: 2(N-1) verts -> age0 2(2-1)=2 + age1 2(3-1)=4 = 6
+    CHECK(n == 6);
+    CHECK(t.primitive() == Primitive::Lines);    // fallback to independent segments
+    CHECK(t.stripCount() == 1);
 }

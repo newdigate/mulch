@@ -31,6 +31,11 @@ void VertexTrail::setMaxFrames(int n) {
 
 int VertexTrail::build(float zSpacing, float hueRate, std::vector<float>& out) const {
     out.clear();
+    // Expand strips into independent segments ONLY when their vertex counts differ (so the trail
+    // can't be drawn as equal strips). The uniform case stays compact (1 vertex per point) and is
+    // drawn as stripCount() separate strips by the renderer -- restoring the pre-multi-draw cost.
+    const bool expand = !snaps_.empty()
+                     && snaps_.front().prim == Primitive::LineStrip && !uniformCount();
     int total = 0, k = 0;
     for (const Snapshot& s : snaps_) {        // front (k=0) = newest
         float zoff = (float)k * zSpacing;
@@ -47,12 +52,10 @@ int VertexTrail::build(float zSpacing, float hueRate, std::vector<float>& out) c
             out.push_back(rgb.z);
             ++total;
         };
-        if (s.prim == Primitive::LineStrip) {
-            // Expand the N-point strip into N-1 independent segments so consecutive snapshots
-            // never connect (a single strip would join each copy's end to the next copy's start).
-            for (int i = 0; i + 1 < s.count; ++i) { emit(i); emit(i + 1); }
+        if (expand) {
+            for (int i = 0; i + 1 < s.count; ++i) { emit(i); emit(i + 1); }   // independent segments
         } else {
-            for (int i = 0; i < s.count; ++i) emit(i);   // Lines / Triangles: already independent
+            for (int i = 0; i < s.count; ++i) emit(i);                        // compact (1 vert/point)
         }
         ++k;
     }

@@ -20,12 +20,26 @@ public:
     // Returns the total vertex count (out.size() == returned * 6).
     int build(float zSpacing, float hueRate, std::vector<float>& out) const;
     int frameCount() const { return (int)snaps_.size(); }
-    // The output primitive: a LineStrip input is emitted as independent segments (Lines), so stacked
-    // trail copies don't visually join; Lines/Triangles inputs are passed through unchanged.
+    // True iff every snapshot has the same vertex count (so the trail can be drawn as equal strips).
+    bool uniformCount() const {
+        if (snaps_.empty()) return false;
+        for (const auto& s : snaps_) if (s.count != snaps_.front().count) return false;
+        return true;
+    }
+    // The output primitive: a uniform LineStrip trail stays LineStrip (drawn as stripCount() separate
+    // strips via multi-draw); a variable-count LineStrip falls back to independent segments (Lines);
+    // Lines/Triangles inputs pass through unchanged.
     Primitive primitive() const {
         if (snaps_.empty()) return Primitive::Lines;
         Primitive in = snaps_.front().prim;
-        return in == Primitive::LineStrip ? Primitive::Lines : in;
+        if (in != Primitive::LineStrip) return in;
+        return uniformCount() ? Primitive::LineStrip : Primitive::Lines;
+    }
+    // Number of equal-length strips the output buffer should be drawn as: the frame count for a
+    // uniform LineStrip trail, else 1 (a single primitive).
+    int stripCount() const {
+        return (!snaps_.empty() && snaps_.front().prim == Primitive::LineStrip && uniformCount())
+                   ? (int)snaps_.size() : 1;
     }
 
 private:

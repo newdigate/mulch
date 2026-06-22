@@ -58,6 +58,8 @@ struct VertexRef {
     int          count     = 0;
     Primitive    primitive = Primitive::LineStrip;
     VertexFormat format    = VertexFormat::Pos3;
+    int          strips    = 1;   // >1: the buffer is `strips` equal-length runs of `primitive`,
+                                  // drawn independently (count must divide evenly). 1 = single draw.
 };
 
 // A shared world transform several 3D renderers can align to: a yaw rotation about Y
