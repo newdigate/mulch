@@ -103,7 +103,17 @@ void WireframeNode::evaluate(EvalContext& ctx) {
         GLenum prim = geo.primitive == Primitive::Lines     ? GL_LINES
                     : geo.primitive == Primitive::Triangles ? GL_TRIANGLES
                                                             : GL_LINE_STRIP;
-        glDrawArrays(prim, 0, geo.count);
+        if (geo.strips > 1 && geo.count % geo.strips == 0) {
+            // The buffer is `strips` equal-length runs (e.g. a Vertex Trail's per-snapshot strips);
+            // draw each independently so they don't connect, in one call.
+            const GLsizei per = geo.count / geo.strips;
+            firsts_.resize(geo.strips);
+            counts_.resize(geo.strips);
+            for (int i = 0; i < geo.strips; ++i) { firsts_[i] = (GLint)(i * per); counts_[i] = per; }
+            glMultiDrawArrays(prim, firsts_.data(), counts_.data(), geo.strips);
+        } else {
+            glDrawArrays(prim, 0, geo.count);
+        }
         glBindBuffer(GL_ARRAY_BUFFER, 0);
         glBindVertexArray(0);
     }

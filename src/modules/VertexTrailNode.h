@@ -50,6 +50,7 @@ public:
 
         frames_ = trail_.frameCount();
         out_ = VertexRef{ outVbo_, total, trail_.primitive(), VertexFormat::Pos3Color3 };
+        out_.strips = trail_.stripCount();   // draw each snapshot as its own strip (Wireframe multi-draw)
         ctx.out<VertexRef>(0, out_);
     }
 

@@ -1,5 +1,6 @@
 #pragma once
 #include <glad/gl.h>
+#include <vector>
 #include "core/Node.h"
 #include "gfx/Framebuffer.h"
 
@@ -21,6 +22,8 @@ private:
     GLuint program_color_ = 0;   // per-vertex-colour variant (Pos3Color3)
     GLuint vao_           = 0;
     float  angle_         = 0.0f;   // accumulated camera rotation (radians)
+    std::vector<GLint>   firsts_;   // multi-draw scratch (per-strip first index)
+    std::vector<GLsizei> counts_;   // multi-draw scratch (per-strip vertex count)
 };
 
 } // namespace oss
