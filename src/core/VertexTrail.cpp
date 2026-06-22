@@ -7,6 +7,9 @@
 namespace oss {
 
 void VertexTrail::push(const float* verts, int count, VertexFormat fmt, Primitive prim) {
+    // The geometry source changed primitive type (the input was rewired) -> restart the trail so it
+    // never mixes primitives (build()/primitive()/stripCount() assume a single primitive).
+    if (!snaps_.empty() && snaps_.front().prim != prim) snaps_.clear();
     Snapshot s;
     s.count = count;
     s.prim  = prim;
@@ -22,11 +25,13 @@ void VertexTrail::push(const float* verts, int count, VertexFormat fmt, Primitiv
     }
     snaps_.push_front(std::move(s));
     while ((int)snaps_.size() > maxFrames_) snaps_.pop_back();
+    recomputeUniform();
 }
 
 void VertexTrail::setMaxFrames(int n) {
     maxFrames_ = n < 1 ? 1 : n;
     while ((int)snaps_.size() > maxFrames_) snaps_.pop_back();
+    recomputeUniform();
 }
 
 int VertexTrail::build(float zSpacing, float hueRate, std::vector<float>& out) const {

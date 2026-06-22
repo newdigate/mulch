@@ -83,6 +83,7 @@ public:
         glBindVertexArray(0);
 
         out_ = VertexRef{ outVbo_, in.count, in.primitive, VertexFormat::Pos3Color3 };
+        out_.strips = in.strips;   // preserve the per-strip layout (e.g. a Vertex Trail upstream)
         ctx.out<VertexRef>(0, out_);
     }
 

@@ -21,11 +21,8 @@ public:
     int build(float zSpacing, float hueRate, std::vector<float>& out) const;
     int frameCount() const { return (int)snaps_.size(); }
     // True iff every snapshot has the same vertex count (so the trail can be drawn as equal strips).
-    bool uniformCount() const {
-        if (snaps_.empty()) return false;
-        for (const auto& s : snaps_) if (s.count != snaps_.front().count) return false;
-        return true;
-    }
+    // Cached; recomputed once per push()/setMaxFrames() rather than scanned on every accessor.
+    bool uniformCount() const { return uniform_; }
     // The output primitive: a uniform LineStrip trail stays LineStrip (drawn as stripCount() separate
     // strips via multi-draw); a variable-count LineStrip falls back to independent segments (Lines);
     // Lines/Triangles inputs pass through unchanged.
@@ -43,9 +40,20 @@ public:
     }
 
 private:
+    // Recompute the cached `uniform_` flag: true iff the queue is non-empty and every snapshot has
+    // the front's vertex count. Called from push()/setMaxFrames() (the only mutators).
+    void recomputeUniform() {
+        uniform_ = false;
+        if (snaps_.empty()) return;
+        int c = snaps_.front().count;
+        for (const auto& s : snaps_) if (s.count != c) return;
+        uniform_ = true;
+    }
+
     struct Snapshot { std::vector<float> pc; int count; Primitive prim; };   // pc = 6 floats/vertex
     std::deque<Snapshot> snaps_;       // front = newest (age 0)
-    int maxFrames_ = 16;
+    int  maxFrames_ = 16;
+    bool uniform_   = false;           // cached: all snapshots share a vertex count (see recomputeUniform)
 };
 
 } // namespace oss

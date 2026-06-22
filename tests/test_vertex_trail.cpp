@@ -94,6 +94,19 @@ TEST_CASE("stacked uniform LineStrip snapshots are drawn as separate strips") {
     CHECK(out[32] == doctest::Approx(0.5f));     // age1 v2.z (offset)
 }
 
+TEST_CASE("changing the input primitive restarts the trail (no mixed-primitive snapshots)") {
+    VertexTrail t;
+    float a[3] = { 0.0f, 0.0f, 0.0f };
+    t.push(a, 1, VertexFormat::Pos3, Primitive::Lines);
+    t.push(a, 1, VertexFormat::Pos3, Primitive::Lines);
+    REQUIRE(t.frameCount() == 2);
+    float strip[6] = { 0.0f,0.0f,0.0f,  1.0f,1.0f,0.0f };
+    t.push(strip, 2, VertexFormat::Pos3, Primitive::LineStrip);   // primitive changed -> flush old snapshots
+    CHECK(t.frameCount() == 1);                                   // only the new snapshot remains
+    CHECK(t.primitive() == Primitive::LineStrip);
+    CHECK(t.stripCount() == 1);
+}
+
 TEST_CASE("a LineStrip trail with varying vertex counts falls back to independent segments") {
     VertexTrail t;
     float strip3[9] = { 0.0f,0.0f,0.0f,  1.0f,1.0f,0.0f,  2.0f,2.0f,0.0f };
