@@ -35,7 +35,7 @@ int VertexTrail::build(float zSpacing, float hueRate, std::vector<float>& out) c
     for (const Snapshot& s : snaps_) {        // front (k=0) = newest
         float zoff = (float)k * zSpacing;
         float hoff = (float)k * hueRate;
-        for (int i = 0; i < s.count; ++i) {
+        auto emit = [&](int i) {
             const float* v = s.pc.data() + (std::size_t)i * 6;
             glm::vec3 hsv = rgbToHsv(v[3], v[4], v[5]);
             glm::vec3 rgb = hsvToRgb(hsv.x + hoff, hsv.y, hsv.z);
@@ -46,6 +46,13 @@ int VertexTrail::build(float zSpacing, float hueRate, std::vector<float>& out) c
             out.push_back(rgb.y);
             out.push_back(rgb.z);
             ++total;
+        };
+        if (s.prim == Primitive::LineStrip) {
+            // Expand the N-point strip into N-1 independent segments so consecutive snapshots
+            // never connect (a single strip would join each copy's end to the next copy's start).
+            for (int i = 0; i + 1 < s.count; ++i) { emit(i); emit(i + 1); }
+        } else {
+            for (int i = 0; i < s.count; ++i) emit(i);   // Lines / Triangles: already independent
         }
         ++k;
     }

@@ -62,3 +62,39 @@ TEST_CASE("a Pos3Color3 snapshot keeps its colour at age 0") {
     CHECK(out[4] == doctest::Approx(1.0f));
     CHECK(out[5] == doctest::Approx(0.0f));   // green preserved (age 0, no hue shift)
 }
+
+TEST_CASE("a LineStrip snapshot is emitted as independent segments, not a joined strip") {
+    VertexTrail t;
+    // A 3-point strip: v0,v1,v2. As a strip it is 2 segments (v0-v1, v1-v2).
+    float strip[9] = { 0.0f,0.0f,0.0f,  1.0f,1.0f,0.0f,  2.0f,2.0f,0.0f };
+    t.push(strip, 3, VertexFormat::Pos3, Primitive::LineStrip);
+    std::vector<float> out;
+    int n = t.build(0.5f, 0.0f, out);
+
+    CHECK(n == 4);                               // 2 segments * 2 verts = 4 (expanded), not 3 (old strip)
+    CHECK(t.primitive() == Primitive::Lines);    // strip input -> independent segments on output
+    REQUIRE(out.size() == 24);                   // 4 verts * 6 floats
+    // segment 0 = (v0, v1); segment 1 = (v1, v2) -- the shared middle vertex v1 appears twice
+    CHECK(out[0]  == doctest::Approx(0.0f)); CHECK(out[1]  == doctest::Approx(0.0f));   // v0
+    CHECK(out[6]  == doctest::Approx(1.0f)); CHECK(out[7]  == doctest::Approx(1.0f));   // v1
+    CHECK(out[12] == doctest::Approx(1.0f)); CHECK(out[13] == doctest::Approx(1.0f));   // v1 (shared)
+    CHECK(out[18] == doctest::Approx(2.0f)); CHECK(out[19] == doctest::Approx(2.0f));   // v2
+}
+
+TEST_CASE("stacked LineStrip snapshots never connect across copies") {
+    VertexTrail t;
+    float strip[9] = { 0.0f,0.0f,0.0f,  1.0f,1.0f,0.0f,  2.0f,2.0f,0.0f };
+    t.push(strip, 3, VertexFormat::Pos3, Primitive::LineStrip);   // becomes age 1
+    t.push(strip, 3, VertexFormat::Pos3, Primitive::LineStrip);   // age 0 (newest)
+    std::vector<float> out;
+    int n = t.build(0.5f, 0.0f, out);
+    REQUIRE(n == 8);                             // 2 snapshots * 4 expanded verts
+    // age 0 (verts 0..3): z == 0; age 1 (verts 4..7): z == 0.5. Each segment is a consecutive pair
+    // WITHIN one snapshot, so no segment ever spans the z=0 -> z=0.5 boundary (no join).
+    CHECK(out[2]  == doctest::Approx(0.0f));     // age0 seg0 v0.z
+    CHECK(out[8]  == doctest::Approx(0.0f));     // age0 seg0 v1.z
+    CHECK(out[14] == doctest::Approx(0.0f));     // age0 seg1 v1.z
+    CHECK(out[20] == doctest::Approx(0.0f));     // age0 seg1 v2.z
+    CHECK(out[26] == doctest::Approx(0.5f));     // age1 seg0 v0.z (offset)
+    CHECK(out[44] == doctest::Approx(0.5f));     // age1 seg1 v2.z (offset)
+}

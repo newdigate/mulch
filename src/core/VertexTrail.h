@@ -20,7 +20,13 @@ public:
     // Returns the total vertex count (out.size() == returned * 6).
     int build(float zSpacing, float hueRate, std::vector<float>& out) const;
     int frameCount() const { return (int)snaps_.size(); }
-    Primitive primitive() const { return snaps_.empty() ? Primitive::LineStrip : snaps_.front().prim; }
+    // The output primitive: a LineStrip input is emitted as independent segments (Lines), so stacked
+    // trail copies don't visually join; Lines/Triangles inputs are passed through unchanged.
+    Primitive primitive() const {
+        if (snaps_.empty()) return Primitive::Lines;
+        Primitive in = snaps_.front().prim;
+        return in == Primitive::LineStrip ? Primitive::Lines : in;
+    }
 
 private:
     struct Snapshot { std::vector<float> pc; int count; Primitive prim; };   // pc = 6 floats/vertex
