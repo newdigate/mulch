@@ -1077,6 +1077,55 @@ int main() {
         std::fprintf(stderr, "gl_smoke OK: Vertex Trail queued snapshots with z-offset + hue rotation\n");
     }
 
+    // --- Scenario: Vertex Trail (LineStrip) -> Wireframe draws each snapshot via glMultiDrawArrays ---
+    // A 4-point LineStrip pushed for 3 frames builds a 3-snapshot trail kept COMPACT (strips = frame
+    // count, primitive LineStrip); Wireframe must render it with glMultiDrawArrays. Asserts the strip
+    // layout + that the rendered texture is non-blank (the multi-draw path executes and draws).
+    {
+        const float strip[12] = {   // a 4-point Pos3 line strip (a zig-zag near origin, all distinct)
+            -0.6f, -0.3f, 0.0f,   -0.2f, 0.3f, 0.0f,   0.2f, -0.3f, 0.0f,   0.6f, 0.3f, 0.0f,
+        };
+        GLuint inVbo = 0;
+        glGenBuffers(1, &inVbo); glBindBuffer(GL_ARRAY_BUFFER, inVbo);
+        glBufferData(GL_ARRAY_BUFFER, sizeof(strip), strip, GL_STATIC_DRAW);
+        glBindBuffer(GL_ARRAY_BUFFER, 0);
+
+        Graph g;
+        auto tr   = std::make_unique<VertexTrailNode>();
+        tr->inputDefault(0) = VertexRef{ inVbo, 4, Primitive::LineStrip, VertexFormat::Pos3 };
+        tr->inputDefault(1) = 5.0f;    // max frames
+        tr->inputDefault(2) = 0.2f;    // z spacing
+        tr->inputDefault(3) = 0.05f;   // hue rate
+        auto wire = std::make_unique<WireframeNode>();
+        wire->inputDefault(1) = 0.0f;  // spin off -> static
+        auto out  = std::make_unique<OutputNode>();
+        tr->initGL(); wire->initGL(); out->initGL();
+        int tId = g.addNode(std::move(tr));
+        int wId = g.addNode(std::move(wire));
+        int oId = g.addNode(std::move(out));
+        if (!g.connect(tId, 0, wId, 0) || !g.connect(wId, 0, oId, 0)) {
+            glDeleteBuffers(1, &inVbo); glfwTerminate(); return fail("connect trail->wire->output");
+        }
+        for (int f = 0; f < 3; ++f) g.evaluate(1.0f / 60.0f);
+
+        VertexRef to = dynamic_cast<VertexTrailNode*>(g.findNode(tId))->output();
+        if (to.primitive != Primitive::LineStrip || to.strips != 3 || to.count != 3 * 4) {
+            std::fprintf(stderr, "trail strips=%d count=%d prim=%d\n", to.strips, to.count, (int)to.primitive);
+            glDeleteBuffers(1, &inVbo); glfwTerminate(); return fail("trail did not produce 3 compact strips");
+        }
+        TexRef t = dynamic_cast<OutputNode*>(g.findNode(oId))->current();
+        if (!t.id) { glDeleteBuffers(1, &inVbo); glfwTerminate(); return fail("multi-strip wireframe texture not produced"); }
+        std::vector<unsigned char> px((size_t)t.w * t.h * 4);
+        glBindTexture(GL_TEXTURE_2D, t.id);
+        glGetTexImage(GL_TEXTURE_2D, 0, GL_RGBA, GL_UNSIGNED_BYTE, px.data());
+        bool sawLine = false;
+        for (size_t i = 0; i < px.size(); i += 4)
+            if (px[i] > 40 || px[i+1] > 40 || px[i+2] > 40) { sawLine = true; break; }   // any foreground pixel
+        glDeleteBuffers(1, &inVbo);
+        if (!sawLine) { glfwTerminate(); return fail("multi-strip wireframe (glMultiDrawArrays) rendered nothing"); }
+        std::fprintf(stderr, "gl_smoke OK: Vertex Trail LineStrip drawn as %d separate strips via glMultiDrawArrays\n", to.strips);
+    }
+
     // --- Scenario: project save/load round-trips a real graph through a factory + initGL ---
     {
         auto factory = [](const std::string& t) -> std::unique_ptr<Node> {
