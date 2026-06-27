@@ -201,7 +201,11 @@ CMake 4.x, it's relaxed with `CMAKE_POLICY_VERSION_MINIMUM 3.5` around its
   are preserved verbatim on load, unlike remapped node ids). The `ui/AssetsPanel` renders a
   tab per type as an editable table (label, path + a native **Browse** button via
   `ui/FileDialog` → NFD, remove) with an Add row; the toolbar **View → Assets** menu item toggles it.
-  Phase 1 of two — Phase 2 will rewire node `file` controls into asset-id dropdowns. The
+  A `String` input flagged `assetBacked` (an `AssetType`, set by `Node::addAssetInput`) renders
+  in the editor as the text field plus a ▾ picker (the deferred `NodePopup`) listing
+  `graph.assets().byType(type)`; selecting copies the asset's `path` into the field (copy-path,
+  no live binding — no node/eval/`.oss` change). The five media inputs use it: Audio Player,
+  Video Player, Mesh Loader, MIDI File, and the Drum Machine's four voices. The
   library + codec are unit-tested in `core_tests`; the panel/dialog are app-only (no headless test).
 - **Preferences** — app-global settings live in the GL-free `core/Preferences` (audio
   output/input device ids + enabled-MIDI-port name sets), persisted to `preferences.oss`
