@@ -65,10 +65,14 @@ public:
     void onButtonPressed(int i) override { patterns_.setActive(i); }
 
     void evaluate(EvalContext& ctx) override {
-        // (1) pattern selection: buttons set active directly; the pattern port is edge-detected so a
-        // constant default never overrides a click, while an automated input drives the slot live.
+        // (1) pattern selection: buttons set active directly; the pattern port is edge-detected. On the
+        // first frame we only record the port value (don't override) so a project-loaded active slot
+        // -- or a non-default restored port default -- survives; edge-detection drives it from then on.
         float patPort = ctx.in<float>(kPatternIdx);
-        if (patPort != lastPatternPort_) {
+        if (!patPrimed_) {
+            lastPatternPort_ = patPort;
+            patPrimed_ = true;
+        } else if (patPort != lastPatternPort_) {
             patterns_.setActive((int)std::lround(patPort) - 1);   // 1-based port -> 0-based slot
             lastPatternPort_ = patPort;
         }
@@ -172,7 +176,8 @@ private:
     std::vector<float> outL_, outR_;
     int    lastN_   = 0;
     int    loaded_  = 0;
-    float  lastPatternPort_ = 1.0f;   // matches the `pattern` port default so load+first-frame don't override active
+    float  lastPatternPort_ = 1.0f;   // recorded on the first frame (patPrimed_) so a loaded active slot survives
+    bool   patPrimed_       = false;
     // sync stepping
     long long lastStepAbs_ = 0;
     bool      primed_      = false;
