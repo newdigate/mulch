@@ -51,7 +51,17 @@ bool drawInlineInputWidget(Node& node, std::size_t i) {
             auto& s = std::get<std::string>(v);
             char buf[256];
             std::snprintf(buf, sizeof(buf), "%s", s.c_str());
-            if (ImGui::InputText("##s", buf, sizeof(buf))) s = buf;
+            if (port.assetBacked) {
+                // Editable path + a down-arrow that opens the library picker. The popup
+                // must be opened in the editor's Suspend block (screen space), so just
+                // signal the click here -- like the choice/colour buttons do.
+                ImGui::SetNextItemWidth(120.0f - ImGui::GetFrameHeight() - 2.0f);   // 120 (node width) - arrow - spacing
+                if (ImGui::InputText("##s", buf, sizeof(buf))) s = buf;
+                ImGui::SameLine(0.0f, 2.0f);
+                if (ImGui::ArrowButton("##assetpick", ImGuiDir_Down)) popupClicked = true;
+            } else {
+                if (ImGui::InputText("##s", buf, sizeof(buf))) s = buf;
+            }
             break;
         }
         default: break; // Texture / Audio: no inline widget
