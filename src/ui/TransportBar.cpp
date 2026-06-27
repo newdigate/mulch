@@ -60,6 +60,10 @@ void drawTransportBar(Transport& t, ProjectBarIO* io) {
             ImGui::SameLine();
             if (ImGui::Button("Prefs")) *io->showPreferences = !*io->showPreferences;
         }
+        if (io->showAssets) {
+            ImGui::SameLine();
+            if (ImGui::Button("Assets")) *io->showAssets = !*io->showAssets;
+        }
         if (!io->status.empty()) { ImGui::SameLine(); ImGui::TextUnformatted(io->status.c_str()); }
     }
 

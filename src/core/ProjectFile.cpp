@@ -3,6 +3,7 @@
 #include "core/Graph.h"
 #include "core/Node.h"
 #include "core/AutomationStore.h"
+#include "core/AssetLibrary.h"
 #include <unordered_map>
 
 namespace oss {
@@ -61,6 +62,11 @@ std::string serializeProject(const ProjectDoc& d) {
     for (const DocAuto& a : d.autos)
         out += "auto " + std::to_string(a.nodeId) + " " + std::to_string(a.port) + " "
              + std::to_string(a.outMin) + " " + std::to_string(a.outMax) + " " + encodeCurve(a.curve) + "\n";
+    for (const Asset& a : d.assets) {
+        out += "asset " + std::to_string(a.id) + " " + std::to_string((int)a.type) + "\n";
+        if (!a.label.empty()) out += "alabel " + escape(a.label) + "\n";
+        if (!a.path.empty())  out += "apath "  + escape(a.path)  + "\n";
+    }
     return out;
 }
 
@@ -70,6 +76,7 @@ bool parseProject(const std::string& text, ProjectDoc& out) {
     std::string line;
     if (!std::getline(in, line) || line.rfind("oss-project", 0) != 0) return false;
     DocNode* cur = nullptr;
+    Asset* curAsset = nullptr;
     while (std::getline(in, line)) {
         if (line.empty()) continue;
         std::istringstream ls(line);
@@ -113,6 +120,17 @@ bool parseProject(const std::string& text, ProjectDoc& out) {
             DocAuto a{}; ls >> a.nodeId >> a.port >> a.outMin >> a.outMax; if (ls.fail()) return false;
             a.curve = decodeCurve(restOfLine(ls));
             out.autos.push_back(a);
+        } else if (kw == "asset") {
+            int id, typeInt; ls >> id >> typeInt;
+            if (ls.fail()) continue;                       // skip malformed; not fatal
+            if (typeInt < 0) typeInt = 0;
+            if (typeInt >= kAssetTypeCount) typeInt = kAssetTypeCount - 1;
+            out.assets.push_back(Asset{id, (AssetType)typeInt, "", ""});
+            curAsset = &out.assets.back();
+        } else if (kw == "alabel") {
+            if (curAsset) curAsset->label = unescape(restOfLine(ls));
+        } else if (kw == "apath") {
+            if (curAsset) curAsset->path = unescape(restOfLine(ls));
         }
         // unknown keyword -> ignored (forward compatible)
     }
@@ -139,11 +157,13 @@ ProjectDoc captureProject(const Graph& g) {
     for (const Connection& c : g.connections()) d.connections.push_back(c);
     for (const UiAutomationChannel& ch : g.automation().channels())
         d.autos.push_back({ch.nodeId, ch.port, ch.outMin, ch.outMax, ch.curve});
+    d.assets = g.assets().all();
     return d;
 }
 
 void restoreProject(const ProjectDoc& d, Graph& g, const NodeFactory& factory, const NodeInit& init) {
     g.clear();
+    g.assets().load(d.assets);
     std::unordered_map<int, int> idMap;
     for (const DocNode& dn : d.nodes) {
         std::unique_ptr<Node> node = factory(dn.type);

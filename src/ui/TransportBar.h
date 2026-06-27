@@ -16,6 +16,7 @@ struct ProjectBarIO {
     std::function<void()> onLoad;
     std::string status;                 // shown after the buttons
     bool*       showPreferences = nullptr;   // toggled by the Prefs button (if non-null)
+    bool*       showAssets = nullptr;        // toggled by the Assets button (if non-null)
 };
 
 // Draws the transport toolbar (Play/Pause, Stop, Rewind, Fast-forward, tempo, loop,

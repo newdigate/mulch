@@ -123,6 +123,14 @@ The Sync tab also offers **MTC** (MIDI Time Code) as a second mode: lock the tra
 to incoming SMPTE timecode, or send it to a slave, at 24 / 25 / 29.97-drop / 30 fps (a frame-rate
 picker appears when MTC is selected). MTC carries position, not tempo.
 
+### Assets
+
+The toolbar **Assets** button opens an Assets window: a per-project media library with
+**Audio / Video / MIDI / 3D** tabs. Each tab is a table of media files — add a file, edit its
+label and path inline, pick a path with the **...** Browse button (a native file dialog), or remove it. Each file
+carries a hidden, stable id plus a label, and the whole library is saved and loaded with the
+`.oss` project. (A later phase will let node file controls pick from this library directly.)
+
 ## Test
 
 ```bash

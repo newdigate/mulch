@@ -6,6 +6,7 @@
 #include "core/Value.h"
 #include "core/Connection.h"
 #include "core/AutoCurve.h"
+#include "core/AssetLibrary.h"
 
 namespace oss {
 
@@ -23,6 +24,7 @@ struct ProjectDoc {
     std::vector<DocNode>    nodes;
     std::vector<Connection> connections;
     std::vector<DocAuto>    autos;
+    std::vector<Asset>      assets;
 };
 
 std::string serializeProject(const ProjectDoc& d);
