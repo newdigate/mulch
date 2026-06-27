@@ -77,7 +77,9 @@ CMake 4.x, it's relaxed with `CMAKE_POLICY_VERSION_MINIMUM 3.5` around its
   GL-free) uses it for its waveform and BPM-sync-rate menus: a control-rate Float
   modulation source that runs free (Hz, integrating `rate*dt`) or transport-synced
   (phase from `transport.bars()`), mapped into a per-node `[min,max]`. All its
-  controls are input ports, so LFOs chain.
+  controls are input ports, so LFOs chain. It has a second `amplified` output — the `out` value times
+  a new `amplify` float input (default 1, so `amplified == out` until raised) — for scaling the
+  modulation without an extra multiply node.
 - **Transport-synced sequencers** — the **Step Seq** and **Arpeggiator** have a
   `sync` input that locks their step rate to the global transport: each step is
   derived statelessly from `transport.bars()` at a `rate sync` division (shared
@@ -160,7 +162,12 @@ CMake 4.x, it's relaxed with `CMAKE_POLICY_VERSION_MINIMUM 3.5` around its
   GL-free `core/VertexTrail` queue of geometry snapshots (read back from the input VBO each
   frame with `glGetBufferSubData`), emitting one combined `Pos3Color3` buffer where the
   snapshot of age `k` (0 = newest) is offset by `k·z-spacing` in Z and hue-rotated by
-  `k·hue-rate`. The HSV helpers live in the GL-free header-only `core/ColorHsv.h` (`hsvToRgb`
+  `k·hue-rate`. A uniform `LineStrip` input stays **compact** (one vertex per point) and is drawn as
+  `stripCount()` independent per-snapshot strips via `glMultiDrawArrays` (a new `VertexRef::strips`
+  hint read by Wireframe), so stacked copies don't visually join *and* the per-frame rebuild + upload
+  stay `O(frames·verts)` at 1× (a variable-vertex-count `LineStrip` — e.g. a Pitch Graph feeding the
+  trail — falls back to independent `Lines` segments); `Lines`/`Triangles` inputs pass through
+  unchanged. The HSV helpers live in the GL-free header-only `core/ColorHsv.h` (`hsvToRgb`
   + `rgbToHsv`), now shared with `PitchGraph`. Unit-tested in `core_tests`; the readback +
   queue + offsets are `gl_smoke`-verified by reading the output buffer back.
 - **Project save/load** — the GL-free `core/ProjectFile` reads/writes a `.oss` project (a
