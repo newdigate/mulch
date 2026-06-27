@@ -107,7 +107,7 @@ a loaded project opens paused at the start. The `.oss` format is plain line-base
 
 ### Preferences
 
-The toolbar **Prefs** button opens a Preferences window with **Audio Output**, **Audio Input**,
+The toolbar **View** menu's **Preferences** item opens a Preferences window with **Audio Output**, **Audio Input**,
 and **MIDI** tabs: pick the output/input sound card and enable which MIDI interfaces are used.
 Changes apply live (the running audio/MIDI nodes reopen their device/ports) and persist to a
 `preferences.oss` file in the working directory. The Audio Output tab also has an **Audio buffer
@@ -125,7 +125,7 @@ picker appears when MTC is selected). MTC carries position, not tempo.
 
 ### Assets
 
-The toolbar **Assets** button opens an Assets window: a per-project media library with
+The toolbar **View** menu's **Assets** item opens an Assets window: a per-project media library with
 **Audio / Video / MIDI / 3D** tabs. Each tab is a table of media files — add a file, edit its
 label and path inline, pick a path with the **...** Browse button (a native file dialog), or remove it. Each file
 carries a hidden, stable id plus a label, and the whole library is saved and loaded with the

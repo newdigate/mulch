@@ -200,7 +200,7 @@ CMake 4.x, it's relaxed with `CMAKE_POLICY_VERSION_MINIMUM 3.5` around its
   get their own lines because the codec's `escape()` guards only `\`/`\n`, not spaces; ids
   are preserved verbatim on load, unlike remapped node ids). The `ui/AssetsPanel` renders a
   tab per type as an editable table (label, path + a native **Browse** button via
-  `ui/FileDialog` → NFD, remove) with an Add row; a toolbar **Assets** button toggles it.
+  `ui/FileDialog` → NFD, remove) with an Add row; the toolbar **View → Assets** menu item toggles it.
   Phase 1 of two — Phase 2 will rewire node `file` controls into asset-id dropdowns. The
   library + codec are unit-tested in `core_tests`; the panel/dialog are app-only (no headless test).
 - **Preferences** — app-global settings live in the GL-free `core/Preferences` (audio
