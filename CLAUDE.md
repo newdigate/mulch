@@ -86,6 +86,18 @@ CMake 4.x, it's relaxed with `CMAKE_POLICY_VERSION_MINIMUM 3.5` around its
   table in `src/core/StepSync.h`), so they follow the project BPM, start/stop with
   the transport, and stay bar-aligned through loops. With `sync` off they free-run
   off their own `tempo`/`rate`, unchanged.
+- **Drum Machine** — `DrumMachineNode` (`src/modules/DrumMachineNode.h`, header-only) is a
+  sample-based drum machine: 4 voices, each a file (async-decoded via `AsyncLoader<AudioClip>` like
+  the Audio Player) with `vol`/`rate`/`pan` input ports, sequenced on a 4×16 tri-state step grid
+  (off/on/**accent**). Eight pattern slots (the GL-free `core/DrumPattern.h` store + text codec) hold
+  independent grids; switch with 8 buttons or the automatable `pattern` port (edge-detected, primed on
+  the first frame so a loaded slot survives). The clock mirrors **Step Seq** (`core/StepSync.h`):
+  transport-synced or free. A step's on/accent cells (re)trigger that row's GL-free
+  `audio/SampleVoice.h` (one-shot, retrigger, mono-downmix + linear interp); accent plays louder;
+  voices mix through `core/AudioPan.h` `panGains` into a `left`/`right` output. A new generic tri-state
+  **grid** `Node` hook (`gridRows/gridCols/gridCell/onGridCellPressed`) is rendered by `NodeEditorPanel`.
+  The grids persist via `saveState`; paths/vol/rate/pan persist as control defaults. `DrumPattern` +
+  `SampleVoice` are unit-tested in `core_tests`; the node trigger/accent/pan path is `gl_smoke`-checked.
 - **Acid Bass synth voice** — `AcidNode` (`src/modules/AcidNode.h`, header-only) is
   the first MIDI-in → audio-out synth: it wraps the GL-free `AcidVoice` DSP
   (`src/audio/AcidVoice.{h,cpp}`) — a monophonic 303-style voice (saw/square VCO +
