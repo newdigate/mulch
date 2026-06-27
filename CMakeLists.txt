@@ -289,6 +289,7 @@ add_executable(core_tests
   tests/test_drum_machine.cpp
   tests/test_midi_timecode.cpp
   tests/test_audio_block.cpp
+  tests/test_assets.cpp
   src/core/Node.cpp
   src/core/Graph.cpp
   src/core/AutomationStore.cpp
@@ -296,6 +297,7 @@ add_executable(core_tests
   src/core/MidiClock.cpp
   src/core/MidiTimecode.cpp
   src/core/ProjectFile.cpp
+  src/core/AssetLibrary.cpp
   src/core/MidiFile.cpp
   src/core/Oscilloscope.cpp
   src/core/PitchGraph.cpp
