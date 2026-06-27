@@ -91,6 +91,26 @@ void NodeEditorPanel::draw(Graph& graph,
                 if (pushed) ImGui::PopStyleColor(pushed);
             }
         }
+        int grows = n.gridRows(), gcols = n.gridCols();
+        if (grows > 0 && gcols > 0) {
+            for (int r = 0; r < grows; ++r) {
+                std::string rl = n.gridRowLabel(r);
+                if (!rl.empty()) { ImGui::TextUnformatted(rl.c_str()); ImGui::SameLine(); }
+                for (int c = 0; c < gcols; ++c) {
+                    if (c) ImGui::SameLine();
+                    int st = n.gridCell(r, c);
+                    ImU32 col = st == 2 ? IM_COL32(250, 210,  70, 255)    // accent: brightest
+                              : st == 1 ? IM_COL32(120, 150, 200, 255)    // on
+                                        : IM_COL32( 45,  48,  56, 255);   // off: dark
+                    ImGui::PushStyleColor(ImGuiCol_Button, col);
+                    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, col);
+                    ImGui::PushStyleColor(ImGuiCol_ButtonActive, col);
+                    std::string id = "##g" + std::to_string(r) + "_" + std::to_string(c);
+                    if (ImGui::Button(id.c_str(), ImVec2(14, 14))) n.onGridCellPressed(r, c);
+                    ImGui::PopStyleColor(3);
+                }
+            }
+        }
         for (std::size_t i = 0; i < n.inputs().size(); ++i) {
             ed::BeginPin(ed::PinId(pinId(n.id(), (int)i, false)), ed::PinKind::Input);
             ImGui::Text("-> %s", n.inputs()[i].name.c_str());
