@@ -1,5 +1,6 @@
 #include <doctest/doctest.h>
 #include "core/AssetLibrary.h"
+#include "core/Graph.h"
 
 using namespace oss;
 
@@ -70,4 +71,12 @@ TEST_CASE("AssetLibrary load adopts ids verbatim and advances nextId past the ma
     CHECK(lib.find(9)->type == AssetType::Mesh);
     int next = lib.add(AssetType::Video, "v", "v.mp4");
     CHECK(next == 10);                // max(id)+1; never collides with a loaded id
+}
+
+TEST_CASE("Graph owns an AssetLibrary and clear() empties it") {
+    Graph g;
+    g.assets().add(AssetType::Audio, "k", "k.wav");
+    CHECK(g.assets().all().size() == 1);
+    g.clear();
+    CHECK(g.assets().all().empty());
 }

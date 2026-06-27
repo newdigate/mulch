@@ -6,6 +6,7 @@
 #include "core/Connection.h"
 #include "core/Transport.h"
 #include "core/AutomationStore.h"
+#include "core/AssetLibrary.h"
 
 namespace oss {
 
@@ -24,13 +25,18 @@ public:
     AutomationStore&       automation()       { return automation_; }
     const AutomationStore& automation() const { return automation_; }
 
+    // Per-project media library (the Assets window). Saved/loaded with the project.
+    AssetLibrary&       assets()       { return assets_; }
+    const AssetLibrary& assets() const { return assets_; }
+
     // Takes ownership; returns the assigned (>=1) node id.
     int  addNode(std::unique_ptr<Node> node);
     void removeNode(int nodeId);
 
     // Empty the graph for a fresh load: drop all nodes, connections, cached outputs,
-    // and automation channels. Keeps nextId_ MONOTONIC (ids are never reused -- the
-    // editor's placement cache relies on that), so a loaded graph gets fresh ids.
+    // automation channels, and the media library. Keeps nextId_ MONOTONIC (ids are
+    // never reused -- the editor's placement cache relies on that), so a loaded graph
+    // gets fresh ids.
     void clear();
 
     // Returns false and makes no change if ports are invalid, types differ,
@@ -63,6 +69,7 @@ private:
     Transport transport_;
     const Preferences* prefs_ = nullptr;
     AutomationStore automation_;
+    AssetLibrary assets_;
     std::unordered_map<int, std::vector<Value>> outputs_;  // per-frame node outputs
 };
 

@@ -29,6 +29,7 @@ void Graph::clear() {
     nodes_.clear();
     outputs_.clear();
     automation_.clear();
+    assets_.clear();
     markDirty();
     // nextId_ is intentionally NOT reset.
 }
