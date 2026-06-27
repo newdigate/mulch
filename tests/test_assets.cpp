@@ -4,6 +4,7 @@
 #include "core/ProjectFile.h"
 #include <memory>
 #include <string>
+#include <variant>
 
 using namespace oss;
 
@@ -125,4 +126,38 @@ TEST_CASE("captureProject / restoreProject carry assets through a Graph") {
     REQUIRE(g2.assets().all().size() == 2);
     CHECK(g2.assets().byType(AssetType::Audio).size() == 1);
     CHECK(g2.assets().byType(AssetType::Video).size() == 1);
+}
+
+namespace {
+// A minimal Node that declares one asset-backed input, to exercise addAssetInput
+// without needing the GL/FFmpeg node classes (which core_tests does not link).
+struct AssetInputProbe : oss::Node {
+    AssetInputProbe() : oss::Node("AssetInputProbe") {
+        addAssetInput("clip", oss::AssetType::Video, "default.mp4");
+        addAssetInput("noDefault", oss::AssetType::Audio);   // 2-arg form: empty default
+    }
+    void evaluate(oss::EvalContext&) override {}
+};
+} // namespace
+
+TEST_CASE("addAssetInput marks a String input asset-backed with its type + default") {
+    AssetInputProbe n;
+    REQUIRE(n.inputs().size() == 2);
+    const Port& p = n.inputs()[0];
+    CHECK(p.name == "clip");
+    CHECK(p.type == PortType::String);
+    CHECK(p.assetBacked == true);
+    CHECK(p.assetType == AssetType::Video);
+    CHECK(std::get<std::string>(p.defaultValue) == "default.mp4");
+
+    const Port& q = n.inputs()[1];
+    CHECK(q.assetBacked == true);
+    CHECK(q.assetType == AssetType::Audio);
+    CHECK(std::get<std::string>(q.defaultValue) == "");   // omitted default -> empty path
+}
+
+TEST_CASE("a plain addInput String is not asset-backed") {
+    // Sanity: the flag defaults off, so existing String inputs keep their text field.
+    Port p;
+    CHECK(p.assetBacked == false);
 }

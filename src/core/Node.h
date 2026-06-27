@@ -98,6 +98,16 @@ protected:
         p.choices = std::move(labels);
         inputs_.push_back(std::move(p));
     }
+    void addAssetInput(std::string n, AssetType type, std::string def = std::string()) {
+        Port p;
+        p.name         = std::move(n);
+        p.direction    = Direction::Input;
+        p.type         = PortType::String;
+        p.defaultValue = Value(std::move(def));
+        p.assetBacked  = true;
+        p.assetType    = type;
+        inputs_.push_back(std::move(p));
+    }
 
 private:
     friend class Graph;
