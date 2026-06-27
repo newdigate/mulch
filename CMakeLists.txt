@@ -286,6 +286,7 @@ add_executable(core_tests
   tests/test_project_file.cpp
   tests/test_preferences.cpp
   tests/test_midi_clock.cpp
+  tests/test_drum_machine.cpp
   tests/test_midi_timecode.cpp
   tests/test_audio_block.cpp
   src/core/Node.cpp
