@@ -1126,6 +1126,64 @@ int main() {
         std::fprintf(stderr, "gl_smoke OK: Vertex Trail LineStrip drawn as %d separate strips via glMultiDrawArrays\n", to.strips);
     }
 
+    // --- Scenario: Vertex Trail -> Deform -> Wireframe keeps each snapshot a separate strip ---
+    // Regression for the per-snapshot `strips` hint surviving Deform's transform feedback. The trail
+    // emits a COMPACT multi-strip LineStrip (strips = frame count); Deform must forward VertexRef::strips
+    // through transform feedback, else the Wireframe draws the whole buffer as ONE LINE_STRIP and joins
+    // every snapshot with a connecting line. Asserts the strip layout reaches Deform's output intact and
+    // the multi-draw pipeline renders. (The plain Trail->Wireframe path is covered above; this is the
+    // Deform-in-the-middle path -- the real-world Oscilloscope -> Trail -> Deform -> Wireframe chain.)
+    {
+        const float strip[12] = {   // a 4-point Pos3 line strip
+            -0.6f, -0.3f, 0.0f,   -0.2f, 0.3f, 0.0f,   0.2f, -0.3f, 0.0f,   0.6f, 0.3f, 0.0f,
+        };
+        GLuint inVbo = 0;
+        glGenBuffers(1, &inVbo); glBindBuffer(GL_ARRAY_BUFFER, inVbo);
+        glBufferData(GL_ARRAY_BUFFER, sizeof(strip), strip, GL_STATIC_DRAW);
+        glBindBuffer(GL_ARRAY_BUFFER, 0);
+
+        Graph g;
+        auto tr  = std::make_unique<VertexTrailNode>();
+        tr->inputDefault(0) = VertexRef{ inVbo, 4, Primitive::LineStrip, VertexFormat::Pos3 };
+        tr->inputDefault(1) = 5.0f;    // max frames
+        tr->inputDefault(2) = 0.2f;    // z spacing
+        tr->inputDefault(3) = 0.05f;   // hue rate
+        auto def = std::make_unique<DeformNode>();
+        def->inputDefault(1) = 0.5f;                                 // position uniform
+        def->inputDefault(3) = ShaderRef{ vertexShaderSource(1) };   // Twist preset (a real TF shader)
+        auto wire = std::make_unique<WireframeNode>();
+        wire->inputDefault(1) = 0.0f;  // spin off -> static
+        auto out  = std::make_unique<OutputNode>();
+        tr->initGL(); def->initGL(); wire->initGL(); out->initGL();
+        int tId = g.addNode(std::move(tr));
+        int dId = g.addNode(std::move(def));
+        int wId = g.addNode(std::move(wire));
+        int oId = g.addNode(std::move(out));
+        if (!g.connect(tId, 0, dId, 0) || !g.connect(dId, 0, wId, 0) || !g.connect(wId, 0, oId, 0)) {
+            glDeleteBuffers(1, &inVbo); glfwTerminate(); return fail("connect trail->deform->wire->output");
+        }
+        for (int f = 0; f < 3; ++f) g.evaluate(1.0f / 60.0f);
+
+        // The key regression assertion: Deform forwards the trail's 3-strip layout (3 snapshots x 4 verts).
+        VertexRef td = dynamic_cast<DeformNode*>(g.findNode(dId))->output();
+        if (td.primitive != Primitive::LineStrip || td.strips != 3 || td.count != 3 * 4) {
+            std::fprintf(stderr, "deform out strips=%d count=%d prim=%d\n", td.strips, td.count, (int)td.primitive);
+            glDeleteBuffers(1, &inVbo); glfwTerminate();
+            return fail("Deform dropped the per-snapshot strips hint (Wireframe would join the trail)");
+        }
+        TexRef t = dynamic_cast<OutputNode*>(g.findNode(oId))->current();
+        if (!t.id) { glDeleteBuffers(1, &inVbo); glfwTerminate(); return fail("trail->deform->wire texture not produced"); }
+        std::vector<unsigned char> px((size_t)t.w * t.h * 4);
+        glBindTexture(GL_TEXTURE_2D, t.id);
+        glGetTexImage(GL_TEXTURE_2D, 0, GL_RGBA, GL_UNSIGNED_BYTE, px.data());
+        bool sawLine = false;
+        for (size_t i = 0; i < px.size(); i += 4)
+            if (px[i] > 40 || px[i+1] > 40 || px[i+2] > 40) { sawLine = true; break; }
+        glDeleteBuffers(1, &inVbo);
+        if (!sawLine) { glfwTerminate(); return fail("trail->deform->wire (glMultiDrawArrays) rendered nothing"); }
+        std::fprintf(stderr, "gl_smoke OK: Vertex Trail strips survive Deform; drawn as %d separate strips\n", td.strips);
+    }
+
     // --- Scenario: project save/load round-trips a real graph through a factory + initGL ---
     {
         auto factory = [](const std::string& t) -> std::unique_ptr<Node> {
