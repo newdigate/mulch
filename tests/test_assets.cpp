@@ -1,6 +1,9 @@
 #include <doctest/doctest.h>
 #include "core/AssetLibrary.h"
 #include "core/Graph.h"
+#include "core/ProjectFile.h"
+#include <memory>
+#include <string>
 
 using namespace oss;
 
@@ -79,4 +82,47 @@ TEST_CASE("Graph owns an AssetLibrary and clear() empties it") {
     CHECK(g.assets().all().size() == 1);
     g.clear();
     CHECK(g.assets().all().empty());
+}
+
+TEST_CASE("ProjectFile serialize/parse round-trips assets (spaces, empty label, backslash)") {
+    ProjectDoc d;
+    d.assets = {
+        Asset{1, AssetType::Audio, "kick drum", "samples/kick drum.wav"},
+        Asset{2, AssetType::Mesh,  "",           "models/a b c.obj"},   // empty label omits alabel
+        Asset{3, AssetType::Midi,  "back\\slash","x.mid"},               // backslash survives escape
+    };
+    std::string text = serializeProject(d);
+    ProjectDoc out;
+    REQUIRE(parseProject(text, out));
+    REQUIRE(out.assets.size() == 3);
+    CHECK(out.assets[0].id == 1);
+    CHECK(out.assets[0].type == AssetType::Audio);
+    CHECK(out.assets[0].label == "kick drum");
+    CHECK(out.assets[0].path == "samples/kick drum.wav");
+    CHECK(out.assets[1].label == "");                 // empty round-trips
+    CHECK(out.assets[1].type == AssetType::Mesh);
+    CHECK(out.assets[1].path == "models/a b c.obj");
+    CHECK(out.assets[2].label == "back\\slash");
+}
+
+TEST_CASE("ProjectFile without asset lines loads an empty asset list") {
+    ProjectDoc out;
+    REQUIRE(parseProject("oss-project 1\ntransport 120 4 0 0 4 8\n", out));
+    CHECK(out.assets.empty());
+}
+
+TEST_CASE("captureProject / restoreProject carry assets through a Graph") {
+    Graph g;
+    g.assets().add(AssetType::Audio, "kick", "k.wav");
+    g.assets().add(AssetType::Video, "clip", "c.mp4");
+    ProjectDoc d = captureProject(g);
+    REQUIRE(d.assets.size() == 2);
+
+    Graph g2;
+    auto factory = [](const std::string&) -> std::unique_ptr<Node> { return nullptr; };
+    auto init    = [](Node&) {};
+    restoreProject(d, g2, factory, init);
+    REQUIRE(g2.assets().all().size() == 2);
+    CHECK(g2.assets().byType(AssetType::Audio).size() == 1);
+    CHECK(g2.assets().byType(AssetType::Video).size() == 1);
 }
