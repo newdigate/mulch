@@ -35,6 +35,7 @@
 #include "modules/VertexTrailNode.h"
 #include "core/ColorHsv.h"
 #include "modules/VertexShaderNode.h"
+#include "modules/DrumMachineNode.h"
 #include "core/VertexShaders.h"
 #include "gfx/VideoDecoder.h"
 #include "gfx/VideoEncoder.h"
@@ -1216,6 +1217,65 @@ int main() {
         }
         g2.evaluate(1.0f / 60.0f);   // the restored + initGL'd graph evaluates without crashing
         std::fprintf(stderr, "gl_smoke OK: project save/load round-trips a real graph\n");
+    }
+
+    // --- Scenario: Drum Machine triggers a sample on a step + applies accent / pan (GL-free) ---
+    {
+        auto ramp = [](int frames) {
+            AudioClip c; c.ok = true; c.sampleRate = 48000; c.channels = 2;
+            c.samples.assign((std::size_t)frames * 2, 1.0f);   // constant 1.0 L/R
+            return c;
+        };
+        // 20 input Values in port order; voice 0 vol=1 rate=1 pan=`pan`, sync off (free clock fires step 0).
+        auto inputs = [](float pan) {
+            std::vector<Value> in;
+            for (int v = 0; v < 4; ++v) {
+                in.push_back(Value(std::string("")));                       // file
+                in.push_back(Value(1.0f));                                  // vol
+                in.push_back(Value(1.0f));                                  // rate
+                in.push_back(Value(v == 0 ? pan : 0.0f));                   // pan
+            }
+            in.push_back(Value(120.0f));   // tempo
+            in.push_back(Value(false));    // sync (free)
+            in.push_back(Value(4.0f));     // rate sync (1/16)
+            in.push_back(Value(1.0f));     // pattern
+            return in;
+        };
+        auto peak = [](const AudioRef& a) {
+            float m = 0.0f; for (std::size_t i = 0; i < a.count; ++i) m = std::max(m, std::fabs(a.samples[i])); return m;
+        };
+
+        // (a) an ON cell triggers voice 0 -> non-zero output on both channels (center pan).
+        DrumMachineNode dm;
+        dm.injectClip(0, ramp(64));
+        dm.patterns().setCell(0, 0, 0, 1);
+        std::vector<Value> in = inputs(0.0f), outs(2);
+        EvalContext ctx{in, outs, 0.02f, nullptr, nullptr};
+        dm.evaluate(ctx);
+        float onPeak = peak(dm.leftOut());
+        if (onPeak <= 0.05f) { glfwTerminate(); return fail("Drum Machine: ON step produced no audio"); }
+        if (peak(dm.rightOut()) <= 0.05f) { glfwTerminate(); return fail("Drum Machine: center pan gave no right channel"); }
+
+        // (b) an ACCENT cell is louder than an ON cell.
+        DrumMachineNode dmA;
+        dmA.injectClip(0, ramp(64));
+        dmA.patterns().setCell(0, 0, 0, 2);   // accent
+        std::vector<Value> inA = inputs(0.0f), outsA(2);
+        EvalContext ctxA{inA, outsA, 0.02f, nullptr, nullptr};
+        dmA.evaluate(ctxA);
+        if (peak(dmA.leftOut()) <= onPeak + 0.01f) { glfwTerminate(); return fail("Drum Machine: accent not louder than on"); }
+
+        // (c) hard-left pan routes to left only.
+        DrumMachineNode dmP;
+        dmP.injectClip(0, ramp(64));
+        dmP.patterns().setCell(0, 0, 0, 1);
+        std::vector<Value> inP = inputs(-1.0f), outsP(2);
+        EvalContext ctxP{inP, outsP, 0.02f, nullptr, nullptr};
+        dmP.evaluate(ctxP);
+        if (peak(dmP.leftOut()) <= 0.05f || peak(dmP.rightOut()) >= 0.02f) {
+            glfwTerminate(); return fail("Drum Machine: hard-left pan did not route to left only");
+        }
+        std::fprintf(stderr, "gl_smoke OK: Drum Machine triggers a step, accent louder, pan routes\n");
     }
 
     glfwDestroyWindow(win);
