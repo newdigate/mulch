@@ -10,6 +10,19 @@ void drawTransportBar(Transport& t, ProjectBarIO* io) {
     // and read-out all sit on one row without explicit SameLine calls.
     if (!ImGui::BeginMainMenuBar()) return;
 
+    // Window toggles live in a left-anchored "View" menu so they stay reachable at any
+    // window width: the menu bar lays everything on one non-wrapping row, so buttons at
+    // the far right clip off-screen on a narrow window (the Assets/Prefs toggles did).
+    // A left menu never clips. The bool* MenuItem overload shows a checkmark for the
+    // current state and flips it on click.
+    if (io && (io->showPreferences || io->showAssets)) {
+        if (ImGui::BeginMenu("View")) {
+            if (io->showPreferences) ImGui::MenuItem("Preferences", nullptr, io->showPreferences);
+            if (io->showAssets)      ImGui::MenuItem("Assets",      nullptr, io->showAssets);
+            ImGui::EndMenu();
+        }
+    }
+
     if (t.playing) { if (ImGui::Button("Pause")) t.pause(); }
     else           { if (ImGui::Button("Play"))  t.play();  }
     if (ImGui::Button("Stop")) t.stop();          // pause + return to the start
@@ -56,14 +69,7 @@ void drawTransportBar(Transport& t, ProjectBarIO* io) {
         if (ImGui::Button("Save") && io->onSave) io->onSave();
         ImGui::SameLine();
         if (ImGui::Button("Load") && io->onLoad) io->onLoad();
-        if (io->showPreferences) {
-            ImGui::SameLine();
-            if (ImGui::Button("Prefs")) *io->showPreferences = !*io->showPreferences;
-        }
-        if (io->showAssets) {
-            ImGui::SameLine();
-            if (ImGui::Button("Assets")) *io->showAssets = !*io->showAssets;
-        }
+        // (Preferences/Assets toggles moved to the left-anchored "View" menu above.)
         if (!io->status.empty()) { ImGui::SameLine(); ImGui::TextUnformatted(io->status.c_str()); }
     }
 
