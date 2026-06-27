@@ -65,6 +65,15 @@ public:
     virtual int         buttonPending() const { return -1; }    // index drawn as "pending"
     virtual void        onButtonPressed(int /*i*/) {}           // a button was clicked
 
+    // Optional tri-state grid, rendered by the node editor under the button bank (GL-free:
+    // ints/strings only). Cell values are 0/1/2 (e.g. off/on/accent). Default = none. The
+    // editor calls onGridCellPressed() on a click (the node decides how to cycle the value).
+    virtual int         gridRows() const { return 0; }              // 0 = no grid
+    virtual int         gridCols() const { return 0; }
+    virtual int         gridCell(int /*r*/, int /*c*/) const { return 0; }   // 0/1/2
+    virtual void        onGridCellPressed(int /*r*/, int /*c*/) {}
+    virtual std::string gridRowLabel(int /*r*/) const { return std::string(); }
+
 protected:
     void addInput(std::string n, PortType t, Value def) {
         inputs_.push_back({std::move(n), Direction::Input, t, std::move(def)});
