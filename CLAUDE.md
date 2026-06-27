@@ -192,6 +192,17 @@ CMake 4.x, it's relaxed with `CMAKE_POLICY_VERSION_MINIMUM 3.5` around its
   `encode/decodeCurve` in `core/AutoCurve.h`. `Graph::clear()` empties the graph but keeps
   `nextId_` monotonic (the editor's placement cache assumes ids are never reused). The toolbar
   (`src/ui/TransportBar.cpp`) drives it via `Application::saveProjectToFile`/`loadProjectFromFile`.
+- **Assets / media library** — the GL-free `core/AssetLibrary` is a per-project media
+  library: each `Asset` is a stable, unique, never-reused `id` + an `AssetType`
+  (Audio/Video/Midi/Mesh, the four tabs) + an editable `label` and file `path`. It is owned
+  by `Graph` (`graph.assets()`, cleared by `Graph::clear()`) and persisted through
+  `ProjectFile` as `asset <id> <type>` / `alabel` / `apath` lines (the two free-text fields
+  get their own lines because the codec's `escape()` guards only `\`/`\n`, not spaces; ids
+  are preserved verbatim on load, unlike remapped node ids). The `ui/AssetsPanel` renders a
+  tab per type as an editable table (label, path + a native **Browse** button via
+  `ui/FileDialog` → NFD, remove) with an Add row; a toolbar **Assets** button toggles it.
+  Phase 1 of two — Phase 2 will rewire node `file` controls into asset-id dropdowns. The
+  library + codec are unit-tested in `core_tests`; the panel/dialog are app-only (no headless test).
 - **Preferences** — app-global settings live in the GL-free `core/Preferences` (audio
   output/input device ids + enabled-MIDI-port name sets), persisted to `preferences.oss`
   (separate from projects) and flowed to nodes via `EvalContext::prefs` (like `Transport`,
