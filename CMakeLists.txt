@@ -150,6 +150,18 @@ set(CMAKE_POLICY_VERSION_MINIMUM 3.5)
 FetchContent_MakeAvailable(earcut)
 unset(CMAKE_POLICY_VERSION_MINIMUM)
 
+# --- nativefiledialog-extended (NFD): native open-file dialog for the Assets window ---
+FetchContent_Declare(nfd
+  GIT_REPOSITORY https://github.com/btzy/nativefiledialog-extended.git
+  GIT_TAG v1.2.1)
+set(NFD_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+# Defensive: relax the policy minimum like the other deps in case its bundled CMake
+# declares a minimum below 3.5 (harmless when it doesn't). NFD links the macOS
+# AppKit/UniformTypeIdentifiers frameworks as usage requirements of its `nfd` target.
+set(CMAKE_POLICY_VERSION_MINIMUM 3.5)
+FetchContent_MakeAvailable(nfd)
+unset(CMAKE_POLICY_VERSION_MINIMUM)
+
 # The Text nodes' default font: one of Dear ImGui's bundled, permissively-licensed
 # TTFs (Roboto-Medium, Apache-2.0), referenced by absolute path so no font file
 # needs to ship or be embedded. Override per-node via the "font" input.
@@ -230,6 +242,7 @@ set(APP_SOURCES
   src/ui/TransportBar.cpp
   src/ui/AutomationPanel.cpp
   src/ui/PreferencesPanel.cpp
+  src/ui/FileDialog.cpp
   src/app/ThreadPriority.cpp
   src/app/MidiSyncEngine.cpp
   src/app/Application.cpp
@@ -243,7 +256,7 @@ target_include_directories(shader_streamer PRIVATE src ${libsoundio_SOURCE_DIR} 
 target_compile_definitions(shader_streamer PRIVATE GLFW_INCLUDE_NONE TINYGLTF_ENABLE_DRACO
   OSS_DEFAULT_FONT="${OSS_DEFAULT_FONT}")
 target_link_libraries(shader_streamer PRIVATE ui_thirdparty glad_gl41 glm::glm libsoundio_static rtmidi
-  tinyobjloader meshoptimizer draco_static PkgConfig::FFMPEG)
+  tinyobjloader meshoptimizer draco_static PkgConfig::FFMPEG nfd)
 
 # --- Tests (GL-free core only) ---
 enable_testing()
