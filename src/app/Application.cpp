@@ -151,10 +151,12 @@ void Application::frame(float dt) {
     io.onLoad = [this]{ projectStatus_ = loadProjectFromFile(filename_) ? (std::string("loaded ") + filename_) : "load failed"; };
     io.status = projectStatus_;
     io.showPreferences = &showPreferences_;
+    io.showAssets = &showAssets_;
     drawTransportBar(graph_.transport(), &io);   // top toolbar: tempo + play/stop/scrub
     editor_.draw(graph_, [this](const std::string& t, glm::vec2 p){ return addNodeOfType(t, p); });
     automation_.draw(graph_);                // automation timeline window
     preferences_.draw(prefs_, [this]{ savePreferences(); }, &showPreferences_);
+    assets_.draw(graph_.assets(), &showAssets_);
     syncEngine_.update(graph_.transport(), prefs_, dt);   // MIDI clock sync in/out
     graph_.evaluate(dt);                     // advances the transport by dt
 }

@@ -8,6 +8,7 @@
 #include "ui/NodeEditorPanel.h"
 #include "ui/AutomationPanel.h"
 #include "ui/PreferencesPanel.h"
+#include "ui/AssetsPanel.h"
 #include "app/MidiSyncEngine.h"
 
 struct GLFWwindow;
@@ -41,8 +42,10 @@ private:
     std::string projectStatus_;
     Preferences      prefs_;
     PreferencesPanel preferences_;
+    AssetsPanel      assets_;
     MidiSyncEngine   syncEngine_;
     bool             showPreferences_ = false;
+    bool             showAssets_ = false;
 };
 
 // Factory used by the app and the add-node menu.

@@ -243,6 +243,7 @@ set(APP_SOURCES
   src/ui/AutomationPanel.cpp
   src/ui/PreferencesPanel.cpp
   src/ui/FileDialog.cpp
+  src/ui/AssetsPanel.cpp
   src/app/ThreadPriority.cpp
   src/app/MidiSyncEngine.cpp
   src/app/Application.cpp
