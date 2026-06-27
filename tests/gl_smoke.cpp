@@ -36,6 +36,7 @@
 #include "core/ColorHsv.h"
 #include "modules/VertexShaderNode.h"
 #include "modules/DrumMachineNode.h"
+#include "modules/MidiFilePlayerNode.h"
 #include "core/VertexShaders.h"
 #include "gfx/VideoDecoder.h"
 #include "gfx/VideoEncoder.h"
@@ -78,6 +79,25 @@ static void readCentre(TexRef tex, int& r, int& g, int& b, int& a) {
 }
 
 int main() {
+    // Phase 2: the five media file inputs are asset-backed with the matching AssetType.
+    // Pure CPU (node constructors don't touch GL), so it runs before any GL setup --
+    // a bare `return fail(...)` is correct here (no context to clean up).
+    {
+        auto bad = [](const Node& n, int port, AssetType want) {
+            if (port < 0 || port >= (int)n.inputs().size()) return true;
+            const Port& p = n.inputs()[(std::size_t)port];
+            return p.type != PortType::String || !p.assetBacked || p.assetType != want;
+        };
+        AudioPlayerNode    ap; if (bad(ap, 0, AssetType::Audio)) return fail("AudioPlayer.file not asset-backed Audio");
+        VideoPlayerNode    vp; if (bad(vp, 0, AssetType::Video)) return fail("VideoPlayer.file not asset-backed Video");
+        MeshLoaderNode     ml; if (bad(ml, 0, AssetType::Mesh))  return fail("MeshLoader.file not asset-backed Mesh");
+        MidiFilePlayerNode mf; if (bad(mf, 0, AssetType::Midi))  return fail("MidiFile.file not asset-backed Midi");
+        DrumMachineNode    dm;
+        for (int v = 0; v < DrumMachineNode::kVoices; ++v)
+            if (bad(dm, 4 * v, AssetType::Audio)) return fail("DrumMachine.file voice not asset-backed Audio");
+        std::fprintf(stderr, "gl_smoke OK: 5 media nodes expose asset-backed file inputs\n");
+    }
+
     if (!glfwInit()) return fail("glfwInit");
     glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 4);
     glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 1);

@@ -19,7 +19,7 @@ namespace oss {
 class MidiFilePlayerNode : public Node {
 public:
     MidiFilePlayerNode() : Node("MIDI File") {
-        addInput("file",         PortType::String, std::string(""));
+        addAssetInput("file",    AssetType::Midi);
         addInput("start offset", PortType::Float, 0.0f, 0.0f, 64.0f);   // bars
         addInput("loop",         PortType::Bool, true);
         addInput("loop length",  PortType::Float, 4.0f, 0.25f, 64.0f);  // bars

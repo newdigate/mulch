@@ -334,6 +334,7 @@ add_executable(gl_smoke
   src/core/AutomationStore.cpp
   src/core/ProjectFile.cpp
   src/core/AssetLibrary.cpp
+  src/core/MidiFile.cpp
   src/core/PitchGraph.cpp
   src/core/VertexTrail.cpp
   src/gfx/GLUtil.cpp
