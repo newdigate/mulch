@@ -69,6 +69,14 @@ void drawTab(AssetLibrary& lib, AssetType type, const char* noun,
 
     std::string addLabel = std::string("+ Add ") + noun;
     if (ImGui::Button(addLabel.c_str())) lib.add(type, "", "");
+    ImGui::SameLine();
+    if (ImGui::Button("Add files...")) {
+        // Native multi-select (filtered to this tab's type); each chosen file becomes a new
+        // asset of this type, label seeded from its filename. Runs after EndTable, so the
+        // byType() pointers above are already done with.
+        for (const std::string& path : openMultipleFileDialog(noun, "Media", filters))
+            lib.add(type, baseLabel(path), path);
+    }
     if (toRemove >= 0) lib.remove(toRemove);
 }
 

@@ -129,7 +129,9 @@ picker appears when MTC is selected). MTC carries position, not tempo.
 
 The toolbar **View** menu's **Assets** item opens an Assets window: a per-project media library with
 **Audio / Video / MIDI / 3D** tabs. Each tab is a table of media files — add a file, edit its
-label and path inline, pick a path with the **...** Browse button (a native file dialog), or remove it. Each file
+label and path inline, pick a path with the **...** Browse button (a native file dialog), or remove it.
+**Add files…** opens a native multi-select dialog (filtered to the tab's media type) and adds every
+chosen file at once. Each file
 carries a hidden, stable id plus a label, and the whole library is saved and loaded with the
 `.oss` project.
 Nodes that load media — **Audio Player**, **Video Player**, **Mesh Loader**, **MIDI File**, and the

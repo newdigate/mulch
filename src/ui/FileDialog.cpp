@@ -51,4 +51,32 @@ std::string saveFileDialog(const char* /*title*/, const char* filterName,
     return result;
 }
 
+std::vector<std::string> openMultipleFileDialog(const char* /*title*/, const char* filterName,
+                                                const std::vector<std::string>& filters) {
+    // `title` is unused (NFD has no title param) -- see openFileDialog.
+    std::vector<std::string> result;
+    if (NFD_Init() != NFD_OKAY) return result;
+    std::string spec = joinSpec(filters);
+    nfdfilteritem_t item{ filterName, spec.c_str() };
+    const nfdfilteritem_t* list = spec.empty() ? nullptr : &item;
+    nfdfiltersize_t count = spec.empty() ? 0 : 1;
+
+    const nfdpathset_t* paths = nullptr;
+    if (NFD_OpenDialogMultiple(&paths, list, count, nullptr) == NFD_OKAY && paths) {
+        nfdpathsetsize_t n = 0;
+        if (NFD_PathSet_GetCount(paths, &n) == NFD_OKAY) {
+            for (nfdpathsetsize_t i = 0; i < n; ++i) {
+                nfdchar_t* p = nullptr;
+                if (NFD_PathSet_GetPath(paths, i, &p) == NFD_OKAY && p) {
+                    result.push_back(p);
+                    NFD_PathSet_FreePath(p);
+                }
+            }
+        }
+        NFD_PathSet_Free(paths);
+    }
+    NFD_Quit();
+    return result;   // empty on cancel or error
+}
+
 } // namespace oss
