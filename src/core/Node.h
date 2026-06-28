@@ -108,6 +108,19 @@ protected:
         p.assetType    = type;
         inputs_.push_back(std::move(p));
     }
+    // A Float input rendered as a whole-number slider over [lo, hi] (e.g. a bar count).
+    // The value is stored as a float; consumers round it. Easier to drag than a float slider.
+    void addIntInput(std::string n, int def, int lo, int hi) {
+        Port p;
+        p.name         = std::move(n);
+        p.direction    = Direction::Input;
+        p.type         = PortType::Float;
+        p.defaultValue = Value((float)def);
+        p.minVal       = (float)lo;
+        p.maxVal       = (float)hi;
+        p.integer      = true;
+        inputs_.push_back(std::move(p));
+    }
 
 private:
     friend class Graph;

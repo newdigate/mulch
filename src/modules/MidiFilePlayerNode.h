@@ -1,5 +1,6 @@
 #pragma once
 #include <cstddef>
+#include <cmath>
 #include <string>
 #include <vector>
 #include "core/Node.h"
@@ -22,7 +23,7 @@ public:
         addAssetInput("file",    AssetType::Midi);
         addInput("start offset", PortType::Float, 0.0f, 0.0f, 64.0f);   // bars
         addInput("loop",         PortType::Bool, true);
-        addInput("loop length",  PortType::Float, 4.0f, 0.25f, 64.0f);  // bars
+        addIntInput("loop length", 4, 1, 64);                           // bars (whole numbers)
         for (int i = 0; i < 16; ++i)
             addInput("mute " + std::to_string(i + 1), PortType::Bool, false);
         addOutput("midi", PortType::Midi);
@@ -42,8 +43,11 @@ public:
         double beats = ctx.transport ? ctx.transport->beats() : 0.0;
         double bpb   = ctx.transport ? (double)ctx.transport->beatsPerBar : 4.0;
 
+        // loop length is a whole-number bars control; round so the loop is always whole bars
+        // (even if a connected/automated value or an old fractional project value drives it).
+        float loopLenBars = (float)std::lround(ctx.in<float>(3));
         out_ = player_.advance(seq_, beats, bpb, ctx.in<float>(1), ctx.in<bool>(2),
-                               ctx.in<float>(3), muted);
+                               loopLenBars, muted);
         ctx.out<MidiRef>(0, MidiRef{out_.data(), out_.size()});
     }
 

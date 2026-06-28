@@ -73,7 +73,11 @@ CMake 4.x, it's relaxed with `CMAKE_POLICY_VERSION_MINIMUM 3.5` around its
 - **Choice input ports** — a `Float` input can carry dropdown labels
   (`Port::choices`, built with `Node::addChoiceInput(name, labels, defaultIndex)`);
   the editor renders it as a combo whose value is the selected index
-  (`src/ui/PortWidgets.cpp`). The **LFO** (`src/modules/LfoNode.h`, header-only,
+  (`src/ui/PortWidgets.cpp`). A `Float` input can instead be flagged `Port::integer`
+  (built with `Node::addIntInput(name, default, lo, hi)`) to render as a whole-number
+  `SliderInt` over `[lo,hi]` — easier to drag than a fine float slider; the value is
+  still stored as a float, so consumers round it (e.g. the MIDI File player's whole-bar
+  `loop length`). The **LFO** (`src/modules/LfoNode.h`, header-only,
   GL-free) uses it for its waveform and BPM-sync-rate menus: a control-rate Float
   modulation source that runs free (Hz, integrating `rate*dt`) or transport-synced
   (phase from `transport.bars()`), mapped into a per-node `[min,max]`. All its

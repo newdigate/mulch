@@ -38,6 +38,12 @@ bool drawInlineInputWidget(Node& node, std::size_t i) {
                 idx = std::clamp(idx, 0, (int)port.choices.size() - 1);
                 std::string label = port.choices[idx] + "###choice";
                 if (ImGui::Button(label.c_str(), ImVec2(120.0f, 0.0f))) popupClicked = true;
+            } else if (port.integer) {
+                // A whole-number slider (easier to drag than a fine float slider); the value
+                // is still stored as a float.
+                int iv = (int)std::lround(std::get<float>(v));
+                if (ImGui::SliderInt("##i", &iv, (int)port.minVal, (int)port.maxVal))
+                    std::get<float>(v) = (float)iv;
             } else {
                 ImGui::SliderFloat("##f", &std::get<float>(v), port.minVal, port.maxVal);
             }

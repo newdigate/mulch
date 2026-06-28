@@ -138,3 +138,15 @@ TEST_CASE("MidiFilePlayerNode loads a file and emits notes synced to the transpo
     CHECK(ons == 1);
     CHECK(firstNote == 60);
 }
+
+TEST_CASE("MidiFilePlayerNode loop length is a whole-number bars control") {
+    MidiFilePlayerNode node;
+    REQUIRE(node.inputs().size() > 3);
+    const Port& p = node.inputs()[3];
+    CHECK(p.name == "loop length");
+    CHECK(p.type == PortType::Float);
+    CHECK(p.integer == true);                              // renders as a SliderInt
+    CHECK(p.minVal == doctest::Approx(1.0f));
+    CHECK(p.maxVal == doctest::Approx(64.0f));
+    CHECK(std::get<float>(p.defaultValue) == doctest::Approx(4.0f));
+}
