@@ -1,5 +1,6 @@
 #pragma once
 #include <functional>
+#include <map>
 #include <memory>
 #include <string>
 #include <vector>
@@ -25,6 +26,7 @@ struct ProjectDoc {
     std::vector<Connection> connections;
     std::vector<DocAuto>    autos;
     std::vector<Asset>      assets;
+    std::map<std::string, glm::vec4> tagColors;
 };
 
 std::string serializeProject(const ProjectDoc& d);

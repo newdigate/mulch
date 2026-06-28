@@ -1,6 +1,8 @@
 #pragma once
+#include <map>
 #include <string>
 #include <vector>
+#include <glm/vec4.hpp>
 
 namespace oss {
 
@@ -13,6 +15,7 @@ struct Asset {
     AssetType   type = AssetType::Audio;
     std::string label;                  // human name (editable; may be empty / duplicated)
     std::string path;                   // file path (editable; may be empty / duplicated)
+    std::vector<std::string> tags;      // tag names on this asset (insertion order)
 };
 
 // A per-project media library: media files grouped by type, each with a stable unique id
@@ -39,9 +42,24 @@ public:
     void clear();                                                    // empty; nextId_ -> 1
     void load(std::vector<Asset> assets);                            // adopt; nextId_ = max(id)+1
 
+    // --- tags ---
+    void addTag(int id, const std::string& tag);     // append if absent; register a default color
+                                                     // if the tag is new. No-op on bad id / empty / dup.
+    void removeTag(int id, const std::string& tag);  // drop the tag from the asset; no-op if absent.
+
+    // Distinct tags used by assets of `type`, sorted ascending (drives the per-tab toolbar).
+    std::vector<std::string> tagsForType(AssetType type) const;
+
+    glm::vec4 tagColor(const std::string& tag) const;            // registered color, else default-from-name
+    void      setTagColor(const std::string& tag, glm::vec4 c);  // register/update
+
+    const std::map<std::string, glm::vec4>& tagColors() const { return tagColors_; }
+    void loadTagColors(std::map<std::string, glm::vec4> colors) { tagColors_ = std::move(colors); }
+
 private:
     std::vector<Asset> assets_;
     int nextId_ = 1;                                                 // monotonic; never reused
+    std::map<std::string, glm::vec4> tagColors_;   // tag name -> color
 };
 
 } // namespace oss

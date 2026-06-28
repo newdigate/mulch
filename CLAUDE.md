@@ -216,6 +216,11 @@ CMake 4.x, it's relaxed with `CMAKE_POLICY_VERSION_MINIMUM 3.5` around its
   no live binding — no node/eval/`.oss` change). The five media inputs use it: Audio Player,
   Video Player, Mesh Loader, MIDI File, and the Drum Machine's four voices. The
   library + codec are unit-tested in `core_tests`; the panel/dialog are app-only (no headless test).
+  Each `Asset` also carries `tags`; the library holds a `tagColors_` registry (tag → `glm::vec4`,
+  default hue from the tag-name hash via `core/ColorHsv.h`). `ui/AssetsPanel` renders a Tags column
+  of colored chips + a per-tab tag-filter toolbar (`tagsForType`; left-click toggles an OR filter,
+  right-click recolors). Tags + colors persist via `ProjectFile` (`atag` per asset, `tagcolor` for
+  the registry); the filter selection is transient panel state.
 - **Preferences** — app-global settings live in the GL-free `core/Preferences` (audio
   output/input device ids + enabled-MIDI-port name sets), persisted to `preferences.oss`
   (separate from projects) and flowed to nodes via `EvalContext::prefs` (like `Transport`,

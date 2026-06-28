@@ -137,6 +137,9 @@ carries a hidden, stable id plus a label, and the whole library is saved and loa
 Nodes that load media — **Audio Player**, **Video Player**, **Mesh Loader**, **MIDI File**, and the
 **Drum Machine**'s voices — show a **▾** next to their `file` field that picks a path from the
 matching Assets tab (it copies the asset's path in; you can still type a path directly).
+A **Tags** column tags each file (colored chips + an add box); each tab's tag bar filters the grid
+(click tags — match any; none = show all) and right-clicking a tag recolors it. Tags and their
+colors are saved with the project.
 
 ## Test
 
