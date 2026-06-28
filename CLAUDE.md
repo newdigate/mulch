@@ -191,7 +191,10 @@ CMake 4.x, it's relaxed with `CMAKE_POLICY_VERSION_MINIMUM 3.5` around its
   non-port state (only the Automation node uses it, for its curves); the curve text codec is
   `encode/decodeCurve` in `core/AutoCurve.h`. `Graph::clear()` empties the graph but keeps
   `nextId_` monotonic (the editor's placement cache assumes ids are never reused). The toolbar
-  (`src/ui/TransportBar.cpp`) drives it via `Application::saveProjectToFile`/`loadProjectFromFile`.
+  (`src/ui/TransportBar.cpp`) drives it through native NFD file dialogs (`ui/FileDialog`
+  `openFileDialog`/`saveFileDialog`): **Load**/**Save As** prompt, **Save** writes
+  `Application::currentPath_` (or prompts when untitled). Path basename + `.oss`-extension handling
+  live in the GL-free `core/PathUtil.h`.
 - **Assets / media library** — the GL-free `core/AssetLibrary` is a per-project media
   library: each `Asset` is a stable, unique, never-reused `id` + an `AssetType`
   (Audio/Video/Midi/Mesh, the four tabs) + an editable `label` and file `path`. It is owned

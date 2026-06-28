@@ -64,13 +64,11 @@ void drawTransportBar(Transport& t, ProjectBarIO* io) {
 
     if (io) {
         ImGui::Separator();
-        ImGui::SetNextItemWidth(160.0f);
-        if (io->filename) ImGui::InputText("##projfile", io->filename, io->filenameLen);
-        if (ImGui::Button("Save") && io->onSave) io->onSave();
-        ImGui::SameLine();
-        if (ImGui::Button("Load") && io->onLoad) io->onLoad();
-        // (Preferences/Assets toggles moved to the left-anchored "View" menu above.)
-        if (!io->status.empty()) { ImGui::SameLine(); ImGui::TextUnformatted(io->status.c_str()); }
+        if (ImGui::Button("Save")    && io->onSave)   io->onSave();
+        if (ImGui::Button("Save As") && io->onSaveAs) io->onSaveAs();
+        if (ImGui::Button("Load")    && io->onLoad)   io->onLoad();
+        // (Preferences/Assets toggles live in the left-anchored "View" menu above.)
+        if (!io->status.empty()) ImGui::TextUnformatted(io->status.c_str());
     }
 
     ImGui::EndMainMenuBar();

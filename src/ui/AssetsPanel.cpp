@@ -51,7 +51,7 @@ void drawTab(AssetLibrary& lib, AssetType type, const char* noun,
             if (ImGui::InputText("##path", pth, sizeof(pth))) lib.setPath(id, pth);
             ImGui::SameLine();
             if (ImGui::Button("...")) {
-                std::string picked = openFileDialog(noun, filters);
+                std::string picked = openFileDialog(noun, "Media", filters);
                 if (!picked.empty()) {
                     lib.setPath(id, picked);
                     const Asset* cur = lib.find(id);

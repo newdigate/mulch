@@ -99,8 +99,10 @@ graph is evaluated once per frame in topological order.
 
 ### Save / Load
 
-The toolbar's **Save** / **Load** buttons (with the filename field, default `project.oss`)
-write and read a project file: every node (type, canvas position, and control values),
+The toolbar's **Save** / **Save As** / **Load** buttons use native OS file dialogs. **Load** and
+**Save As** open a file picker (filtered to `.oss`); **Save** writes the current file, or prompts
+like **Save As** when the project is still untitled. A saved/loaded project file holds every node
+(type, canvas position, and control values),
 all connections, the transport (tempo + loop), and the automation (the Automation node's
 curves and the right-click parameter-automation channels). Playback position is not saved —
 a loaded project opens paused at the start. The `.oss` format is plain line-based text.
