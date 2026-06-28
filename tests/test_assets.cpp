@@ -114,19 +114,13 @@ TEST_CASE("ProjectFile without asset lines loads an empty asset list") {
 }
 
 TEST_CASE("captureProject / restoreProject carry assets through a Graph") {
+    // Reference model: captureProject no longer embeds assets (they travel via the .osslib).
     Graph g;
     g.assets().add(AssetType::Audio, "kick", "k.wav");
     g.assets().add(AssetType::Video, "clip", "c.mp4");
     ProjectDoc d = captureProject(g);
-    REQUIRE(d.assets.size() == 2);
-
-    Graph g2;
-    auto factory = [](const std::string&) -> std::unique_ptr<Node> { return nullptr; };
-    auto init    = [](Node&) {};
-    restoreProject(d, g2, factory, init);
-    REQUIRE(g2.assets().all().size() == 2);
-    CHECK(g2.assets().byType(AssetType::Audio).size() == 1);
-    CHECK(g2.assets().byType(AssetType::Video).size() == 1);
+    CHECK(d.assets.empty());
+    CHECK(d.tagColors.empty());
 }
 
 namespace {
@@ -263,17 +257,12 @@ TEST_CASE("ProjectFile without tag lines loads empty tags + colors") {
 }
 
 TEST_CASE("captureProject / restoreProject carry tags + colors through a Graph") {
+    // Reference model: captureProject no longer embeds assets or tag colors (they travel via the .osslib).
     Graph g;
     int a = g.assets().add(AssetType::Audio, "kick", "k.wav");
     g.assets().addTag(a, "drums");
     g.assets().setTagColor("drums", glm::vec4(0.3f, 0.3f, 0.3f, 1.0f));
     ProjectDoc d = captureProject(g);
-
-    Graph g2;
-    auto factory = [](const std::string&) -> std::unique_ptr<Node> { return nullptr; };
-    auto init    = [](Node&) {};
-    restoreProject(d, g2, factory, init);
-    REQUIRE(g2.assets().all().size() == 1);
-    CHECK(g2.assets().all()[0].tags == std::vector<std::string>{"drums"});
-    CHECK(g2.assets().tagColor("drums").x == doctest::Approx(0.3f));
+    CHECK(d.assets.empty());
+    CHECK(d.tagColors.empty());
 }

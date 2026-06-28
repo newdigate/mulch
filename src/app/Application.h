@@ -38,7 +38,8 @@ private:
     Graph graph_;
     NodeEditorPanel editor_;
     AutomationPanel automation_;
-    std::string currentPath_;   // path of the loaded/saved project; empty = untitled
+    std::string currentPath_;          // path of the loaded/saved project; empty = untitled
+    std::string currentLibraryPath_;   // bound .osslib (empty = unbound)
     std::string projectStatus_;
     Preferences      prefs_;
     PreferencesPanel preferences_;
@@ -50,6 +51,12 @@ private:
     void saveProjectAs();         // prompt for a destination, save, remember it
     void saveCurrentOrPrompt();   // Save: write currentPath_, or Save As when untitled
     void loadProjectDialog();     // prompt for a file, load, remember it
+
+    void openLibraryDialog();     // prompt, load a .osslib, bind it
+    void saveLibraryAs();         // prompt, write, bind
+    bool saveLibraryOrPrompt();   // write currentLibraryPath_, or Save-As when unbound; false if cancelled
+    bool saveLibraryToFile(const std::string& path);
+    bool loadLibraryFromFile(const std::string& path);
 };
 
 // Factory used by the app and the add-node menu.

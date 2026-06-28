@@ -150,6 +150,14 @@ TEST_CASE("ProjectDoc serializes + parses an assetlib reference") {
     CHECK(out.assetLibraryPath == "/Users/me/My Lib/sounds.osslib");
 }
 
+TEST_CASE("captureProject no longer embeds assets (reference model)") {
+    Graph g;
+    g.assets().add(AssetType::Audio, "Kick", "/m/kick.wav");
+    ProjectDoc d = captureProject(g);
+    CHECK(d.assets.empty());
+    CHECK(d.tagColors.empty());
+}
+
 TEST_CASE("parseProject still reads legacy embedded assets") {
     const char* legacy =
         "oss-project 1\n"

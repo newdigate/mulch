@@ -127,8 +127,6 @@ ProjectDoc captureProject(const Graph& g) {
     for (const Connection& c : g.connections()) d.connections.push_back(c);
     for (const UiAutomationChannel& ch : g.automation().channels())
         d.autos.push_back({ch.nodeId, ch.port, ch.outMin, ch.outMax, ch.curve});
-    d.assets = g.assets().all();
-    d.tagColors = g.assets().tagColors();
     return d;
 }
 
