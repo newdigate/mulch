@@ -38,6 +38,8 @@ std::string serializePreferences(const Preferences& p) {
     out += "sync-in "  + std::to_string(p.syncInMode)  + " " + p.syncInSource + "\n";
     out += "sync-out " + std::to_string(p.syncOutMode) + " " + p.syncOutDest  + "\n";
     out += "sync-rate " + std::to_string(p.syncFrameRate) + "\n";
+    if (!p.projectsDir.empty())     out += "projectsdir " + p.projectsDir + "\n";
+    if (!p.assetLibraryDir.empty()) out += "assetlibdir " + p.assetLibraryDir + "\n";
     return out;
 }
 
@@ -83,6 +85,8 @@ bool parsePreferences(const std::string& text, Preferences& out) {
             std::istringstream rs(rest); int fr = 3; rs >> fr;
             out.syncFrameRate = (fr < 0 || fr > 3) ? 0 : fr;
         }
+        else if (kw == "projectsdir") out.projectsDir     = rest;
+        else if (kw == "assetlibdir") out.assetLibraryDir = rest;
     }
     return true;
 }

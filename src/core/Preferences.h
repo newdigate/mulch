@@ -19,6 +19,8 @@ struct Preferences {
     int         syncOutMode = 0;   // 0 = Off, 1 = Beat Clock, 2 = MTC
     std::string syncOutDest;       // MIDI output port name
     int         syncFrameRate = 3; // MTC send rate: 0=24 1=25 2=29.97df 3=30 (receive auto-detects)
+    std::string projectsDir;       // default dir for project Open/Save dialogs ("" = OS default)
+    std::string assetLibraryDir;   // default dir for asset-library + media dialogs ("" = OS default)
 
     bool midiInputEnabled(const std::string& name) const;
     void setMidiInputEnabled(const std::string& name, bool on);   // idempotent add/remove

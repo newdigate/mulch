@@ -120,3 +120,20 @@ TEST_CASE("audio buffer ms round-trips and clamps") {
     REQUIRE(parsePreferences("oss-prefs 1\n", e));
     CHECK(e.audioBufferMs == 150);         // default when the line is absent
 }
+
+TEST_CASE("Preferences round-trips the projects + asset-library dirs") {
+    Preferences p;
+    p.projectsDir     = "/Users/me/My Projects";       // spaces survive (rest-of-line)
+    p.assetLibraryDir = "/Volumes/media/libs";
+    Preferences q;
+    REQUIRE(parsePreferences(serializePreferences(p), q));
+    CHECK(q.projectsDir     == "/Users/me/My Projects");
+    CHECK(q.assetLibraryDir == "/Volumes/media/libs");
+}
+
+TEST_CASE("Preferences without the new dir lines parse to empty") {
+    Preferences q;
+    REQUIRE(parsePreferences("oss-prefs 1\naudio-buffer 200\n", q));
+    CHECK(q.projectsDir.empty());
+    CHECK(q.assetLibraryDir.empty());
+}
