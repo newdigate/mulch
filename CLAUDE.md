@@ -230,6 +230,17 @@ CMake 4.x, it's relaxed with `CMAKE_POLICY_VERSION_MINIMUM 3.5` around its
   Path/Tags/✕ columns stay editable, and adding/removing a tag on a selected file still broadcasts to the
   whole selection. `buildAssetTree` is unit-tested in `core_tests`; `selected_`/`anchor_`/`renamingId_`
   are transient panel state.
+  The library is also a **standalone, project-referenced document**: `core/AssetLibraryFile.h`
+  (`serializeLibrary`/`parseLibrary`, header `oss-assetlib 1`) writes/reads a `.osslib` reusing the
+  shared `appendAssetBlock`/`parseAssetBlockLine` asset-block codec (factored out of `ProjectFile`,
+  with `escape`/`unescape`/`restOfLine` now in `core/TextCodec.h`). A project stores only an
+  `assetlib <path>` reference (`captureProject` no longer embeds assets); loading a project loads the
+  referenced library, or warns and leaves it unbound when the file is missing (legacy projects with
+  embedded asset lines still parse). The **Asset Library** toolbar menu does Open / Save / Save As
+  (the Application owns the external file I/O + a `currentLibraryPath_`; saving a project also saves
+  the bound library, and prompts a library Save-As when the library is unbound and non-empty) and
+  **Remap Directory** (`AssetLibrary::remapPathPrefix` swaps a base-path prefix across all assets, the
+  modal pre-filling From with `core/PathPrefix.h` `commonDirPrefix`).
 - **Preferences** — app-global settings live in the GL-free `core/Preferences` (audio
   output/input device ids + enabled-MIDI-port name sets), persisted to `preferences.oss`
   (separate from projects) and flowed to nodes via `EvalContext::prefs` (like `Transport`,
@@ -242,6 +253,9 @@ CMake 4.x, it's relaxed with `CMAKE_POLICY_VERSION_MINIMUM 3.5` around its
   It also carries the streaming-texture resolution (`textureWidth/Height`): `ShaderNode`,
   `WireframeNode`, and `ShadedRenderNode` recreate their FBO when it changes (fallback
   `kCanvasW×kCanvasH` when `prefs` is null), and `gfx/Framebuffer::create` is re-creation-safe.
+  Two location prefs (`projectsDir`, `assetLibraryDir`) seed the file dialogs (project dialogs default
+  to the former; library + per-asset media + remap dialogs to the latter) via a new `defaultPath` arg
+  on `ui/FileDialog` (+ a `pickFolderDialog`); set in the Preferences **Locations** tab.
 - **MIDI sync** — the GL-free `core/MidiClock` holds the Beat Clock protocol math (a
   `BeatClockReader` deriving tempo/position/play from timestamped 24-PPQN ticks + Start/Stop/
   Continue + Song Position, plus SPP/message helpers; unit-tested). The app-level
