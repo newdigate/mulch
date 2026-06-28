@@ -208,6 +208,7 @@ set(APP_SOURCES
   src/core/MidiClock.cpp
   src/core/MidiTimecode.cpp
   src/core/ProjectFile.cpp
+  src/core/AssetLibraryFile.cpp
   src/core/AssetLibrary.cpp
   src/core/MidiFile.cpp
   src/core/Oscilloscope.cpp
@@ -307,6 +308,7 @@ add_executable(core_tests
   tests/test_assets.cpp
   tests/test_path_util.cpp
   tests/test_asset_tree.cpp
+  tests/test_asset_library_file.cpp
   src/core/Node.cpp
   src/core/Graph.cpp
   src/core/AutomationStore.cpp
@@ -314,6 +316,7 @@ add_executable(core_tests
   src/core/MidiClock.cpp
   src/core/MidiTimecode.cpp
   src/core/ProjectFile.cpp
+  src/core/AssetLibraryFile.cpp
   src/core/AssetLibrary.cpp
   src/core/MidiFile.cpp
   src/core/Oscilloscope.cpp
@@ -335,6 +338,7 @@ add_executable(gl_smoke
   src/core/Graph.cpp
   src/core/AutomationStore.cpp
   src/core/ProjectFile.cpp
+  src/core/AssetLibraryFile.cpp
   src/core/AssetLibrary.cpp
   src/core/MidiFile.cpp
   src/core/PitchGraph.cpp

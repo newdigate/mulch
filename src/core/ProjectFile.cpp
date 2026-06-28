@@ -4,32 +4,14 @@
 #include "core/Node.h"
 #include "core/AutomationStore.h"
 #include "core/AssetLibrary.h"
+#include "core/TextCodec.h"
+#include "core/AssetLibraryFile.h"
 #include <unordered_map>
 
 namespace oss {
 
 namespace {
 
-std::string escape(const std::string& s) {
-    std::string o;
-    for (char ch : s) { if (ch == '\\') o += "\\\\"; else if (ch == '\n') o += "\\n"; else o += ch; }
-    return o;
-}
-std::string unescape(const std::string& s) {
-    std::string o;
-    for (std::size_t i = 0; i < s.size(); ++i) {
-        if (s[i] == '\\' && i + 1 < s.size()) {
-            char n = s[i + 1];
-            if (n == 'n') { o += '\n'; ++i; }
-            else if (n == '\\') { o += '\\'; ++i; }
-            else o += s[i];
-        } else o += s[i];
-    }
-    return o;
-}
-std::string restOfLine(std::istringstream& ls) {
-    std::string rest; std::getline(ls >> std::ws, rest); return rest;
-}
 void writeInput(std::string& out, int port, const Value& v) {
     const std::string p = std::to_string(port);
     switch (typeOf(v)) {
@@ -62,17 +44,7 @@ std::string serializeProject(const ProjectDoc& d) {
     for (const DocAuto& a : d.autos)
         out += "auto " + std::to_string(a.nodeId) + " " + std::to_string(a.port) + " "
              + std::to_string(a.outMin) + " " + std::to_string(a.outMax) + " " + encodeCurve(a.curve) + "\n";
-    for (const Asset& a : d.assets) {
-        out += "asset " + std::to_string(a.id) + " " + std::to_string((int)a.type) + "\n";
-        if (!a.label.empty()) out += "alabel " + escape(a.label) + "\n";
-        if (!a.path.empty())  out += "apath "  + escape(a.path)  + "\n";
-        for (const std::string& t : a.tags) out += "atag " + escape(t) + "\n";
-    }
-    for (const auto& kv : d.tagColors) {
-        const glm::vec4& c = kv.second;
-        out += "tagcolor " + std::to_string(c.x) + " " + std::to_string(c.y) + " "
-             + std::to_string(c.z) + " " + std::to_string(c.w) + " " + escape(kv.first) + "\n";
-    }
+    appendAssetBlock(out, d.assets, d.tagColors);
     return out;
 }
 
@@ -87,6 +59,7 @@ bool parseProject(const std::string& text, ProjectDoc& out) {
         if (line.empty()) continue;
         std::istringstream ls(line);
         std::string kw; ls >> kw;
+        if (parseAssetBlockLine(kw, ls, out.assets, out.tagColors, curAsset)) continue;
         if (kw == "transport") {
             int looping = 0;
             ls >> out.bpm >> out.beatsPerBar >> looping >> out.loopStartBar >> out.loopEndBar >> out.lengthBars;
@@ -126,23 +99,6 @@ bool parseProject(const std::string& text, ProjectDoc& out) {
             DocAuto a{}; ls >> a.nodeId >> a.port >> a.outMin >> a.outMax; if (ls.fail()) return false;
             a.curve = decodeCurve(restOfLine(ls));
             out.autos.push_back(a);
-        } else if (kw == "asset") {
-            int id, typeInt; ls >> id >> typeInt;
-            if (ls.fail()) continue;                       // skip malformed; not fatal
-            if (typeInt < 0) typeInt = 0;
-            if (typeInt >= kAssetTypeCount) typeInt = kAssetTypeCount - 1;
-            out.assets.push_back(Asset{id, (AssetType)typeInt, "", ""});
-            curAsset = &out.assets.back();
-        } else if (kw == "alabel") {
-            if (curAsset) curAsset->label = unescape(restOfLine(ls));
-        } else if (kw == "apath") {
-            if (curAsset) curAsset->path = unescape(restOfLine(ls));
-        } else if (kw == "atag") {
-            if (curAsset) curAsset->tags.push_back(unescape(restOfLine(ls)));
-        } else if (kw == "tagcolor") {
-            float r, g, b, a; ls >> r >> g >> b >> a;
-            if (ls.fail()) continue;                       // skip malformed; not fatal
-            out.tagColors[unescape(restOfLine(ls))] = glm::vec4(r, g, b, a);
         }
         // unknown keyword -> ignored (forward compatible)
     }
