@@ -2,6 +2,7 @@
 #include "ui/FileDialog.h"
 #include "core/AssetLibrary.h"
 #include "core/AssetTree.h"
+#include "core/PathPrefix.h"
 #include "core/PathUtil.h"
 #include <imgui.h>
 #include <cfloat>
@@ -119,7 +120,7 @@ void AssetsPanel::drawTab(AssetLibrary& lib, AssetType type, const char* noun,
     if (ImGui::Button(addLabel.c_str())) lib.add(type, "", "");
     ImGui::SameLine();
     if (ImGui::Button("Add files...")) {
-        for (const std::string& path : openMultipleFileDialog(noun, "Media", filters))
+        for (const std::string& path : openMultipleFileDialog(noun, "Media", filters, mediaDir_))
             lib.add(type, baseLabel(path), path);
     }
     if (toRemove >= 0) {
@@ -213,7 +214,7 @@ void AssetsPanel::drawAssetLeaf(AssetLibrary& lib, const Asset* a, std::set<int>
     if (ImGui::InputText("##path", pth, sizeof(pth))) lib.setPath(id, pth);
     ImGui::SameLine();
     if (ImGui::Button("...")) {
-        std::string picked = openFileDialog(noun, "Media", filters);
+        std::string picked = openFileDialog(noun, "Media", filters, mediaDir_);
         if (!picked.empty()) {
             lib.setPath(id, picked);
             const Asset* cur = lib.find(id);
@@ -258,7 +259,50 @@ void AssetsPanel::drawAssetLeaf(AssetLibrary& lib, const Asset* a, std::set<int>
     ImGui::PopID();
 }
 
-void AssetsPanel::draw(AssetLibrary& lib, bool* open) {
+void AssetsPanel::drawRemapModal(AssetLibrary& lib) {
+    if (showRemap_) { ImGui::OpenPopup("Remap Directory"); showRemap_ = false; }
+    if (ImGui::BeginPopupModal("Remap Directory", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+        if (!remapPrimed_) {                              // pre-fill From with the common dir prefix
+            std::vector<std::string> paths;
+            for (const Asset& a : lib.all()) if (!a.path.empty()) paths.push_back(a.path);
+            std::string common = commonDirPrefix(paths);
+            std::snprintf(remapFrom_, sizeof(remapFrom_), "%s", common.c_str());
+            remapTo_[0] = '\0';
+            remapResult_.clear();
+            remapPrimed_ = true;
+        }
+        ImGui::TextUnformatted("Replace a base directory across every asset path.");
+        ImGui::SetNextItemWidth(420.0f);
+        ImGui::InputText("##from", remapFrom_, sizeof(remapFrom_));
+        ImGui::SameLine();
+        if (ImGui::Button("Browse##from")) {
+            std::string p = pickFolderDialog("Remap from", mediaDir_.empty() ? std::string(remapFrom_) : mediaDir_);
+            if (!p.empty()) std::snprintf(remapFrom_, sizeof(remapFrom_), "%s", p.c_str());
+        }
+        ImGui::TextUnformatted("From (old base)");
+        ImGui::SetNextItemWidth(420.0f);
+        ImGui::InputText("##to", remapTo_, sizeof(remapTo_));
+        ImGui::SameLine();
+        if (ImGui::Button("Browse##to")) {
+            std::string p = pickFolderDialog("Remap to", mediaDir_);
+            if (!p.empty()) std::snprintf(remapTo_, sizeof(remapTo_), "%s", p.c_str());
+        }
+        ImGui::TextUnformatted("To (new base)");
+        if (!remapResult_.empty()) { ImGui::Separator(); ImGui::TextUnformatted(remapResult_.c_str()); }
+        ImGui::Separator();
+        if (ImGui::Button("Apply")) {
+            int n = lib.remapPathPrefix(remapFrom_, remapTo_);
+            remapResult_ = "remapped " + std::to_string(n) + " asset" + (n == 1 ? "" : "s");
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Close")) { remapPrimed_ = false; ImGui::CloseCurrentPopup(); }
+        ImGui::EndPopup();
+    }
+}
+
+void AssetsPanel::draw(AssetLibrary& lib, bool* open, const std::string& mediaDir) {
+    mediaDir_ = mediaDir;
+    drawRemapModal(lib);            // render before the open-guard so the menu's Remap works when the window is closed
     if (!open || !*open) return;
     if (!ImGui::Begin("Assets", open)) { ImGui::End(); return; }
 

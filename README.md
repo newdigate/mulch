@@ -145,6 +145,12 @@ Files are shown in a **collapsible folder tree** grouped by their path — expan
 **Shift**-click a range; then typing a tag in any selected row (or removing one) applies it to every
 selected row.
 
+The asset library is a separate file you manage from the **Asset Library** menu: **Open Asset
+Library**, **Save** / **Save As** a portable `.osslib`, and **Remap Directory** to swap a base folder
+across every asset path (handy when a library was built on another machine). A project stores a
+*reference* to its library and loads it on open. Set a default **Projects** folder and **Asset
+library** folder under Preferences → Locations to make the file dialogs open where you keep things.
+
 ## Test
 
 ```bash

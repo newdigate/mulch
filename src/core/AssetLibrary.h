@@ -34,6 +34,10 @@ public:
     void setLabel(int id, std::string label);                        // no-op if id is absent
     void setPath(int id, std::string path);                          // no-op if id is absent
 
+    // Replace the leading `from` of every asset path that starts with it with `to`. Exact, case-
+    // sensitive prefix match across all assets; returns the number changed. No-op if `from` is empty.
+    int remapPathPrefix(const std::string& from, const std::string& to);
+
     // All assets of one type in insertion order (drives a tab now, Phase-2 dropdowns later).
     // Same pointer-lifetime caveat as find() -- valid only until the next add/remove/load/clear.
     std::vector<const Asset*> byType(AssetType type) const;

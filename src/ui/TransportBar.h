@@ -12,6 +12,10 @@ struct ProjectBarIO {
     std::function<void()> onSave;       // write the current file (or prompt if untitled)
     std::function<void()> onSaveAs;     // always prompt for a destination
     std::function<void()> onLoad;       // prompt for a file to open
+    std::function<void()> onLibOpen;    // Asset Library > Open
+    std::function<void()> onLibSave;    // Asset Library > Save
+    std::function<void()> onLibSaveAs;  // Asset Library > Save As
+    std::function<void()> onLibRemap;   // Asset Library > Remap Directory
     std::string status;                 // shown after the buttons
     bool*       showPreferences = nullptr;   // toggled by the View > Preferences item (if non-null)
     bool*       showAssets      = nullptr;   // toggled by the View > Assets item (if non-null)

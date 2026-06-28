@@ -39,6 +39,7 @@
 #include "ui/FileDialog.h"
 #include "core/ProjectFile.h"
 #include "core/PathUtil.h"
+#include "core/AssetLibraryFile.h"
 #include <fstream>
 #include <sstream>
 
@@ -118,10 +119,56 @@ int Application::addNodeOfType(const std::string& type, glm::vec2 pos) {
 }
 
 bool Application::saveProjectToFile(const std::string& path) {
+    ProjectDoc d = captureProject(graph_);
+    d.assetLibraryPath = currentLibraryPath_;
     std::ofstream f(path);
     if (!f) return false;
-    f << saveProject(graph_);
+    f << serializeProject(d);
+    if (!f) return false;
+    if (!currentLibraryPath_.empty()) saveLibraryToFile(currentLibraryPath_);   // keep the bound library in sync
+    return true;
+}
+
+bool Application::saveLibraryToFile(const std::string& path) {
+    std::ofstream f(path);
+    if (!f) return false;
+    f << serializeLibrary(graph_.assets());
     return (bool)f;
+}
+
+bool Application::loadLibraryFromFile(const std::string& path) {
+    std::ifstream f(path);
+    if (!f) return false;
+    std::stringstream ss; ss << f.rdbuf();
+    return parseLibrary(ss.str(), graph_.assets());
+}
+
+void Application::saveLibraryAs() {
+    std::string defName = currentLibraryPath_.empty() ? std::string("library.osslib")
+                                                      : fileBaseName(currentLibraryPath_);
+    std::string path = saveFileDialog("Save Asset Library", "Asset Library", {"osslib"},
+                                      defName, prefs_.assetLibraryDir);
+    if (path.empty()) return;
+    path = ensureExtension(path, "osslib");
+    if (saveLibraryToFile(path)) { currentLibraryPath_ = path; projectStatus_ = "library saved " + fileBaseName(path); }
+    else                          projectStatus_ = "library save failed";
+}
+
+bool Application::saveLibraryOrPrompt() {
+    if (currentLibraryPath_.empty()) {
+        saveLibraryAs();
+        return !currentLibraryPath_.empty();           // false if the user cancelled the prompt
+    }
+    if (saveLibraryToFile(currentLibraryPath_)) { projectStatus_ = "library saved " + fileBaseName(currentLibraryPath_); return true; }
+    projectStatus_ = "library save failed";
+    return false;
+}
+
+void Application::openLibraryDialog() {
+    std::string path = openFileDialog("Open Asset Library", "Asset Library", {"osslib"}, prefs_.assetLibraryDir);
+    if (path.empty()) return;
+    if (loadLibraryFromFile(path)) { currentLibraryPath_ = path; projectStatus_ = "library opened " + fileBaseName(path); }
+    else                            projectStatus_ = "library open failed";
 }
 
 void Application::loadPreferences() {
@@ -140,9 +187,19 @@ bool Application::loadProjectFromFile(const std::string& path) {
     std::ifstream f(path);
     if (!f) return false;
     std::stringstream ss; ss << f.rdbuf();
-    return loadProject(ss.str(), graph_,
-                       [](const std::string& t){ return makeNode(t); },
-                       [](Node& n){ n.initGL(); });
+    ProjectDoc d;
+    if (!parseProject(ss.str(), d)) return false;
+    restoreProject(d, graph_,
+                   [](const std::string& t){ return makeNode(t); },
+                   [](Node& n){ n.initGL(); });      // loads legacy embedded assets if present
+    if (!d.assetLibraryPath.empty() && loadLibraryFromFile(d.assetLibraryPath)) {
+        currentLibraryPath_ = d.assetLibraryPath;
+    } else {
+        if (!d.assetLibraryPath.empty())
+            projectStatus_ = "library not found: " + fileBaseName(d.assetLibraryPath);
+        currentLibraryPath_ = "";                    // unbound (missing reference, or legacy/none)
+    }
+    return true;
 }
 
 void Application::frame(float dt) {
@@ -150,6 +207,10 @@ void Application::frame(float dt) {
     io.onSave   = [this]{ saveCurrentOrPrompt(); };
     io.onSaveAs = [this]{ saveProjectAs(); };
     io.onLoad   = [this]{ loadProjectDialog(); };
+    io.onLibOpen   = [this]{ openLibraryDialog(); };
+    io.onLibSave   = [this]{ saveLibraryOrPrompt(); };
+    io.onLibSaveAs = [this]{ saveLibraryAs(); };
+    io.onLibRemap = [this]{ assets_.openRemap(); };
     io.status = projectStatus_;
     io.showPreferences = &showPreferences_;
     io.showAssets = &showAssets_;
@@ -157,7 +218,7 @@ void Application::frame(float dt) {
     editor_.draw(graph_, [this](const std::string& t, glm::vec2 p){ return addNodeOfType(t, p); });
     automation_.draw(graph_);                // automation timeline window
     preferences_.draw(prefs_, [this]{ savePreferences(); }, &showPreferences_);
-    assets_.draw(graph_.assets(), &showAssets_);
+    assets_.draw(graph_.assets(), &showAssets_, prefs_.assetLibraryDir);
     syncEngine_.update(graph_.transport(), prefs_, dt);   // MIDI clock sync in/out
     graph_.evaluate(dt);                     // advances the transport by dt
 }
@@ -170,9 +231,13 @@ TexRef Application::outputTexture() const {
 }
 
 void Application::saveProjectAs() {
+    // A non-empty but unsaved library must become a file first, so the project can reference it.
+    if (!graph_.assets().all().empty() && currentLibraryPath_.empty()) {
+        if (!saveLibraryOrPrompt()) return;          // user cancelled the library Save-As -> abort
+    }
     std::string defName = currentPath_.empty() ? std::string("project.oss")
                                                : fileBaseName(currentPath_);
-    std::string path = saveFileDialog("Save Project", "Project", {"oss"}, defName);
+    std::string path = saveFileDialog("Save Project", "Project", {"oss"}, defName, prefs_.projectsDir);
     if (path.empty()) return;                       // cancelled
     path = ensureExtension(path, "oss");
     if (saveProjectToFile(path)) { currentPath_ = path; projectStatus_ = "saved " + fileBaseName(path); }
@@ -180,13 +245,17 @@ void Application::saveProjectAs() {
 }
 
 void Application::saveCurrentOrPrompt() {
+    // A non-empty but unsaved library must become a file first, so the project can reference it.
+    if (!graph_.assets().all().empty() && currentLibraryPath_.empty()) {
+        if (!saveLibraryOrPrompt()) return;          // user cancelled the library Save-As -> abort
+    }
     if (currentPath_.empty()) { saveProjectAs(); return; }   // untitled -> prompt
     if (saveProjectToFile(currentPath_)) projectStatus_ = "saved " + fileBaseName(currentPath_);
     else                                 projectStatus_ = "save failed";
 }
 
 void Application::loadProjectDialog() {
-    std::string path = openFileDialog("Load Project", "Project", {"oss"});
+    std::string path = openFileDialog("Load Project", "Project", {"oss"}, prefs_.projectsDir);
     if (path.empty()) return;                       // cancelled
     if (loadProjectFromFile(path)) { currentPath_ = path; projectStatus_ = "loaded " + fileBaseName(path); }
     else                            projectStatus_ = "load failed";

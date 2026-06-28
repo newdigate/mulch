@@ -47,6 +47,18 @@ void AssetLibrary::clear() {
     tagColors_.clear();
 }
 
+int AssetLibrary::remapPathPrefix(const std::string& from, const std::string& to) {
+    if (from.empty()) return 0;
+    int changed = 0;
+    for (Asset& a : assets_) {
+        if (a.path.size() >= from.size() && a.path.compare(0, from.size(), from) == 0) {
+            a.path = to + a.path.substr(from.size());
+            ++changed;
+        }
+    }
+    return changed;
+}
+
 void AssetLibrary::load(std::vector<Asset> assets) {
     assets_ = std::move(assets);
     int maxId = 0;

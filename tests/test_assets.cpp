@@ -1,6 +1,7 @@
 #include <doctest/doctest.h>
 #include "core/AssetLibrary.h"
 #include "core/Graph.h"
+#include "core/PathPrefix.h"
 #include "core/ProjectFile.h"
 #include <glm/vec4.hpp>
 #include <memory>
@@ -114,19 +115,13 @@ TEST_CASE("ProjectFile without asset lines loads an empty asset list") {
 }
 
 TEST_CASE("captureProject / restoreProject carry assets through a Graph") {
+    // Reference model: captureProject no longer embeds assets (they travel via the .osslib).
     Graph g;
     g.assets().add(AssetType::Audio, "kick", "k.wav");
     g.assets().add(AssetType::Video, "clip", "c.mp4");
     ProjectDoc d = captureProject(g);
-    REQUIRE(d.assets.size() == 2);
-
-    Graph g2;
-    auto factory = [](const std::string&) -> std::unique_ptr<Node> { return nullptr; };
-    auto init    = [](Node&) {};
-    restoreProject(d, g2, factory, init);
-    REQUIRE(g2.assets().all().size() == 2);
-    CHECK(g2.assets().byType(AssetType::Audio).size() == 1);
-    CHECK(g2.assets().byType(AssetType::Video).size() == 1);
+    CHECK(d.assets.empty());
+    CHECK(d.tagColors.empty());
 }
 
 namespace {
@@ -263,17 +258,33 @@ TEST_CASE("ProjectFile without tag lines loads empty tags + colors") {
 }
 
 TEST_CASE("captureProject / restoreProject carry tags + colors through a Graph") {
+    // Reference model: captureProject no longer embeds assets or tag colors (they travel via the .osslib).
     Graph g;
     int a = g.assets().add(AssetType::Audio, "kick", "k.wav");
     g.assets().addTag(a, "drums");
     g.assets().setTagColor("drums", glm::vec4(0.3f, 0.3f, 0.3f, 1.0f));
     ProjectDoc d = captureProject(g);
+    CHECK(d.assets.empty());
+    CHECK(d.tagColors.empty());
+}
 
-    Graph g2;
-    auto factory = [](const std::string&) -> std::unique_ptr<Node> { return nullptr; };
-    auto init    = [](Node&) {};
-    restoreProject(d, g2, factory, init);
-    REQUIRE(g2.assets().all().size() == 1);
-    CHECK(g2.assets().all()[0].tags == std::vector<std::string>{"drums"});
-    CHECK(g2.assets().tagColor("drums").x == doctest::Approx(0.3f));
+TEST_CASE("remapPathPrefix swaps a base path across matching assets") {
+    AssetLibrary lib;
+    int a = lib.add(AssetType::Audio, "", "/old/base/drums/kick.wav");
+    int b = lib.add(AssetType::Audio, "", "/old/base/pad.wav");
+    int c = lib.add(AssetType::Audio, "", "/elsewhere/x.wav");      // no match
+    int n = lib.remapPathPrefix("/old/base", "/new/root");
+    CHECK(n == 2);
+    CHECK(lib.find(a)->path == "/new/root/drums/kick.wav");
+    CHECK(lib.find(b)->path == "/new/root/pad.wav");
+    CHECK(lib.find(c)->path == "/elsewhere/x.wav");                 // untouched
+    CHECK(lib.remapPathPrefix("", "/whatever") == 0);              // empty from = no-op
+}
+
+TEST_CASE("commonDirPrefix returns the longest shared directory") {
+    CHECK(commonDirPrefix({"/a/b/c/x.wav", "/a/b/d/y.wav"}) == "/a/b");
+    CHECK(commonDirPrefix({"/a/b/x.wav"}) == "/a/b");
+    CHECK(commonDirPrefix({"/a/x.wav", "/z/y.wav"}) == "");
+    CHECK(commonDirPrefix({}) == "");
+    CHECK(commonDirPrefix({"", "bare.wav"}) == "");                 // no directory part
 }
