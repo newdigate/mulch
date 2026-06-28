@@ -1,5 +1,6 @@
 #include "ui/PreferencesPanel.h"
 #include "core/Preferences.h"
+#include "ui/FileDialog.h"
 #include <imgui.h>
 #include <soundio/soundio.h>
 #include <RtMidi.h>
@@ -124,6 +125,25 @@ void PreferencesPanel::draw(Preferences& prefs, const std::function<void()>& onC
                 const char* rates[] = { "24", "25", "29.97 df", "30" };
                 if (ImGui::Combo("Frame rate", &prefs.syncFrameRate, rates, 4)) onChange();
             }
+            ImGui::EndTabItem();
+        }
+        if (ImGui::BeginTabItem("Locations")) {
+            auto folderRow = [&](const char* label, std::string& dir) {
+                ImGui::TextUnformatted(label);
+                ImGui::SameLine(160.0f);
+                ImGui::TextUnformatted(dir.empty() ? "(OS default)" : dir.c_str());
+                ImGui::SameLine();
+                ImGui::PushID(label);
+                if (ImGui::SmallButton("Browse...")) {
+                    std::string picked = pickFolderDialog(label, dir);
+                    if (!picked.empty()) { dir = picked; if (onChange) onChange(); }
+                }
+                ImGui::SameLine();
+                if (ImGui::SmallButton("Clear")) { dir.clear(); if (onChange) onChange(); }
+                ImGui::PopID();
+            };
+            folderRow("Projects folder",      prefs.projectsDir);
+            folderRow("Asset library folder", prefs.assetLibraryDir);
             ImGui::EndTabItem();
         }
         ImGui::EndTabBar();

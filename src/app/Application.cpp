@@ -172,7 +172,7 @@ TexRef Application::outputTexture() const {
 void Application::saveProjectAs() {
     std::string defName = currentPath_.empty() ? std::string("project.oss")
                                                : fileBaseName(currentPath_);
-    std::string path = saveFileDialog("Save Project", "Project", {"oss"}, defName);
+    std::string path = saveFileDialog("Save Project", "Project", {"oss"}, defName, prefs_.projectsDir);
     if (path.empty()) return;                       // cancelled
     path = ensureExtension(path, "oss");
     if (saveProjectToFile(path)) { currentPath_ = path; projectStatus_ = "saved " + fileBaseName(path); }
@@ -186,7 +186,7 @@ void Application::saveCurrentOrPrompt() {
 }
 
 void Application::loadProjectDialog() {
-    std::string path = openFileDialog("Load Project", "Project", {"oss"});
+    std::string path = openFileDialog("Load Project", "Project", {"oss"}, prefs_.projectsDir);
     if (path.empty()) return;                       // cancelled
     if (loadProjectFromFile(path)) { currentPath_ = path; projectStatus_ = "loaded " + fileBaseName(path); }
     else                            projectStatus_ = "load failed";
