@@ -21,19 +21,61 @@ std::string baseLabel(const std::string& path) {
     return name;
 }
 
-void drawTab(AssetLibrary& lib, AssetType type, const char* noun,
-             const std::vector<std::string>& filters) {
+// Push the 3 button-state colors tinted with `c` (alpha distinguishes selected/unselected).
+void pushTagColors(const glm::vec4& c, float baseAlpha) {
+    ImGui::PushStyleColor(ImGuiCol_Button,        ImVec4(c.x, c.y, c.z, baseAlpha));
+    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(c.x, c.y, c.z, 1.0f));
+    ImGui::PushStyleColor(ImGuiCol_ButtonActive,  ImVec4(c.x, c.y, c.z, 1.0f));
+}
+
+} // namespace
+
+void AssetsPanel::drawTab(AssetLibrary& lib, AssetType type, const char* noun,
+                          const std::vector<std::string>& filters) {
+    std::set<std::string>& filterSet = filter_[(int)type];
+
+    // --- Tag-filter toolbar: this tab's tags as colored toggle buttons (left-click filter,
+    //     right-click recolor). A selected tag is opaque; unselected is dimmed. ---
+    std::vector<std::string> tabTags = lib.tagsForType(type);
+    for (std::size_t i = 0; i < tabTags.size(); ++i) {
+        const std::string& tag = tabTags[i];
+        if (i) ImGui::SameLine();
+        ImGui::PushID(tag.c_str());
+        const bool selected = filterSet.count(tag) > 0;
+        pushTagColors(lib.tagColor(tag), selected ? 1.0f : 0.45f);
+        if (ImGui::SmallButton(tag.c_str())) {
+            if (selected) filterSet.erase(tag); else filterSet.insert(tag);
+        }
+        ImGui::PopStyleColor(3);
+        if (ImGui::BeginPopupContextItem("##recolor")) {     // right-click a tag -> color picker
+            glm::vec4 c = lib.tagColor(tag);
+            if (ImGui::ColorPicker4("##pick", &c.x, ImGuiColorEditFlags_NoAlpha))
+                lib.setTagColor(tag, c);   // tag colors are RGB-only; alpha is unused
+            ImGui::EndPopup();
+        }
+        ImGui::PopID();
+    }
+    if (!filterSet.empty()) {
+        if (!tabTags.empty()) ImGui::SameLine();
+        if (ImGui::SmallButton("clear filter")) filterSet.clear();
+    }
+
     int toRemove = -1;
-    if (ImGui::BeginTable("##assettbl", 3,
+    if (ImGui::BeginTable("##assettbl", 4,
             ImGuiTableFlags_SizingStretchProp | ImGuiTableFlags_BordersInnerH)) {
-        ImGui::TableSetupColumn("Label", ImGuiTableColumnFlags_WidthFixed, 140.0f);
+        ImGui::TableSetupColumn("Label", ImGuiTableColumnFlags_WidthFixed, 120.0f);
         ImGui::TableSetupColumn("Path");
+        ImGui::TableSetupColumn("Tags",  ImGuiTableColumnFlags_WidthFixed, 220.0f);
         ImGui::TableSetupColumn("##act", ImGuiTableColumnFlags_WidthFixed, 30.0f);
         ImGui::TableHeadersRow();
 
-        // byType() pointers stay valid for the loop: editing a label/path mutates a string
-        // in place (no vector realloc); add/remove are deferred until after EndTable.
         for (const Asset* a : lib.byType(type)) {
+            // OR filter: skip assets that share no tag with the selection (empty -> show all).
+            if (!filterSet.empty()) {
+                bool match = false;
+                for (const std::string& t : a->tags) if (filterSet.count(t)) { match = true; break; }
+                if (!match) continue;
+            }
             int id = a->id;
             ImGui::PushID(id);
             ImGui::TableNextRow();
@@ -59,7 +101,32 @@ void drawTab(AssetLibrary& lib, AssetType type, const char* noun,
                 }
             }
 
+            // --- Tags column: colored chips ("tag x" removes) + a "+ add" box. ---
             ImGui::TableSetColumnIndex(2);
+            int tagToRemove = -1;
+            for (std::size_t ti = 0; ti < a->tags.size(); ++ti) {
+                const std::string& tag = a->tags[ti];
+                ImGui::PushID((int)ti);
+                pushTagColors(lib.tagColor(tag), 0.8f);
+                if (ImGui::SmallButton((tag + " x").c_str())) tagToRemove = (int)ti;
+                ImGui::PopStyleColor(3);
+                ImGui::PopID();
+                ImGui::SameLine();
+            }
+            std::string& s = addText_[id];
+            char addbuf[64];
+            std::snprintf(addbuf, sizeof(addbuf), "%s", s.c_str());
+            ImGui::SetNextItemWidth(70.0f);
+            if (ImGui::InputText("##addtag", addbuf, sizeof(addbuf),
+                                 ImGuiInputTextFlags_EnterReturnsTrue)) {
+                lib.addTag(id, addbuf);     // commit on Enter
+                s.clear();
+            } else {
+                s = addbuf;                 // persist in-progress typing across frames
+            }
+            if (tagToRemove >= 0) lib.removeTag(id, a->tags[(std::size_t)tagToRemove]);
+
+            ImGui::TableSetColumnIndex(3);
             if (ImGui::Button("x")) toRemove = id;
 
             ImGui::PopID();
@@ -71,16 +138,11 @@ void drawTab(AssetLibrary& lib, AssetType type, const char* noun,
     if (ImGui::Button(addLabel.c_str())) lib.add(type, "", "");
     ImGui::SameLine();
     if (ImGui::Button("Add files...")) {
-        // Native multi-select (filtered to this tab's type); each chosen file becomes a new
-        // asset of this type, label seeded from its filename. Runs after EndTable, so the
-        // byType() pointers above are already done with.
         for (const std::string& path : openMultipleFileDialog(noun, "Media", filters))
             lib.add(type, baseLabel(path), path);
     }
-    if (toRemove >= 0) lib.remove(toRemove);
+    if (toRemove >= 0) { lib.remove(toRemove); addText_.erase(toRemove); }
 }
-
-} // namespace
 
 void AssetsPanel::draw(AssetLibrary& lib, bool* open) {
     if (!open || !*open) return;
