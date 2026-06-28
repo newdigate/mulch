@@ -1,6 +1,7 @@
 #include <doctest/doctest.h>
 #include "core/AssetLibrary.h"
 #include "core/Graph.h"
+#include "core/PathPrefix.h"
 #include "core/ProjectFile.h"
 #include <glm/vec4.hpp>
 #include <memory>
@@ -265,4 +266,25 @@ TEST_CASE("captureProject / restoreProject carry tags + colors through a Graph")
     ProjectDoc d = captureProject(g);
     CHECK(d.assets.empty());
     CHECK(d.tagColors.empty());
+}
+
+TEST_CASE("remapPathPrefix swaps a base path across matching assets") {
+    AssetLibrary lib;
+    int a = lib.add(AssetType::Audio, "", "/old/base/drums/kick.wav");
+    int b = lib.add(AssetType::Audio, "", "/old/base/pad.wav");
+    int c = lib.add(AssetType::Audio, "", "/elsewhere/x.wav");      // no match
+    int n = lib.remapPathPrefix("/old/base", "/new/root");
+    CHECK(n == 2);
+    CHECK(lib.find(a)->path == "/new/root/drums/kick.wav");
+    CHECK(lib.find(b)->path == "/new/root/pad.wav");
+    CHECK(lib.find(c)->path == "/elsewhere/x.wav");                 // untouched
+    CHECK(lib.remapPathPrefix("", "/whatever") == 0);              // empty from = no-op
+}
+
+TEST_CASE("commonDirPrefix returns the longest shared directory") {
+    CHECK(commonDirPrefix({"/a/b/c/x.wav", "/a/b/d/y.wav"}) == "/a/b");
+    CHECK(commonDirPrefix({"/a/b/x.wav"}) == "/a/b");
+    CHECK(commonDirPrefix({"/a/x.wav", "/z/y.wav"}) == "");
+    CHECK(commonDirPrefix({}) == "");
+    CHECK(commonDirPrefix({"", "bare.wav"}) == "");                 // no directory part
 }
