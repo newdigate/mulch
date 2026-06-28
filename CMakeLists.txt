@@ -305,6 +305,7 @@ add_executable(core_tests
   tests/test_midi_timecode.cpp
   tests/test_audio_block.cpp
   tests/test_assets.cpp
+  tests/test_path_util.cpp
   src/core/Node.cpp
   src/core/Graph.cpp
   src/core/AutomationStore.cpp
