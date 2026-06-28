@@ -221,6 +221,9 @@ CMake 4.x, it's relaxed with `CMAKE_POLICY_VERSION_MINIMUM 3.5` around its
   of colored chips + a per-tab tag-filter toolbar (`tagsForType`; left-click toggles an OR filter,
   right-click recolors). Tags + colors persist via `ProjectFile` (`atag` per asset, `tagcolor` for
   the registry); the filter selection is transient panel state.
+  Grid rows are multi-selectable — holding Ctrl/Cmd/Shift renders the rows as read-only span-all-columns
+  `Selectable`s (Ctrl/Cmd-click toggles, Shift-click ranges from an `anchor_`); adding/removing a tag on a
+  selected row then broadcasts to the whole selection. `selected_`/`anchor_` are transient panel state.
 - **Preferences** — app-global settings live in the GL-free `core/Preferences` (audio
   output/input device ids + enabled-MIDI-port name sets), persisted to `preferences.oss`
   (separate from projects) and flowed to nodes via `EvalContext::prefs` (like `Transport`,

@@ -1,35 +1,50 @@
-#include "ui/AssetsPanel.h"
-#include "ui/FileDialog.h"
-#include "core/AssetLibrary.h"
-#include <imgui.h>
-#include <cfloat>
-#include <cstddef>
-#include <cstdio>
-#include <string>
-#include <vector>
+# Multi-select + Broadcast Tagging in the Assets Grid — Implementation Plan
 
-namespace oss {
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-namespace {
+**Goal:** Ctrl/Cmd-click (toggle) and Shift-click (range) to multi-select rows in the Assets grid, and have a tag added/removed on a selected row apply to the whole selection.
 
-// Filename basename, without directory or extension -> a default label seed.
-std::string baseLabel(const std::string& path) {
-    std::size_t slash = path.find_last_of("/\\");
-    std::string name = (slash == std::string::npos) ? path : path.substr(slash + 1);
-    std::size_t dot = name.find_last_of('.');
-    if (dot != std::string::npos && dot != 0) name = name.substr(0, dot);  // keep dotfiles like ".vimrc" intact
-    return name;
-}
+**Architecture:** Entirely in `ui/AssetsPanel`. The panel gains per-tab `selected_` sets + an `anchor_`; holding a modifier renders rows as a read-only span-all-columns `Selectable` (so a click anywhere selects); in normal mode the tag add-box / chip-× broadcast to the selection via the existing `AssetLibrary::addTag`/`removeTag`. No core, persistence, or `.oss` change; no automated test (UI).
 
-// Push the 3 button-state colors tinted with `c` (alpha distinguishes selected/unselected).
-void pushTagColors(const glm::vec4& c, float baseAlpha) {
-    ImGui::PushStyleColor(ImGuiCol_Button,        ImVec4(c.x, c.y, c.z, baseAlpha));
-    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(c.x, c.y, c.z, 1.0f));
-    ImGui::PushStyleColor(ImGuiCol_ButtonActive,  ImVec4(c.x, c.y, c.z, 1.0f));
-}
+**Tech Stack:** C++17, Dear ImGui.
 
-} // namespace
+**Spec:** `docs/superpowers/specs/2026-06-28-asset-multiselect-tag-design.md`
 
+---
+
+## File Structure
+
+| File | Change |
+|---|---|
+| `src/ui/AssetsPanel.h` | + `std::set<int> selected_[kAssetTypeCount]` + `int anchor_[kAssetTypeCount]`. |
+| `src/ui/AssetsPanel.cpp` | `drawTab` rewrite: select-mode rows, selection highlight + status line, broadcast add/remove, prune on removal. |
+| `CLAUDE.md`, `README.md` | docs. |
+
+---
+
+## Task 1: AssetsPanel multi-select + broadcast tagging
+
+**Files:**
+- Modify: `src/ui/AssetsPanel.h`, `src/ui/AssetsPanel.cpp`
+
+No automated test (ImGui). Verified by build + a manual smoke check (DEFERRED — do not launch the GUI).
+
+- [ ] **Step 1: Add the selection state to `AssetsPanel.h`**
+
+In `src/ui/AssetsPanel.h`, add two members after the existing `addText_` line (inside the `private:` section):
+
+```cpp
+    std::set<int> selected_[kAssetTypeCount];                    // selected asset ids per media tab (transient)
+    int           anchor_[kAssetTypeCount] = {-1, -1, -1, -1};  // Shift-range pivot (last-clicked id); kAssetTypeCount entries
+```
+
+(`<set>` is already included; `kAssetTypeCount` is 4, matching the four initializers.)
+
+- [ ] **Step 2: Rewrite `drawTab` in `AssetsPanel.cpp`**
+
+Replace the entire `AssetsPanel::drawTab(...)` function (the function only — leave `baseLabel`, `pushTagColors`, and `draw` as they are) with:
+
+```cpp
 void AssetsPanel::drawTab(AssetLibrary& lib, AssetType type, const char* noun,
                           const std::vector<std::string>& filters) {
     std::set<std::string>& filterSet = filter_[(int)type];
@@ -211,33 +226,65 @@ void AssetsPanel::drawTab(AssetLibrary& lib, AssetType type, const char* noun,
         if (anchor == toRemove) anchor = -1;   // anchor's row is gone
     }
 }
+```
 
-void AssetsPanel::draw(AssetLibrary& lib, bool* open) {
-    if (!open || !*open) return;
-    if (!ImGui::Begin("Assets", open)) { ImGui::End(); return; }
+- [ ] **Step 3: Build the app**
 
-    if (ImGui::BeginTabBar("assets_tabs")) {
-        if (ImGui::BeginTabItem("Audio")) {
-            drawTab(lib, AssetType::Audio, "audio file",
-                    {"mp3", "wav", "flac", "m4a", "ogg", "aac", "aiff"});
-            ImGui::EndTabItem();
-        }
-        if (ImGui::BeginTabItem("Video")) {
-            drawTab(lib, AssetType::Video, "video file",
-                    {"mp4", "mov", "mkv", "avi", "webm"});
-            ImGui::EndTabItem();
-        }
-        if (ImGui::BeginTabItem("MIDI")) {
-            drawTab(lib, AssetType::Midi, "MIDI file", {"mid", "midi"});
-            ImGui::EndTabItem();
-        }
-        if (ImGui::BeginTabItem("3D")) {
-            drawTab(lib, AssetType::Mesh, "3D model", {"obj", "gltf", "glb"});
-            ImGui::EndTabItem();
-        }
-        ImGui::EndTabBar();
-    }
-    ImGui::End();
-}
+Run: `cmake --build build -j --target shader_streamer`
+Expected: links cleanly. Then a full `cmake --build build -j && ctest --test-dir build --output-on-failure` to confirm nothing else broke (AssetsPanel isn't in the test targets, so this just re-confirms the rest).
 
-} // namespace oss
+- [ ] **Step 4: Manual smoke check (DEFERRED — do not launch the GUI as a subagent)**
+
+The coordinator/user verifies: in **View → Assets**, hold Ctrl/Cmd and click rows (they highlight; "N selected" shows); Shift-click extends the range from the anchor; release the modifier, type a tag in a selected row's add-box → all selected rows gain it; click a chip's × on a selected row → all lose it; an unselected row tags only itself; **Clear selection** empties it; removing a row (×) drops it from the selection. Your verification is the clean build (Step 3) + re-reading the code.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add src/ui/AssetsPanel.h src/ui/AssetsPanel.cpp
+git commit -m "feat(ui): multi-select Assets rows (Ctrl/Cmd/Shift-click) + broadcast tagging"
+```
+
+---
+
+## Task 2: Documentation
+
+**Files:**
+- Modify: `CLAUDE.md`, `README.md`
+
+- [ ] **Step 1: Extend the CLAUDE.md Assets bullet**
+
+In `CLAUDE.md`, find the **Assets / media library** bullet. Append this sentence at the end of the bullet (after the last sentence about the tag filter / persistence):
+
+```
+  Grid rows are multi-selectable — holding Ctrl/Cmd/Shift renders the rows as read-only span-all-columns
+  `Selectable`s (Ctrl/Cmd-click toggles, Shift-click ranges from an `anchor_`); adding/removing a tag on a
+  selected row then broadcasts to the whole selection. `selected_`/`anchor_` are transient panel state.
+```
+
+- [ ] **Step 2: Extend the README Assets subsection**
+
+In `README.md`, in the **### Assets** subsection, append this sentence to the end of the paragraph:
+
+```markdown
+Hold **Ctrl/Cmd** and click rows (or **Shift**-click a range) to select several at once — then typing a
+tag in any selected row (or removing one) applies it to every selected row.
+```
+
+- [ ] **Step 3: Verify only docs changed**
+
+Run: `git diff --stat`
+Expected: only `CLAUDE.md` and `README.md` changed.
+
+- [ ] **Step 4: Commit**
+
+```bash
+git add CLAUDE.md README.md
+git commit -m "docs: multi-select + broadcast tagging in the Assets grid"
+```
+
+---
+
+## Final verification (after all tasks)
+
+- [ ] `cmake --build build -j && ctest --test-dir build --output-on-failure` — `shader_streamer` links; `core_tests` + `gl_smoke` pass.
+- [ ] Manual: launch `./build/shader_streamer` — Ctrl/Cmd/Shift-select rows in an Assets tab, broadcast-tag them, verify highlight + "N selected" + Clear, and removal pruning.
