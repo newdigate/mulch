@@ -38,7 +38,7 @@ private:
     Graph graph_;
     NodeEditorPanel editor_;
     AutomationPanel automation_;
-    char        filename_[256] = "project.oss";
+    std::string currentPath_;   // path of the loaded/saved project; empty = untitled
     std::string projectStatus_;
     Preferences      prefs_;
     PreferencesPanel preferences_;
@@ -46,6 +46,10 @@ private:
     MidiSyncEngine   syncEngine_;
     bool             showPreferences_ = false;
     bool             showAssets_ = false;
+
+    void saveProjectAs();         // prompt for a destination, save, remember it
+    void saveCurrentOrPrompt();   // Save: write currentPath_, or Save As when untitled
+    void loadProjectDialog();     // prompt for a file, load, remember it
 };
 
 // Factory used by the app and the add-node menu.

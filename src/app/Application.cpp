@@ -36,7 +36,9 @@
 #include "modules/VideoPlayerNode.h"
 #include "modules/WireframeNode.h"
 #include "ui/TransportBar.h"
+#include "ui/FileDialog.h"
 #include "core/ProjectFile.h"
+#include "core/PathUtil.h"
 #include <fstream>
 #include <sstream>
 
@@ -145,10 +147,9 @@ bool Application::loadProjectFromFile(const std::string& path) {
 
 void Application::frame(float dt) {
     ProjectBarIO io;
-    io.filename = filename_;
-    io.filenameLen = sizeof(filename_);
-    io.onSave = [this]{ projectStatus_ = saveProjectToFile(filename_) ? (std::string("saved ") + filename_) : "save failed"; };
-    io.onLoad = [this]{ projectStatus_ = loadProjectFromFile(filename_) ? (std::string("loaded ") + filename_) : "load failed"; };
+    io.onSave   = [this]{ saveCurrentOrPrompt(); };
+    io.onSaveAs = [this]{ saveProjectAs(); };
+    io.onLoad   = [this]{ loadProjectDialog(); };
     io.status = projectStatus_;
     io.showPreferences = &showPreferences_;
     io.showAssets = &showAssets_;
@@ -166,6 +167,29 @@ TexRef Application::outputTexture() const {
     for (auto& n : graph_.nodes())
         if (auto* o = dynamic_cast<OutputNode*>(n.get())) return o->current();
     return TexRef{};
+}
+
+void Application::saveProjectAs() {
+    std::string defName = currentPath_.empty() ? std::string("project.oss")
+                                               : fileBaseName(currentPath_);
+    std::string path = saveFileDialog("Save Project", "Project", {"oss"}, defName);
+    if (path.empty()) return;                       // cancelled
+    path = ensureExtension(path, "oss");
+    if (saveProjectToFile(path)) { currentPath_ = path; projectStatus_ = "saved " + fileBaseName(path); }
+    else                          projectStatus_ = "save failed";
+}
+
+void Application::saveCurrentOrPrompt() {
+    if (currentPath_.empty()) { saveProjectAs(); return; }   // untitled -> prompt
+    if (saveProjectToFile(currentPath_)) projectStatus_ = "saved " + fileBaseName(currentPath_);
+    else                                 projectStatus_ = "save failed";
+}
+
+void Application::loadProjectDialog() {
+    std::string path = openFileDialog("Load Project", "Project", {"oss"});
+    if (path.empty()) return;                       // cancelled
+    if (loadProjectFromFile(path)) { currentPath_ = path; projectStatus_ = "loaded " + fileBaseName(path); }
+    else                            projectStatus_ = "load failed";
 }
 
 } // namespace oss
