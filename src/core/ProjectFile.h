@@ -27,6 +27,7 @@ struct ProjectDoc {
     std::vector<DocAuto>    autos;
     std::vector<Asset>      assets;
     std::map<std::string, glm::vec4> tagColors;
+    std::string assetLibraryPath;   // referenced .osslib (empty = none / legacy embedded)
 };
 
 std::string serializeProject(const ProjectDoc& d);

@@ -141,3 +141,29 @@ TEST_CASE("restoreProject skips unknown node types and remaps the rest") {
     CHECK(g.nodes().size() == 1);            // only StubA
     CHECK(g.connections().empty());          // the dangling connection was skipped
 }
+
+TEST_CASE("ProjectDoc serializes + parses an assetlib reference") {
+    ProjectDoc d;
+    d.assetLibraryPath = "/Users/me/My Lib/sounds.osslib";   // spaces survive
+    ProjectDoc out;
+    REQUIRE(parseProject(serializeProject(d), out));
+    CHECK(out.assetLibraryPath == "/Users/me/My Lib/sounds.osslib");
+}
+
+TEST_CASE("parseProject still reads legacy embedded assets") {
+    const char* legacy =
+        "oss-project 1\n"
+        "asset 7 0\n"
+        "alabel Kick\n"
+        "apath /old/kick.wav\n"
+        "atag drums\n";
+    ProjectDoc out;
+    REQUIRE(parseProject(legacy, out));
+    REQUIRE(out.assets.size() == 1);
+    CHECK(out.assets[0].id == 7);
+    CHECK(out.assets[0].label == "Kick");
+    CHECK(out.assets[0].path == "/old/kick.wav");
+    REQUIRE(out.assets[0].tags.size() == 1);
+    CHECK(out.assets[0].tags[0] == "drums");
+    CHECK(out.assetLibraryPath.empty());
+}

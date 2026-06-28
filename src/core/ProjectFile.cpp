@@ -44,6 +44,7 @@ std::string serializeProject(const ProjectDoc& d) {
     for (const DocAuto& a : d.autos)
         out += "auto " + std::to_string(a.nodeId) + " " + std::to_string(a.port) + " "
              + std::to_string(a.outMin) + " " + std::to_string(a.outMax) + " " + encodeCurve(a.curve) + "\n";
+    if (!d.assetLibraryPath.empty()) out += "assetlib " + escape(d.assetLibraryPath) + "\n";
     appendAssetBlock(out, d.assets, d.tagColors);
     return out;
 }
@@ -60,6 +61,7 @@ bool parseProject(const std::string& text, ProjectDoc& out) {
         std::istringstream ls(line);
         std::string kw; ls >> kw;
         if (parseAssetBlockLine(kw, ls, out.assets, out.tagColors, curAsset)) continue;
+        if (kw == "assetlib") { out.assetLibraryPath = unescape(restOfLine(ls)); continue; }
         if (kw == "transport") {
             int looping = 0;
             ls >> out.bpm >> out.beatsPerBar >> looping >> out.loopStartBar >> out.loopEndBar >> out.lengthBars;
