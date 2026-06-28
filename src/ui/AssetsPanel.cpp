@@ -33,9 +33,13 @@ void pushTagColors(const glm::vec4& c, float baseAlpha) {
 void AssetsPanel::drawTab(AssetLibrary& lib, AssetType type, const char* noun,
                           const std::vector<std::string>& filters) {
     std::set<std::string>& filterSet = filter_[(int)type];
+    std::set<int>&         selSet    = selected_[(int)type];
+    int&                   anchor    = anchor_[(int)type];
+    const ImGuiIO&         io        = ImGui::GetIO();
+    const bool             selecting = io.KeyCtrl || io.KeySuper || io.KeyShift;
 
     // --- Tag-filter toolbar: this tab's tags as colored toggle buttons (left-click filter,
-    //     right-click recolor). A selected tag is opaque; unselected is dimmed. ---
+    //     right-click recolor). ---
     std::vector<std::string> tabTags = lib.tagsForType(type);
     for (std::size_t i = 0; i < tabTags.size(); ++i) {
         const std::string& tag = tabTags[i];
@@ -60,6 +64,30 @@ void AssetsPanel::drawTab(AssetLibrary& lib, AssetType type, const char* noun,
         if (ImGui::SmallButton("clear filter")) filterSet.clear();
     }
 
+    // --- Selection status line: count + clear + a hint. ---
+    if (!selSet.empty()) {
+        ImGui::Text("%d selected", (int)selSet.size());
+        ImGui::SameLine();
+        if (ImGui::SmallButton("Clear selection")) { selSet.clear(); anchor = -1; }
+        ImGui::SameLine();
+        ImGui::TextDisabled("(Ctrl/Cmd-click toggles, Shift-click ranges; type a tag to apply to all)");
+    }
+
+    // Filtered, ordered visible rows -- drives both the Shift-range and rendering.
+    std::vector<const Asset*> rows;
+    for (const Asset* a : lib.byType(type)) {
+        if (!filterSet.empty()) {
+            bool match = false;
+            for (const std::string& t : a->tags) if (filterSet.count(t)) { match = true; break; }
+            if (!match) continue;
+        }
+        rows.push_back(a);
+    }
+    auto indexOf = [&rows](int id) -> int {
+        for (std::size_t k = 0; k < rows.size(); ++k) if (rows[k]->id == id) return (int)k;
+        return -1;
+    };
+
     int toRemove = -1;
     if (ImGui::BeginTable("##assettbl", 4,
             ImGuiTableFlags_SizingStretchProp | ImGuiTableFlags_BordersInnerH)) {
@@ -69,17 +97,48 @@ void AssetsPanel::drawTab(AssetLibrary& lib, AssetType type, const char* noun,
         ImGui::TableSetupColumn("##act", ImGuiTableColumnFlags_WidthFixed, 30.0f);
         ImGui::TableHeadersRow();
 
-        for (const Asset* a : lib.byType(type)) {
-            // OR filter: skip assets that share no tag with the selection (empty -> show all).
-            if (!filterSet.empty()) {
-                bool match = false;
-                for (const std::string& t : a->tags) if (filterSet.count(t)) { match = true; break; }
-                if (!match) continue;
-            }
+        for (const Asset* a : rows) {
             int id = a->id;
             ImGui::PushID(id);
             ImGui::TableNextRow();
+            const bool isSel = selSet.count(id) > 0;
+            if (isSel)
+                ImGui::TableSetBgColor(ImGuiTableBgTarget_RowBg0,
+                                       ImGui::GetColorU32(ImVec4(0.26f, 0.45f, 0.62f, 0.45f)));
 
+            // --- Selection mode (a modifier is held): the whole row is a read-only click target,
+            //     so a click selects instead of editing a field. ---
+            if (selecting) {
+                ImGui::TableSetColumnIndex(0);
+                std::string rl = !a->label.empty() ? a->label
+                               : (!a->path.empty() ? a->path : std::string("(unnamed)"));
+                if (ImGui::Selectable((rl + "##rowsel").c_str(), isSel,
+                                      ImGuiSelectableFlags_SpanAllColumns)) {
+                    if (io.KeyShift && anchor != -1 && indexOf(anchor) >= 0) {
+                        int ai = indexOf(anchor), yi = indexOf(id);
+                        int lo = ai < yi ? ai : yi, hi = ai < yi ? yi : ai;
+                        for (int k = lo; k <= hi; ++k) selSet.insert(rows[(std::size_t)k]->id);  // add range
+                    } else if (isSel) {
+                        selSet.erase(id);                                                        // toggle off
+                    } else {
+                        selSet.insert(id);                                                       // toggle on
+                    }
+                    anchor = id;
+                }
+                ImGui::TableSetColumnIndex(1);
+                ImGui::TextUnformatted(a->path.c_str());
+                ImGui::TableSetColumnIndex(2);
+                for (std::size_t ti = 0; ti < a->tags.size(); ++ti) {
+                    if (ti) ImGui::SameLine();
+                    glm::vec4 c = lib.tagColor(a->tags[ti]);
+                    ImGui::TextColored(ImVec4(c.x, c.y, c.z, 1.0f), "%s", a->tags[ti].c_str());
+                }
+                ImGui::PopID();
+                continue;   // skip the editable rendering this frame
+            }
+
+            // --- Edit mode: the normal editable row, with tag add/remove broadcasting to the
+            //     selection when this row is part of it. ---
             ImGui::TableSetColumnIndex(0);
             char lbl[512];
             std::snprintf(lbl, sizeof(lbl), "%s", a->label.c_str());
@@ -101,7 +160,6 @@ void AssetsPanel::drawTab(AssetLibrary& lib, AssetType type, const char* noun,
                 }
             }
 
-            // --- Tags column: colored chips ("tag x" removes) + a "+ add" box. ---
             ImGui::TableSetColumnIndex(2);
             int tagToRemove = -1;
             for (std::size_t ti = 0; ti < a->tags.size(); ++ti) {
@@ -119,12 +177,17 @@ void AssetsPanel::drawTab(AssetLibrary& lib, AssetType type, const char* noun,
             ImGui::SetNextItemWidth(70.0f);
             if (ImGui::InputText("##addtag", addbuf, sizeof(addbuf),
                                  ImGuiInputTextFlags_EnterReturnsTrue)) {
-                lib.addTag(id, addbuf);     // commit on Enter
+                if (selSet.count(id)) { for (int sid : selSet) lib.addTag(sid, addbuf); }  // broadcast to selection
+                else                    lib.addTag(id, addbuf);
                 s.clear();
             } else {
                 s = addbuf;                 // persist in-progress typing across frames
             }
-            if (tagToRemove >= 0) lib.removeTag(id, a->tags[(std::size_t)tagToRemove]);
+            if (tagToRemove >= 0) {
+                std::string tg = a->tags[(std::size_t)tagToRemove];   // copy before any mutation
+                if (selSet.count(id)) { for (int sid : selSet) lib.removeTag(sid, tg); }   // broadcast
+                else                    lib.removeTag(id, tg);
+            }
 
             ImGui::TableSetColumnIndex(3);
             if (ImGui::Button("x")) toRemove = id;
@@ -141,7 +204,12 @@ void AssetsPanel::drawTab(AssetLibrary& lib, AssetType type, const char* noun,
         for (const std::string& path : openMultipleFileDialog(noun, "Media", filters))
             lib.add(type, baseLabel(path), path);
     }
-    if (toRemove >= 0) { lib.remove(toRemove); addText_.erase(toRemove); }
+    if (toRemove >= 0) {
+        lib.remove(toRemove);
+        addText_.erase(toRemove);
+        selSet.erase(toRemove);
+        if (anchor == toRemove) anchor = -1;   // anchor's row is gone
+    }
 }
 
 void AssetsPanel::draw(AssetLibrary& lib, bool* open) {
