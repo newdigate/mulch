@@ -15,7 +15,8 @@ class AssetsPanel {
 public:
     AssetsPanel() { for (int& a : anchor_) a = -1; }   // anchors start at "none"
 
-    void draw(AssetLibrary& lib, bool* open);
+    void openRemap() { showRemap_ = true; remapPrimed_ = false; }   // launch the Remap Directory modal
+    void draw(AssetLibrary& lib, bool* open, const std::string& mediaDir = "");
 
 private:
     void drawTab(AssetLibrary& lib, AssetType type, const char* noun,
@@ -33,6 +34,8 @@ private:
                        const std::vector<int>& leafOrder, const char* noun,
                        const std::vector<std::string>& filters, int& toRemove);
 
+    void drawRemapModal(AssetLibrary& lib);   // renders the modal when showRemap_/popup is active
+
     std::set<std::string> filter_[kAssetTypeCount];   // selected filter tags per media tab (OR)
     std::map<int, std::string> addText_;              // per-asset "+ add tag" in-progress text
     std::set<int> selected_[kAssetTypeCount];   // selected asset ids per media tab (transient)
@@ -41,6 +44,13 @@ private:
     int  renamingId_ = -1;        // asset id being inline-renamed (one at a time); -1 = none
     char renameBuf_[512] = {0};   // rename text buffer
     bool renameFocus_ = false;    // request keyboard focus on the rename field's first frame
+
+    std::string mediaDir_;        // default dir for per-asset Browse + the remap folder pickers
+    bool showRemap_   = false;
+    bool remapPrimed_ = false;    // false until the modal's From field is pre-filled on open
+    char remapFrom_[1024] = {0};
+    char remapTo_[1024]   = {0};
+    std::string remapResult_;     // "remapped N assets" status shown in the modal
 };
 
 } // namespace oss

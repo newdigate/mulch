@@ -210,7 +210,7 @@ void Application::frame(float dt) {
     io.onLibOpen   = [this]{ openLibraryDialog(); };
     io.onLibSave   = [this]{ saveLibraryOrPrompt(); };
     io.onLibSaveAs = [this]{ saveLibraryAs(); };
-    // io.onLibRemap is wired when the remap modal lands (later task).
+    io.onLibRemap = [this]{ assets_.openRemap(); };
     io.status = projectStatus_;
     io.showPreferences = &showPreferences_;
     io.showAssets = &showAssets_;
@@ -218,7 +218,7 @@ void Application::frame(float dt) {
     editor_.draw(graph_, [this](const std::string& t, glm::vec2 p){ return addNodeOfType(t, p); });
     automation_.draw(graph_);                // automation timeline window
     preferences_.draw(prefs_, [this]{ savePreferences(); }, &showPreferences_);
-    assets_.draw(graph_.assets(), &showAssets_);
+    assets_.draw(graph_.assets(), &showAssets_, prefs_.assetLibraryDir);
     syncEngine_.update(graph_.transport(), prefs_, dt);   // MIDI clock sync in/out
     graph_.evaluate(dt);                     // advances the transport by dt
 }
