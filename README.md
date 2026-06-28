@@ -99,8 +99,8 @@ graph is evaluated once per frame in topological order.
 
 ### Save / Load
 
-The toolbar's **Save** / **Save As** / **Load** buttons use native OS file dialogs. **Load** and
-**Save As** open a file picker (filtered to `.oss`); **Save** writes the current file, or prompts
+The toolbar's left-anchored **File** menu (**Load** / **Save** / **Save As**) uses native OS file
+dialogs. **Load** and **Save As** open a file picker (filtered to `.oss`); **Save** writes the current file, or prompts
 like **Save As** when the project is still untitled. A saved/loaded project file holds every node
 (type, canvas position, and control values),
 all connections, the transport (tempo + loop), and the automation (the Automation node's

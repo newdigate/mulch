@@ -10,6 +10,18 @@ void drawTransportBar(Transport& t, ProjectBarIO* io) {
     // and read-out all sit on one row without explicit SameLine calls.
     if (!ImGui::BeginMainMenuBar()) return;
 
+    // Project actions in a left-anchored "File" menu (drawn first, so it sits to the left of
+    // the "View" menu); a left menu never clips off a narrow window.
+    if (io && (io->onLoad || io->onSave || io->onSaveAs)) {
+        if (ImGui::BeginMenu("File")) {
+            if (io->onLoad   && ImGui::MenuItem("Load..."))    io->onLoad();
+            ImGui::Separator();
+            if (io->onSave   && ImGui::MenuItem("Save"))       io->onSave();
+            if (io->onSaveAs && ImGui::MenuItem("Save As...")) io->onSaveAs();
+            ImGui::EndMenu();
+        }
+    }
+
     // Window toggles live in a left-anchored "View" menu so they stay reachable at any
     // window width: the menu bar lays everything on one non-wrapping row, so buttons at
     // the far right clip off-screen on a narrow window (the Assets/Prefs toggles did).
@@ -62,13 +74,11 @@ void drawTransportBar(Transport& t, ProjectBarIO* io) {
     if (ImGui::InputFloat("##loopEnd", &le, 0.0f, 0.0f, "%.2f")) t.loopEndBar = le;
     ImGui::TextUnformatted("bars");
 
-    if (io) {
+    // Project Save/Load actions moved to the left-anchored "File" menu above; the status
+    // (e.g. "saved foo.oss") stays on the right.
+    if (io && !io->status.empty()) {
         ImGui::Separator();
-        if (ImGui::Button("Save")    && io->onSave)   io->onSave();
-        if (ImGui::Button("Save As") && io->onSaveAs) io->onSaveAs();
-        if (ImGui::Button("Load")    && io->onLoad)   io->onLoad();
-        // (Preferences/Assets toggles live in the left-anchored "View" menu above.)
-        if (!io->status.empty()) ImGui::TextUnformatted(io->status.c_str());
+        ImGui::TextUnformatted(io->status.c_str());
     }
 
     ImGui::EndMainMenuBar();
