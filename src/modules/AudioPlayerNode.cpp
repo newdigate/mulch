@@ -8,7 +8,7 @@
 namespace oss {
 
 AudioPlayerNode::AudioPlayerNode() : Node("Audio File") {
-    addInput("file", PortType::String, std::string(""));
+    addAssetInput("file", AssetType::Audio);
     addInput("rate", PortType::Float,  1.0f, -2.0f, 2.0f);   // signed: negative = reverse
     addInput("play", PortType::Bool,   true);
     addInput("loop", PortType::Bool,   true);

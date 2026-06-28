@@ -35,7 +35,7 @@ public:
     DrumMachineNode() : Node("Drum Machine") {
         for (int v = 0; v < kVoices; ++v) {
             std::string s = std::to_string(v + 1);
-            addInput("file " + s, PortType::String, std::string(""));
+            addAssetInput("file " + s, AssetType::Audio);
             addInput("vol "  + s, PortType::Float, 0.8f,  0.0f, 1.0f);
             addInput("rate " + s, PortType::Float, 1.0f, -4.0f, 4.0f);  // signed: <0 reverses
             addInput("pan "  + s, PortType::Float, 0.0f, -1.0f, 1.0f);

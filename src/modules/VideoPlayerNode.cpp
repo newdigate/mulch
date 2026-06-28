@@ -8,7 +8,7 @@
 namespace oss {
 
 VideoPlayerNode::VideoPlayerNode() : Node("Video Player"), outBuf_(kAudioMaxBlock, 0.0f) {
-    addInput("file", PortType::String, std::string(""));   // .mp4/.mov/... path
+    addAssetInput("file", AssetType::Video);   // .mp4/.mov/... path
     addInput("rate", PortType::Float,  1.0f, -2.0f, 2.0f); // signed: negative = reverse
     addInput("play", PortType::Bool,   true);
     addInput("loop", PortType::Bool,   true);

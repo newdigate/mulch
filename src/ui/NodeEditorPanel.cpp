@@ -1,6 +1,7 @@
 #include "ui/NodeEditorPanel.h"
 #include "ui/PortWidgets.h"
 #include "app/Application.h"   // for nodeCategories()
+#include "core/AssetLibrary.h"
 #include <imgui.h>
 #include <imgui_node_editor.h>
 #include <glm/vec4.hpp>
@@ -24,6 +25,16 @@ static void decodePin(int pin, int& nodeId, int& port, bool& isOutput) {
     int rest = pin % 1000;
     port = rest / 2;
     isOutput = (rest % 2) == 1;
+}
+
+static const char* assetTypeName(AssetType t) {
+    switch (t) {
+        case AssetType::Audio: return "Audio";
+        case AssetType::Video: return "Video";
+        case AssetType::Midi:  return "MIDI";
+        case AssetType::Mesh:  return "3D";
+    }
+    return "media";
 }
 
 struct NodeEditorPanel::Impl {
@@ -300,6 +311,27 @@ void NodeEditorPanel::draw(Graph& graph,
             if (port.type == PortType::Colour) {
                 auto& c = std::get<glm::vec4>(v);
                 ImGui::ColorPicker4("##picker", &c.x, ImGuiColorEditFlags_AlphaBar);
+            } else if (port.type == PortType::String && port.assetBacked) {
+                // Pick a library asset of this type; copy its path into the field.
+                std::vector<const Asset*> assets = graph.assets().byType(port.assetType);
+                if (assets.empty()) {
+                    ImGui::TextDisabled("No %s assets -- add them in the Assets window",
+                                        assetTypeName(port.assetType));
+                } else {
+                    const std::string cur = std::get<std::string>(v);
+                    for (const Asset* a : assets) {
+                        ImGui::PushID(a->id);
+                        std::string label = a->label.empty() ? a->path : a->label;
+                        if (label.empty()) label = "(unnamed)";
+                        // Checkmark by path (copy-path model: the field stores a path, not an
+                        // id), so a path match -- not asset identity -- marks the current row.
+                        if (ImGui::Selectable(label.c_str(), a->path == cur)) {
+                            v = Value(a->path);
+                            ImGui::CloseCurrentPopup();
+                        }
+                        ImGui::PopID();
+                    }
+                }
             } else {   // a Float choice port: a list of its labels
                 int idx = std::clamp((int)std::lround(std::get<float>(v)),
                                      0, (int)port.choices.size() - 1);

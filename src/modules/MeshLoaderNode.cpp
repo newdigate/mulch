@@ -8,7 +8,7 @@
 namespace oss {
 
 MeshLoaderNode::MeshLoaderNode() : Node("Mesh Loader") {
-    addInput("file",  PortType::String, std::string(""));   // .obj / .gltf / .glb path
+    addAssetInput("file", AssetType::Mesh);   // .obj / .gltf / .glb path
     addInput("scale", PortType::Float, 1.0f, 0.1f, 5.0f);
     addOutput("wireframe", PortType::Vertex);   // output 0: Pos3 / Lines
     addOutput("shaded",    PortType::Vertex);   // output 1: Pos3Normal3 / Triangles

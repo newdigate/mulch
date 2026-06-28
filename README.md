@@ -129,7 +129,10 @@ The toolbar **View** menu's **Assets** item opens an Assets window: a per-projec
 **Audio / Video / MIDI / 3D** tabs. Each tab is a table of media files — add a file, edit its
 label and path inline, pick a path with the **...** Browse button (a native file dialog), or remove it. Each file
 carries a hidden, stable id plus a label, and the whole library is saved and loaded with the
-`.oss` project. (A later phase will let node file controls pick from this library directly.)
+`.oss` project.
+Nodes that load media — **Audio Player**, **Video Player**, **Mesh Loader**, **MIDI File**, and the
+**Drum Machine**'s voices — show a **▾** next to their `file` field that picks a path from the
+matching Assets tab (it copies the asset's path in; you can still type a path directly).
 
 ## Test
 

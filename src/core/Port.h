@@ -2,6 +2,7 @@
 #include <string>
 #include <vector>
 #include "core/Value.h"
+#include "core/AssetLibrary.h"
 
 namespace oss {
 
@@ -17,6 +18,11 @@ struct Port {
     // Optional dropdown labels: a Float input with a non-empty list renders as a
     // combo whose value is the selected index (used for enum-like parameters).
     std::vector<std::string> choices;
+    // A String input marked asset-backed renders a library-picker dropdown (of this
+    // AssetType) in the editor; picking copies the asset's path into this input.
+    // Set via Node::addAssetInput. Defaults off, so ordinary String inputs are unaffected.
+    bool      assetBacked = false;
+    AssetType assetType   = AssetType::Audio;
 };
 
 } // namespace oss
