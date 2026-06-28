@@ -140,8 +140,10 @@ matching Assets tab (it copies the asset's path in; you can still type a path di
 A **Tags** column tags each file (colored chips + an add box); each tab's tag bar filters the grid
 (click tags — match any; none = show all) and right-clicking a tag recolors it. Tags and their
 colors are saved with the project.
-Hold **Ctrl/Cmd** and click rows (or **Shift**-click a range) to select several at once — then typing a
-tag in any selected row (or removing one) applies it to every selected row.
+Files are shown in a **collapsible folder tree** grouped by their path — expand or collapse folders, and
+**double-click** a file's name to rename it. Click a file to select it, **Ctrl/Cmd**-click to toggle, or
+**Shift**-click a range; then typing a tag in any selected row (or removing one) applies it to every
+selected row.
 
 ## Test
 

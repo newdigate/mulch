@@ -221,9 +221,15 @@ CMake 4.x, it's relaxed with `CMAKE_POLICY_VERSION_MINIMUM 3.5` around its
   of colored chips + a per-tab tag-filter toolbar (`tagsForType`; left-click toggles an OR filter,
   right-click recolors). Tags + colors persist via `ProjectFile` (`atag` per asset, `tagcolor` for
   the registry); the filter selection is transient panel state.
-  Grid rows are multi-selectable — holding Ctrl/Cmd/Shift renders the rows as read-only span-all-columns
-  `Selectable`s (Ctrl/Cmd-click toggles, Shift-click ranges from an `anchor_`); adding/removing a tag on a
-  selected row then broadcasts to the whole selection. `selected_`/`anchor_` are transient panel state.
+  The grid is a **collapsible folder tree**: the GL-free `core/AssetTree.h` `buildAssetTree` groups the
+  filtered rows by each asset's `path` directory (nesting folders, collapsing single-child chains;
+  blank/no-folder files sit at the root), and `AssetsPanel` renders it recursively in the table — folders
+  are `TreeNodeEx(SpanFullWidth)` nodes (root folders collapsed unless there's exactly one), files are
+  `Leaf | NoTreePushOnOpen` nodes. A file node is the multi-select click target (plain-click selects only
+  it, Ctrl/Cmd toggles, Shift ranges over the DFS leaf order) and double-click renames it inline; the
+  Path/Tags/✕ columns stay editable, and adding/removing a tag on a selected file still broadcasts to the
+  whole selection. `buildAssetTree` is unit-tested in `core_tests`; `selected_`/`anchor_`/`renamingId_`
+  are transient panel state.
 - **Preferences** — app-global settings live in the GL-free `core/Preferences` (audio
   output/input device ids + enabled-MIDI-port name sets), persisted to `preferences.oss`
   (separate from projects) and flowed to nodes via `EvalContext::prefs` (like `Transport`,
