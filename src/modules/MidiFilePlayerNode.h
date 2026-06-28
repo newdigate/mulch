@@ -31,7 +31,8 @@ public:
 
     void evaluate(EvalContext& ctx) override {
         const std::string& path = ctx.in<std::string>(0);
-        if (path != loadedPath_) {
+        const bool fileChanged = (path != loadedPath_);
+        if (fileChanged) {
             loadedPath_ = path;
             seq_ = loadMidiFile(path);
             status_ = seq_.ok ? ("loaded " + std::to_string(seq_.events.size()) + " events")
@@ -46,8 +47,15 @@ public:
         // loop length is a whole-number bars control; round so the loop is always whole bars
         // (even if a connected/automated value or an old fractional project value drives it).
         float loopLenBars = (float)std::lround(ctx.in<float>(3));
-        out_ = player_.advance(seq_, beats, bpb, ctx.in<float>(1), ctx.in<bool>(2),
-                               loopLenBars, muted);
+
+        // A file change is a playback discontinuity the position math can't see: release the
+        // notes the old file left sounding (else a held note hangs until the next loop seam),
+        // then re-enter the new file cleanly.
+        out_.clear();
+        if (fileChanged) player_.reset(out_);
+        std::vector<MidiEvent> adv = player_.advance(seq_, beats, bpb, ctx.in<float>(1),
+                                                     ctx.in<bool>(2), loopLenBars, muted);
+        out_.insert(out_.end(), adv.begin(), adv.end());
         ctx.out<MidiRef>(0, MidiRef{out_.data(), out_.size()});
     }
 

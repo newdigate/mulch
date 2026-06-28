@@ -116,7 +116,9 @@ CMake 4.x, it's relaxed with `CMAKE_POLICY_VERSION_MINIMUM 3.5` around its
   (`src/core/MidiClip.h`). Each frame the player derives the clip position from
   `transport.beats()` (anchored at a start-offset, looping a region) and emits the
   events in that frame's `[prevPlay, playPos)` window, flushing note-offs at every
-  loop seam / stop / mute so nothing hangs. Output is a `MidiRef` → wire into a synth.
+  loop seam / stop / mute / **file change** (`MidiClipPlayer::reset` releases the notes the
+  old file left sounding and re-enters cleanly) so nothing hangs. Output is a `MidiRef` →
+  wire into a synth.
 - **Oscilloscope** — `OscilloscopeNode` (`src/modules/OscilloscopeNode.h`, header-only)
   turns an audio signal into an oscilloscope trace as streamed geometry. The GL-free
   `buildScopeVertices` (`src/core/Oscilloscope.{h,cpp}`) does the trace math over a

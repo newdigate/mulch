@@ -150,3 +150,62 @@ TEST_CASE("MidiFilePlayerNode loop length is a whole-number bars control") {
     CHECK(p.maxVal == doctest::Approx(64.0f));
     CHECK(std::get<float>(p.defaultValue) == doctest::Approx(4.0f));
 }
+
+TEST_CASE("MidiFilePlayerNode releases a held note when the file changes") {
+    // Two tiny SMFs, each a single note-on with NO note-off (so the note sounds until
+    // it is explicitly released). They differ only in the note number.
+    auto writeSmf = [](const char* path, unsigned char note) {
+        std::vector<unsigned char> smf = {
+            'M','T','h','d', 0,0,0,6, 0,0, 0,1, 0x01,0xE0,
+            'M','T','r','k', 0,0,0,8,
+            0x00, 0x90, note, 0x64,        // note-on, channel 0
+            0x00, 0xFF,0x2F,0x00           // end of track
+        };
+        std::ofstream f(path, std::ios::binary);
+        f.write((const char*)smf.data(), (std::streamsize)smf.size());
+    };
+    const char* pathA = "oss_midi_change_a.mid";
+    const char* pathB = "oss_midi_change_b.mid";
+    writeSmf(pathA, 0x3C);   // note 60
+    writeSmf(pathB, 0x3E);   // note 62
+
+    MidiFilePlayerNode node;
+    auto eval = [&](Transport& t, const char* file) {
+        std::vector<Value> in(20);
+        in[0] = std::string(file);
+        in[1] = 0.0f; in[2] = true; in[3] = 4.0f;          // offset 0, loop on, 4 bars
+        for (int i = 0; i < 16; ++i) in[4 + i] = false;     // no mutes
+        std::vector<Value> out(1);
+        EvalContext ctx{ in, out, 0.0f, &t };
+        node.evaluate(ctx);
+        MidiRef m = std::get<MidiRef>(out[0]);
+        return std::vector<MidiEvent>(m.events, m.events + m.count);
+    };
+
+    Transport t; t.bpm = 120.0; t.play();
+    t.seconds = 0.0; eval(t, pathA);                        // load A, enter
+    t.seconds = 0.5; auto on = eval(t, pathA);              // note-on 60 now sounding
+    REQUIRE(countNoteOns(on) == 1);
+    t.seconds = 1.0; auto chg = eval(t, pathB);             // switch to B while 60 is held
+    std::remove(pathA); std::remove(pathB);
+
+    // The file change must release the note the OLD file left sounding (else it hangs).
+    int offs = 0, offNote = -1;
+    for (auto& x : chg) if (midiIsNoteOff(x)) { ++offs; offNote = x.data1; }
+    CHECK(offs >= 1);
+    CHECK(offNote == 60);
+}
+
+TEST_CASE("MidiClipPlayer reset releases sounding notes and re-enters fresh") {
+    MidiSequence s; s.ok = true;
+    s.events = { { 0.0, midiNoteOn(60, 100) } };   // note-on, no note-off -> stays sounding
+    s.lengthBeats = 4.0;
+    MidiClipPlayer p;
+    bool mute[16] = {};
+    p.advance(s, 0.0, 4, 0.0, true, 4, mute);                             // enter
+    REQUIRE(countNoteOns(p.advance(s, 0.5, 4, 0.0, true, 4, mute)) == 1); // 60 sounding
+    std::vector<MidiEvent> off;
+    p.reset(off);
+    CHECK(countNoteOffs(off) >= 1);                                       // reset released it
+    CHECK(p.advance(s, 0.6, 4, 0.0, true, 4, mute).empty());             // re-enters fresh, emits nothing
+}

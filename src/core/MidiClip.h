@@ -52,6 +52,15 @@ public:
         return out;
     }
 
+    // Release every sounding note (note-offs appended to `out`) and reset the playhead so the
+    // next advance() re-enters cleanly. Call on a playback discontinuity the position math
+    // can't see -- e.g. the underlying sequence was swapped (a new MIDI file) -- so a note the
+    // old content left sounding doesn't hang until the next loop seam.
+    void reset(std::vector<MidiEvent>& out) {
+        appendFlush(out);     // note-offs for all active_ notes; clears active_
+        prevPlay_ = -1.0;     // next advance() enters fresh
+    }
+
 private:
     void emitRange(std::vector<MidiEvent>& out, const MidiSequence& seq,
                    double a, double b, const bool muted[16]) {
