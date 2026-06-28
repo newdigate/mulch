@@ -22,6 +22,19 @@ void drawTransportBar(Transport& t, ProjectBarIO* io) {
         }
     }
 
+    // Asset Library actions in their own left-anchored menu (between File and View).
+    if (io && (io->onLibOpen || io->onLibSave || io->onLibSaveAs || io->onLibRemap)) {
+        if (ImGui::BeginMenu("Asset Library")) {
+            if (io->onLibOpen   && ImGui::MenuItem("Open Asset Library...")) io->onLibOpen();
+            ImGui::Separator();
+            if (io->onLibSave   && ImGui::MenuItem("Save"))                  io->onLibSave();
+            if (io->onLibSaveAs && ImGui::MenuItem("Save As..."))            io->onLibSaveAs();
+            ImGui::Separator();
+            if (io->onLibRemap  && ImGui::MenuItem("Remap Directory..."))    io->onLibRemap();
+            ImGui::EndMenu();
+        }
+    }
+
     // Window toggles live in a left-anchored "View" menu so they stay reachable at any
     // window width: the menu bar lays everything on one non-wrapping row, so buttons at
     // the far right clip off-screen on a narrow window (the Assets/Prefs toggles did).

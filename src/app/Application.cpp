@@ -207,6 +207,10 @@ void Application::frame(float dt) {
     io.onSave   = [this]{ saveCurrentOrPrompt(); };
     io.onSaveAs = [this]{ saveProjectAs(); };
     io.onLoad   = [this]{ loadProjectDialog(); };
+    io.onLibOpen   = [this]{ openLibraryDialog(); };
+    io.onLibSave   = [this]{ saveLibraryOrPrompt(); };
+    io.onLibSaveAs = [this]{ saveLibraryAs(); };
+    // io.onLibRemap is wired when the remap modal lands (later task).
     io.status = projectStatus_;
     io.showPreferences = &showPreferences_;
     io.showAssets = &showAssets_;
