@@ -2,6 +2,7 @@
 #include "core/AssetLibrary.h"
 #include "core/Graph.h"
 #include "core/ProjectFile.h"
+#include <glm/vec4.hpp>
 #include <memory>
 #include <string>
 #include <variant>
@@ -160,4 +161,75 @@ TEST_CASE("a plain addInput String is not asset-backed") {
     // Sanity: the flag defaults off, so existing String inputs keep their text field.
     Port p;
     CHECK(p.assetBacked == false);
+}
+
+namespace {
+// Exact component compare (avoid relying on glm's operator== availability).
+inline bool vecEq(const glm::vec4& a, const glm::vec4& b) {
+    return a.x == b.x && a.y == b.y && a.z == b.z && a.w == b.w;
+}
+} // namespace
+
+TEST_CASE("AssetLibrary addTag appends, dedups, ignores empty + bad id") {
+    AssetLibrary lib;
+    int a = lib.add(AssetType::Audio, "kick", "k.wav");
+    lib.addTag(a, "drums");
+    lib.addTag(a, "drums");          // duplicate -> ignored
+    lib.addTag(a, "");               // empty -> ignored
+    lib.addTag(999, "ghost");        // bad id -> ignored
+    REQUIRE(lib.find(a) != nullptr);
+    REQUIRE(lib.find(a)->tags.size() == 1);
+    CHECK(lib.find(a)->tags[0] == "drums");
+}
+
+TEST_CASE("AssetLibrary removeTag drops only that tag") {
+    AssetLibrary lib;
+    int a = lib.add(AssetType::Audio, "k", "k");
+    lib.addTag(a, "drums"); lib.addTag(a, "loop");
+    lib.removeTag(a, "drums");
+    REQUIRE(lib.find(a) != nullptr);
+    REQUIRE(lib.find(a)->tags.size() == 1);
+    CHECK(lib.find(a)->tags[0] == "loop");
+    lib.removeTag(a, "nope");        // absent -> no-op
+    lib.removeTag(999, "loop");      // bad id -> no-op
+    CHECK(lib.find(a)->tags.size() == 1);
+}
+
+TEST_CASE("AssetLibrary tagsForType is distinct, sorted, per-type") {
+    AssetLibrary lib;
+    int au = lib.add(AssetType::Audio, "a", "a");
+    int mi = lib.add(AssetType::Midi,  "m", "m");
+    int au2 = lib.add(AssetType::Audio, "b", "b");
+    lib.addTag(au, "loop"); lib.addTag(au, "drums");
+    lib.addTag(au2, "drums");        // same tag on two audio assets
+    lib.addTag(mi, "bass");
+    CHECK(lib.tagsForType(AssetType::Audio) == std::vector<std::string>{"drums", "loop"}); // distinct + sorted
+    CHECK(lib.tagsForType(AssetType::Midi)  == std::vector<std::string>{"bass"});
+    CHECK(lib.tagsForType(AssetType::Video).empty());
+}
+
+TEST_CASE("AssetLibrary tag colors: deterministic default, override, clear") {
+    AssetLibrary lib;
+    CHECK(vecEq(lib.tagColor("drums"), lib.tagColor("drums")));   // deterministic default
+    lib.setTagColor("drums", glm::vec4(0.1f, 0.2f, 0.3f, 1.0f));
+    CHECK(vecEq(lib.tagColor("drums"), glm::vec4(0.1f, 0.2f, 0.3f, 1.0f)));
+    CHECK(lib.tagColors().count("drums") == 1);
+    lib.clear();
+    CHECK(lib.tagColors().empty());
+}
+
+TEST_CASE("AssetLibrary addTag does not clobber an existing tag color") {
+    AssetLibrary lib;
+    int a = lib.add(AssetType::Audio, "k", "k");
+    lib.setTagColor("drums", glm::vec4(0.1f, 0.2f, 0.3f, 1.0f));
+    lib.addTag(a, "drums");                                   // must NOT overwrite the set color
+    CHECK(vecEq(lib.tagColor("drums"), glm::vec4(0.1f, 0.2f, 0.3f, 1.0f)));
+}
+
+TEST_CASE("AssetLibrary loadTagColors round-trips the registry") {
+    AssetLibrary lib;
+    std::map<std::string, glm::vec4> reg;
+    reg["loop"] = glm::vec4(0.4f, 0.5f, 0.6f, 1.0f);
+    lib.loadTagColors(reg);
+    CHECK(vecEq(lib.tagColor("loop"), glm::vec4(0.4f, 0.5f, 0.6f, 1.0f)));
 }
