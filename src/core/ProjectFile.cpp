@@ -66,6 +66,12 @@ std::string serializeProject(const ProjectDoc& d) {
         out += "asset " + std::to_string(a.id) + " " + std::to_string((int)a.type) + "\n";
         if (!a.label.empty()) out += "alabel " + escape(a.label) + "\n";
         if (!a.path.empty())  out += "apath "  + escape(a.path)  + "\n";
+        for (const std::string& t : a.tags) out += "atag " + escape(t) + "\n";
+    }
+    for (const auto& kv : d.tagColors) {
+        const glm::vec4& c = kv.second;
+        out += "tagcolor " + std::to_string(c.x) + " " + std::to_string(c.y) + " "
+             + std::to_string(c.z) + " " + std::to_string(c.w) + " " + escape(kv.first) + "\n";
     }
     return out;
 }
@@ -131,6 +137,12 @@ bool parseProject(const std::string& text, ProjectDoc& out) {
             if (curAsset) curAsset->label = unescape(restOfLine(ls));
         } else if (kw == "apath") {
             if (curAsset) curAsset->path = unescape(restOfLine(ls));
+        } else if (kw == "atag") {
+            if (curAsset) curAsset->tags.push_back(unescape(restOfLine(ls)));
+        } else if (kw == "tagcolor") {
+            float r, g, b, a; ls >> r >> g >> b >> a;
+            if (ls.fail()) continue;                       // skip malformed; not fatal
+            out.tagColors[unescape(restOfLine(ls))] = glm::vec4(r, g, b, a);
         }
         // unknown keyword -> ignored (forward compatible)
     }
@@ -158,12 +170,14 @@ ProjectDoc captureProject(const Graph& g) {
     for (const UiAutomationChannel& ch : g.automation().channels())
         d.autos.push_back({ch.nodeId, ch.port, ch.outMin, ch.outMax, ch.curve});
     d.assets = g.assets().all();
+    d.tagColors = g.assets().tagColors();
     return d;
 }
 
 void restoreProject(const ProjectDoc& d, Graph& g, const NodeFactory& factory, const NodeInit& init) {
     g.clear();
     g.assets().load(d.assets);
+    g.assets().loadTagColors(d.tagColors);
     std::unordered_map<int, int> idMap;
     for (const DocNode& dn : d.nodes) {
         std::unique_ptr<Node> node = factory(dn.type);

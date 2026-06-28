@@ -233,3 +233,47 @@ TEST_CASE("AssetLibrary loadTagColors round-trips the registry") {
     lib.loadTagColors(reg);
     CHECK(vecEq(lib.tagColor("loop"), glm::vec4(0.4f, 0.5f, 0.6f, 1.0f)));
 }
+
+TEST_CASE("ProjectFile round-trips asset tags + tag colors (incl. spaces)") {
+    ProjectDoc d;
+    Asset a{1, AssetType::Audio, "kick", "k.wav"};
+    a.tags = {"drums", "tight loop"};          // a tag with a space
+    d.assets = { a };
+    d.tagColors["drums"]      = glm::vec4(0.2f, 0.4f, 0.6f, 1.0f);
+    d.tagColors["tight loop"] = glm::vec4(0.9f, 0.1f, 0.3f, 1.0f);
+
+    std::string text = serializeProject(d);
+    ProjectDoc out;
+    REQUIRE(parseProject(text, out));
+    REQUIRE(out.assets.size() == 1);
+    CHECK(out.assets[0].tags == std::vector<std::string>{"drums", "tight loop"});
+    REQUIRE(out.tagColors.count("drums") == 1);
+    REQUIRE(out.tagColors.count("tight loop") == 1);
+    CHECK(out.tagColors["drums"].x == doctest::Approx(0.2f));
+    CHECK(out.tagColors["drums"].z == doctest::Approx(0.6f));
+    CHECK(out.tagColors["tight loop"].x == doctest::Approx(0.9f));
+}
+
+TEST_CASE("ProjectFile without tag lines loads empty tags + colors") {
+    ProjectDoc out;
+    REQUIRE(parseProject("oss-project 1\ntransport 120 4 0 0 4 8\nasset 1 0\n", out));
+    REQUIRE(out.assets.size() == 1);
+    CHECK(out.assets[0].tags.empty());
+    CHECK(out.tagColors.empty());
+}
+
+TEST_CASE("captureProject / restoreProject carry tags + colors through a Graph") {
+    Graph g;
+    int a = g.assets().add(AssetType::Audio, "kick", "k.wav");
+    g.assets().addTag(a, "drums");
+    g.assets().setTagColor("drums", glm::vec4(0.3f, 0.3f, 0.3f, 1.0f));
+    ProjectDoc d = captureProject(g);
+
+    Graph g2;
+    auto factory = [](const std::string&) -> std::unique_ptr<Node> { return nullptr; };
+    auto init    = [](Node&) {};
+    restoreProject(d, g2, factory, init);
+    REQUIRE(g2.assets().all().size() == 1);
+    CHECK(g2.assets().all()[0].tags == std::vector<std::string>{"drums"});
+    CHECK(g2.assets().tagColor("drums").x == doctest::Approx(0.3f));
+}
