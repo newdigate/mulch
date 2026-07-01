@@ -163,6 +163,7 @@ int main(int argc, char** argv) {
     IMGUI_CHECKVERSION();
     ImGui::CreateContext();
     ImGui::StyleColorsDark();
+    ImGui::GetIO().ConfigFlags |= ImGuiConfigFlags_DockingEnable;   // dockable editor panels
     ImGui_ImplGlfw_InitForOpenGL(editorWin, true);   // ImGui input/callbacks: editor window only
     ImGui_ImplOpenGL3_Init("#version 410");
 

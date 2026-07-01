@@ -40,10 +40,14 @@ void drawTransportBar(Transport& t, ProjectBarIO* io) {
     // the far right clip off-screen on a narrow window (the Assets/Prefs toggles did).
     // A left menu never clips. The bool* MenuItem overload shows a checkmark for the
     // current state and flips it on click.
-    if (io && (io->showPreferences || io->showAssets)) {
+    if (io && (io->showPreferences || io->showAssets || io->onResetLayout)) {
         if (ImGui::BeginMenu("View")) {
             if (io->showPreferences) ImGui::MenuItem("Preferences", nullptr, io->showPreferences);
             if (io->showAssets)      ImGui::MenuItem("Assets",      nullptr, io->showAssets);
+            if (io->onResetLayout) {
+                ImGui::Separator();
+                if (ImGui::MenuItem("Reset Layout")) io->onResetLayout();
+            }
             ImGui::EndMenu();
         }
     }

@@ -47,6 +47,7 @@ private:
     MidiSyncEngine   syncEngine_;
     bool             showPreferences_ = false;
     bool             showAssets_ = false;
+    bool             wantResetLayout_ = false;   // set by View > Reset Layout; rebuilds the default next frame
 
     void saveProjectAs();         // prompt for a destination, save, remember it
     void saveCurrentOrPrompt();   // Save: write currentPath_, or Save As when untitled
