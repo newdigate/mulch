@@ -51,7 +51,8 @@ static int runScreenshot(const std::string& path) {
     IMGUI_CHECKVERSION();
     ImGui::CreateContext();
     ImGui::StyleColorsDark();
-    ImGui::GetIO().ConfigFlags |= ImGuiConfigFlags_NoMouse;   // no hover artefacts
+    ImGui::GetIO().ConfigFlags |= ImGuiConfigFlags_NoMouse | ImGuiConfigFlags_DockingEnable;
+    ImGui::GetIO().IniFilename = nullptr;   // deterministic capture: always the fresh default layout
     ImGui_ImplGlfw_InitForOpenGL(win, false);                 // headless: no input callbacks
     ImGui_ImplOpenGL3_Init("#version 410");
 
@@ -91,21 +92,13 @@ static int runScreenshot(const std::string& path) {
 
         // ImGui lays out in logical points (window size); GL works in framebuffer
         // pixels (2x on a Retina display) -- keep the two apart.
-        int winW = 0, winH = 0; glfwGetWindowSize(win, &winW, &winH);
         int fbW = 0, fbH = 0;   glfwGetFramebufferSize(win, &fbW, &fbH);
         for (int f = 0; f < 4; ++f) {            // a few frames so ImGui settles
             glfwPollEvents();
             ImGui_ImplOpenGL3_NewFrame();
             ImGui_ImplGlfw_NewFrame();
             ImGui::NewFrame();
-            app.frame(1.0f / 60.0f);
-            // Lay the windows out (logical points) below the transport menu bar.
-            const float top = 26.0f, gap = 8.0f;
-            const float graphH = (winH - top) * 0.55f;
-            ImGui::SetWindowPos("Node Graph", ImVec2(gap, top));
-            ImGui::SetWindowSize("Node Graph", ImVec2(winW - gap * 2, graphH));
-            ImGui::SetWindowPos("Automation", ImVec2(gap, top + graphH + gap));
-            ImGui::SetWindowSize("Automation", ImVec2(winW - gap * 2, (winH - top) * 0.45f - gap * 2));
+            app.frame(1.0f / 60.0f);             // submits the host dockspace + default layout
             ImGui::Render();
             glViewport(0, 0, fbW, fbH);
             glClearColor(0.10f, 0.11f, 0.13f, 1.0f);
