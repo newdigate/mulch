@@ -28,6 +28,7 @@ Two windows open, sharing one GL context: a **Graph** window (the node editor) a
 an **Output** window showing the result fullscreen. Right-click the canvas to add
 nodes, drag between pins to connect, and select a node or link and press
 **Delete**/**Backspace** to remove it. Unconnected inputs show inline editors.
+The editor panels (Node Graph, Automation, Assets, Preferences) are dockable — drag to split or tab them; the layout is saved between runs, and **View → Reset Layout** restores the default. The Output stays its own window (put it fullscreen on a second display).
 
 A **transport toolbar** runs along the top of the Graph window — an editable
 decimal tempo, Play / Stop / Rewind / Fast-forward, the song position shown as

@@ -307,6 +307,13 @@ CMake 4.x, it's relaxed with `CMAKE_POLICY_VERSION_MINIMUM 3.5` around its
   `OutputNode`'s texture fullscreen. Textures/VBOs are *shared* across contexts; VAOs
   and FBOs are *not*, so each context makes its own. Node GL objects are freed with the
   editor context current (it owns them).
+  The Graph window's ImGui panels (Node Graph, Automation, Assets, Preferences) are **dockable**
+  (Dear ImGui `docking` branch, pinned `v1.91.5-docking`): `src/main.cpp` sets
+  `ImGuiConfigFlags_DockingEnable` and `Application::frame` submits a host dockspace via the
+  `ui/DockLayout` unit (`beginDockHost` + a crafted `buildDefaultDockLayout` that confines the
+  `imgui_internal.h` DockBuilder usage) before the panels; layout persists to `imgui.ini` and
+  **View → Reset Layout** rebuilds the default. The **Output stays a separate OS window**
+  (multi-viewport is off), so this rule is unchanged.
 - **Real-time threads bridge through queues, not the graph.** Audio (libsoundio) and
   mesh loading (`std::async`) run off the graph thread; they hand data back via a
   lock-free SPSC ring buffer (`src/audio/SpscRingBuffer.h`) or `AsyncLoader`
