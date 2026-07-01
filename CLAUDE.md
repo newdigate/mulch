@@ -110,6 +110,17 @@ CMake 4.x, it's relaxed with `CMAKE_POLICY_VERSION_MINIMUM 3.5` around its
   The ladder feedback and the output are `tanh`-saturated so it's BIBO-stable and
   bounded to `[-1,1]` regardless of resonance/FM. The voice is unit-tested in
   `core_tests`; the node is header-only and GL-free.
+- **Crossover Filter** — `CrossoverFilterNode` (`src/modules/CrossoverFilterNode.h`, header-only,
+  GL-free) splits one mono input into **bass / mid / treble** mono outputs with two cascaded
+  crossovers: a state-variable filter at the `low cutoff` sends its lowpass to `bass` and its
+  highpass on to a second filter at the `high cutoff`, whose lowpass is `mid` and highpass is
+  `treble`. Each crossover has its own `cutoff` + `resonance` Float inputs. The GL-free
+  `audio/StateVariableFilter.h` is the primitive — a 2-pole TPT (Zavalishin/Cytomic) filter that
+  yields lowpass/bandpass/highpass from one cutoff + resonance and is unconditionally stable
+  (unlike the lowpass-only `LadderFilter`), so no output clamp is needed. It's a musical filter,
+  not a phase-flat mastering crossover — the bands cover the spectrum continuously and sum to
+  approximately the input, and resonance emphasizes each crossover. Filter state persists across
+  per-frame blocks. The primitive and the node's band-split are unit-tested in `core_tests`.
 - **MIDI File player** — `MidiFilePlayerNode` (`src/modules/MidiFilePlayerNode.h`,
   header-only) wraps a GL-free from-scratch SMF parser (`src/core/MidiFile.{h,cpp}`,
   events positioned in beats with the file's tempo ignored) and a `MidiClipPlayer`
