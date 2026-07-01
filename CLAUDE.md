@@ -331,7 +331,10 @@ CMake 4.x, it's relaxed with `CMAKE_POLICY_VERSION_MINIMUM 3.5` around its
 - **`AudioFile` (`src/audio/AudioFile.{h,cpp}`)** decodes a whole audio file to a
   48 kHz stereo float buffer (FFmpeg, GL-free). The `AudioPlayerNode` plays it with
   a playhead advanced by rate*dt, reading the buffer with linear interpolation for
-  forward / reverse / variable-rate — the audio analogue of the Video Player.
+  forward / reverse / variable-rate — the audio analogue of the Video Player. A `sync`
+  toggle instead **bar-locks** the clip to the transport, time-warping it to span exactly
+  `length` bars (aligned to bar 1, repeating every `length` bars) via the GL-free
+  `audio/BarSync.h` `barSyncPlayhead`; `rate`/`loop` are ignored while synced.
 
 ## Adding a node
 
