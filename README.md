@@ -72,6 +72,7 @@ to see it; or `Mesh Loader → Shaded Render → Output` to spin a 3D model.
 | **Audio Mix** | four inputs, each with gain + pan → `left`/`right` mono outputs (pan mono sources into the stereo field) |
 | **Mono to Stereo** | pan a mono signal into a `left`/`right` pair (`pan` −1..1) |
 | **Stereo to Mono** | downmix a `left`/`right` pair to one mono signal (`balance` control) |
+| **Crossover Filter** | split one mono signal into `bass` / `mid` / `treble` mono outputs by two cascaded resonant crossovers; each crossover has its own `cutoff` + `resonance` (musical state-variable filter, not a phase-flat mastering crossover) |
 | **MIDI In / Out** | hardware or virtual MIDI ports (RtMidi) |
 | **MIDI File** | streams a Standard MIDI File (.mid) synced to the project BPM → MIDI: anchor `start offset` (bars), `loop` + `loop length` (bars), and `mute 1`…`mute 16` toggles per channel. The file's own tempo is ignored. Wire `out` into a synth (e.g. **Acid Bass**) |
 | **Step Seq** | 16-step drum sequencer → MIDI; `sync` toggle locks the step rate to the project BPM over musical divisions (1/4 … 1/32, incl. dotted + triplet), or runs free at its own `tempo` |
