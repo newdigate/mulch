@@ -10,6 +10,7 @@
 #include "modules/AudioMixerNode.h"
 #include "modules/MonoToStereoNode.h"
 #include "modules/StereoToMonoNode.h"
+#include "modules/CrossoverFilterNode.h"
 #include "modules/AudioOutputNode.h"
 #include "modules/MeshLoaderNode.h"
 #include "modules/MidiInputNode.h"
@@ -56,6 +57,7 @@ std::unique_ptr<Node> makeNode(const std::string& type) {
     if (type == "Audio Mix")   return std::make_unique<AudioMixerNode>();
     if (type == "Mono to Stereo") return std::make_unique<MonoToStereoNode>();
     if (type == "Stereo to Mono") return std::make_unique<StereoToMonoNode>();
+    if (type == "Crossover Filter") return std::make_unique<CrossoverFilterNode>();
     if (type == "Spectrograph") return std::make_unique<SpectrographNode>();
     if (type == "Oscilloscope") return std::make_unique<OscilloscopeNode>();
     if (type == "Mix")         return std::make_unique<MixNode>();
@@ -89,7 +91,7 @@ std::unique_ptr<Node> makeNode(const std::string& type) {
 const std::vector<NodeCategory>& nodeCategories() {
     static const std::vector<NodeCategory> cats = {
         { "Texture", { "Colour", "Video", "Mix", "Compositor", "Recorder", "Output" } },
-        { "Audio",   { "Sine", "Acid Bass", "Audio File", "Audio In", "Audio Mix", "Mono to Stereo", "Stereo to Mono", "Spectrograph", "Oscilloscope", "Drum Machine", "Audio Out" } },
+        { "Audio",   { "Sine", "Acid Bass", "Audio File", "Audio In", "Audio Mix", "Mono to Stereo", "Stereo to Mono", "Crossover Filter", "Spectrograph", "Oscilloscope", "Drum Machine", "Audio Out" } },
         { "MIDI",    { "MIDI In", "MIDI File", "Step Seq", "Chord Player", "Arpeggiator", "MIDI Merge", "MIDI Out", "Pitch Graph" } },
         { "3D",      { "Mesh Loader", "Text 2D", "Text 3D", "World Transform", "Wireframe", "Shaded Render", "Skybox", "Vertex Trail" } },
         { "Control", { "Automation", "LFO" } },

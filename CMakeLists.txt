@@ -310,6 +310,7 @@ add_executable(core_tests
   tests/test_asset_tree.cpp
   tests/test_asset_library_file.cpp
   tests/test_state_variable_filter.cpp
+  tests/test_crossover_filter.cpp
   src/core/Node.cpp
   src/core/Graph.cpp
   src/core/AutomationStore.cpp
