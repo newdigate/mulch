@@ -67,7 +67,7 @@ to see it; or `Mesh Loader → Shaded Render → Output` to spin a 3D model.
 | **Oscilloscope** | turns audio into an oscilloscope trace as geometry → Vertex: `left`/`right` mono inputs, `mode` (Waveform / X-Y vectorscope), a rising-edge `trigger` so a steady tone stands still, `window` (ms), and `gain`. Wire `geometry` into **Wireframe** to view it |
 | **Sine** | pure sine-wave audio source |
 | **Acid Bass** | 303-style monophonic synth: MIDI in → mono audio. Saw/square VCO + sub-osc → 4-pole resonant ladder filter (decay · env-mod · accent) → VCA → distortion, with note slide, filter FM (VCA → cutoff), filter key-tracking, and output `level`. Every control is an input port |
-| **Audio File** | play an audio file — mp3, wav, flac, m4a, ogg, … (any FFmpeg format), decoded to 48 kHz stereo → `left`/`right` mono outputs; signed `rate` (negative = reverse), variable speed, loop |
+| **Audio File** | play an audio file — mp3, wav, flac, m4a, ogg, … (any FFmpeg format), decoded to 48 kHz stereo → `left`/`right` mono outputs; signed `rate` (negative = reverse), variable speed, loop. `sync` + `length` bar-lock the clip to the transport, time-warping it to span exactly `length` bars (`rate`/`loop` ignored while synced) |
 | **Audio In / Out** | capture the mic/line-in / play to the default device (libsoundio); stereo carried as `left`/`right` mono ports |
 | **Audio Mix** | four inputs, each with gain + pan → `left`/`right` mono outputs (pan mono sources into the stereo field) |
 | **Mono to Stereo** | pan a mono signal into a `left`/`right` pair (`pan` −1..1) |

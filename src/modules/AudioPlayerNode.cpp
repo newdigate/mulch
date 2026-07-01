@@ -1,6 +1,7 @@
 #include "modules/AudioPlayerNode.h"
 #include "core/Value.h"
 #include "audio/AudioBlock.h"
+#include "audio/BarSync.h"
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
@@ -12,6 +13,8 @@ AudioPlayerNode::AudioPlayerNode() : Node("Audio File") {
     addInput("rate", PortType::Float,  1.0f, -2.0f, 2.0f);   // signed: negative = reverse
     addInput("play", PortType::Bool,   true);
     addInput("loop", PortType::Bool,   true);
+    addInput("sync", PortType::Bool,   false);               // warp the clip to `length` bars
+    addIntInput("length", 4, 1, 64);                         // bars to fit the clip into (whole)
     addOutput("left",  PortType::Audio);
     addOutput("right", PortType::Audio);
     outL_.assign(kAudioMaxBlock, 0.0f);
@@ -23,6 +26,8 @@ void AudioPlayerNode::evaluate(EvalContext& ctx) {
     float rate = ctx.in<float>(1);
     bool  play = ctx.in<bool>(2);
     bool  loop = ctx.in<bool>(3);
+    bool  sync       = ctx.in<bool>(4);
+    int   lengthBars = std::max(1, (int)std::lround(ctx.in<float>(5)));
 
     // Start a worker-thread decode whenever the file path changes.
     if (loader_.request(path, [path] { return decodeAudioFile(path); })) {
@@ -53,29 +58,42 @@ void AudioPlayerNode::evaluate(EvalContext& ctx) {
     }
 
     double prev = playhead_;
-    if (play) playhead_ += (double)rate * (double)ctx.dt;
-
     bool wrapped = false;
-    if (duration_ > 0.0) {
-        if (loop) {
-            if (playhead_ >= duration_ || playhead_ < 0.0) {
-                playhead_ = std::fmod(playhead_, duration_);
-                if (playhead_ < 0.0) playhead_ += duration_;
-                wrapped = true;
+    bool syncActive = sync && ctx.transport && duration_ > 0.0;
+
+    // Switching between sync and free playback jumps the playhead to an unrelated
+    // position; treat it like a seam so that block is silenced, not swept.
+    if (syncActive != wasSync_) wrapped = true;
+    wasSync_ = syncActive;
+
+    if (syncActive) {
+        // Bar-locked: derive the playhead from the transport so the clip spans exactly
+        // `lengthBars` bars, aligned to bar 1 and repeating every `lengthBars` bars.
+        playhead_ = barSyncPlayhead(ctx.transport->bars(), lengthBars, duration_);
+        if (playhead_ < prev) wrapped = true;    // crossed a length-bar seam (or a transport seek-back)
+    } else {
+        if (play) playhead_ += (double)rate * (double)ctx.dt;
+        if (duration_ > 0.0) {
+            if (loop) {
+                if (playhead_ >= duration_ || playhead_ < 0.0) {
+                    playhead_ = std::fmod(playhead_, duration_);
+                    if (playhead_ < 0.0) playhead_ += duration_;
+                    wrapped = true;
+                }
+            } else {
+                playhead_ = std::clamp(playhead_, 0.0, duration_);
             }
-        } else {
-            playhead_ = std::clamp(playhead_, 0.0, duration_);
+        } else if (playhead_ < 0.0) {
+            playhead_ = 0.0;
         }
-    } else if (playhead_ < 0.0) {
-        playhead_ = 0.0;
     }
 
-    // A wrap (or pause) makes the source slice discontinuous -> emit silence for
+    // A wrap/seam (or pause) makes the source slice discontinuous -> emit silence for
     // that one block rather than a swept glitch.
     double a0 = prev, a1 = playhead_;
     if (wrapped || !play) a1 = a0;
     emitAudio(ctx, a0, a1);
-    updateStatus(play, rate);
+    updateStatus(play, rate, syncActive, lengthBars);
 }
 
 void AudioPlayerNode::emitAudio(EvalContext& ctx, double t0, double t1) {
@@ -106,10 +124,15 @@ void AudioPlayerNode::emitAudio(EvalContext& ctx, double t0, double t1) {
     ctx.out<AudioRef>(1, AudioRef{outR_.data(), (std::size_t)n, sampleRate_});
 }
 
-void AudioPlayerNode::updateStatus(bool play, float rate) {
+void AudioPlayerNode::updateStatus(bool play, float rate, bool synced, int lengthBars) {
     char buf[96];
-    std::snprintf(buf, sizeof(buf), "%.1f / %.1f s  x%.2f%s",
-                  playhead_, duration_, rate, play ? "" : " (paused)");
+    if (synced)
+        std::snprintf(buf, sizeof(buf), "%.1f / %.1f s  sync %d bar%s%s",
+                      playhead_, duration_, lengthBars, lengthBars == 1 ? "" : "s",
+                      play ? "" : " (paused)");
+    else
+        std::snprintf(buf, sizeof(buf), "%.1f / %.1f s  x%.2f%s",
+                      playhead_, duration_, rate, play ? "" : " (paused)");
     status_ = buf;
 }
 

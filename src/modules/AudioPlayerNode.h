@@ -15,7 +15,9 @@ namespace oss {
 // advanced by rate*dt each frame and the output block is read from the clip with
 // linear interpolation. The signed `rate` gives variable speed and, when
 // negative, reverse playback (it reads the clip backwards). `play` pauses; `loop`
-// wraps at the ends. GL-free.
+// wraps at the ends. When `sync` is on, the clip is instead time-warped to span exactly
+// `length` bars, bar-locked to the transport (via audio/BarSync.h); `rate` and `loop`
+// are ignored while synced. GL-free.
 class AudioPlayerNode : public Node {
 public:
     AudioPlayerNode();
@@ -29,7 +31,7 @@ public:
 
 private:
     void emitAudio(EvalContext& ctx, double t0, double t1);
-    void updateStatus(bool play, float rate);
+    void updateStatus(bool play, float rate, bool synced, int lengthBars);
 
     AsyncLoader<AudioClip> loader_;            // worker-thread decode, keyed on path
     AudioClip   clip_;
@@ -41,6 +43,7 @@ private:
 
     std::vector<float> outL_, outR_;           // mono left / right (kAudioMaxBlock each)
     int         lastN_ = 0;                    // samples emitted last evaluate
+    bool        wasSync_ = false;              // sync state last frame (silence the switch block)
 };
 
 } // namespace oss
