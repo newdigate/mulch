@@ -44,6 +44,7 @@
 #define STB_IMAGE_WRITE_IMPLEMENTATION
 #include "stb_image_write.h"
 #include "modules/ImageStreamerNode.h"
+#include "modules/KaleidoscopeNode.h"
 #include <chrono>
 #include <cmath>
 #include <thread>
@@ -197,6 +198,44 @@ int main() {
         readAtUV(tex, 0.75f, 0.5f, r, gg, b, a);   // right quarter -> green
         if (!(gg > 200 && r < 60)) { glfwTerminate(); return fail("image right half not green"); }
         std::fprintf(stderr, "gl_smoke OK: Image Streamer loaded a split image\n");
+    }
+
+    // --- Scenario: Kaleidoscope folds an image (segments=4) ---
+    {
+        std::string fixture = writeSplitFixture();   // left red, right green
+        if (fixture.empty()) { glfwTerminate(); return fail("write kaleidoscope fixture"); }
+
+        Graph g;
+        auto img = std::make_unique<ImageStreamerNode>();
+        auto kal = std::make_unique<KaleidoscopeNode>();
+        auto out = std::make_unique<OutputNode>();
+        img->initGL(); kal->initGL(); out->initGL();
+        img->inputDefault(0) = Value(fixture);
+        kal->inputDefault(1) = Value(4.0f);   // segments = 4 -> 90-degree rotational symmetry
+        int iId = g.addNode(std::move(img));
+        int kId = g.addNode(std::move(kal));
+        int oId = g.addNode(std::move(out));
+        bool wired = g.connect(iId, 0, kId, 0) && g.connect(kId, 0, oId, 0);
+        if (!wired) { std::remove(fixture.c_str()); glfwTerminate(); return fail("wire ImageStreamer->Kaleidoscope->Output"); }
+
+        g.evaluate(1.0f / 60.0f);
+        TexRef tex = dynamic_cast<OutputNode*>(g.findNode(oId))->current();
+        std::remove(fixture.c_str());
+        if (tex.id == 0) { glfwTerminate(); return fail("kaleidoscope output not produced"); }
+
+        // (1) 4-fold rotational symmetry: UV (0.7,0.5) [angle 0] == UV (0.5,0.7) [angle 90deg].
+        int r0, g0, b0, a0, r1, g1, b1, a1;
+        readAtUV(tex, 0.7f, 0.5f, r0, g0, b0, a0);
+        readAtUV(tex, 0.5f, 0.7f, r1, g1, b1, a1);
+        if (!(near(r0, r1) && near(g0, g1) && near(b0, b1)))
+            { glfwTerminate(); return fail("kaleidoscope not 4-fold rotationally symmetric"); }
+
+        // (2) It actually folds: a point on the (red) left half samples the (green) right
+        // half after folding. Raw input at UV (0.3,0.5) is red; kaleidoscope output is green.
+        int r2, g2, b2, a2;
+        readAtUV(tex, 0.3f, 0.5f, r2, g2, b2, a2);
+        if (!(g2 > 200 && r2 < 60)) { glfwTerminate(); return fail("kaleidoscope did not fold the left half"); }
+        std::fprintf(stderr, "gl_smoke OK: Kaleidoscope folds (symmetric + wedge-folded)\n");
     }
 
     // --- Scenario 2: Colour(red) + Colour(blue) -> Mix(0.5) -> Output ---

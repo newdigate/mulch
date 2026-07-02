@@ -3,6 +3,7 @@
 #include <imgui_internal.h>   // ImGuiDockNode / DockBuilderGetNode for the first-run/reset check
 #include "modules/ColourNode.h"
 #include "modules/ImageStreamerNode.h"
+#include "modules/KaleidoscopeNode.h"
 #include "modules/ArpeggiatorNode.h"
 #include "modules/ChordPlayerNode.h"
 #include "modules/AutomationNode.h"
@@ -52,6 +53,7 @@ namespace oss {
 std::unique_ptr<Node> makeNode(const std::string& type) {
     if (type == "Colour")      return std::make_unique<ColourNode>();
     if (type == "Image Streamer") return std::make_unique<ImageStreamerNode>();
+    if (type == "Kaleidoscope") return std::make_unique<KaleidoscopeNode>();
     if (type == "Video")       return std::make_unique<VideoPlayerNode>();
     if (type == "Sine")        return std::make_unique<SineWaveNode>();
     if (type == "Acid Bass")   return std::make_unique<AcidNode>();
