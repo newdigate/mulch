@@ -1,0 +1,86 @@
+name: build-macos
+
+on:
+  push:
+    branches: [main, develop]
+    tags: ['v*']
+  pull_request:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { runner: macos-14, arch: arm64 }
+          - { runner: macos-13, arch: x64 }
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Compute version
+        id: ver
+        run: |
+          if [ "${GITHUB_REF_TYPE}" = "tag" ]; then
+            echo "version=${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
+          else
+            echo "version=dev-$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Install dependencies
+        run: brew install ffmpeg pkg-config dylibbundler cmake ninja
+
+      - name: Cache FetchContent deps
+        uses: actions/cache@v4
+        with:
+          path: build/_deps
+          key: macos-${{ matrix.arch }}-deps-${{ hashFiles('CMakeLists.txt') }}
+          restore-keys: macos-${{ matrix.arch }}-deps-
+
+      - name: Configure
+        run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build
+        run: cmake --build build -j
+
+      - name: Test (core, fatal)
+        run: ctest --test-dir build -R core_tests --output-on-failure
+
+      - name: Test (gl_smoke, best-effort)
+        continue-on-error: true
+        run: ctest --test-dir build -R gl_smoke --output-on-failure
+
+      - name: Assemble .app bundle
+        run: |
+          set -eux
+          APP="Shader Streamer.app"
+          mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources" "$APP/Contents/libs"
+          cp packaging/macos/Info.plist "$APP/Contents/Info.plist"
+          cp build/shader_streamer "$APP/Contents/MacOS/shader_streamer"
+          cp -r build/shaders "$APP/Contents/MacOS/shaders"
+          cp packaging/macos/launch "$APP/Contents/MacOS/launch"
+          chmod +x "$APP/Contents/MacOS/launch" "$APP/Contents/MacOS/shader_streamer"
+          dylibbundler -od -b \
+            -x "$APP/Contents/MacOS/shader_streamer" \
+            -d "$APP/Contents/libs" \
+            -p "@executable_path/../libs"
+
+      - name: Zip .app
+        run: |
+          ditto -c -k --keepParent "Shader Streamer.app" \
+            "Shader_Streamer-${{ steps.ver.outputs.version }}-macos-${{ matrix.arch }}.zip"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-app-${{ matrix.arch }}
+          path: Shader_Streamer-*-macos-${{ matrix.arch }}.zip
+
+      - name: Attach to release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: Shader_Streamer-*-macos-${{ matrix.arch }}.zip

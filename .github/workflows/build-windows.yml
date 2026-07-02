@@ -1,0 +1,99 @@
+name: build-windows
+
+on:
+  push:
+    branches: [main, develop]
+    tags: ['v*']
+  pull_request:
+
+permissions:
+  contents: write
+
+env:
+  VCPKG_BINARY_SOURCES: "clear;x-gha,readwrite"
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Compute version
+        id: ver
+        shell: bash
+        run: |
+          if [ "${GITHUB_REF_TYPE}" = "tag" ]; then
+            echo "version=${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
+          else
+            echo "version=dev-$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Export GitHub Actions cache env for vcpkg
+        uses: actions/github-script@v7
+        with:
+          script: |
+            core.exportVariable('ACTIONS_CACHE_URL', process.env.ACTIONS_CACHE_URL || '');
+            core.exportVariable('ACTIONS_RUNTIME_TOKEN', process.env.ACTIONS_RUNTIME_TOKEN || '');
+
+      - name: Install FFmpeg + pkgconf via vcpkg
+        shell: pwsh
+        run: |
+          & "$env:VCPKG_INSTALLATION_ROOT\vcpkg.exe" install ffmpeg pkgconf --triplet x64-windows
+
+      - name: Set up MSVC
+        uses: ilammy/msvc-dev-cmd@v1
+
+      - name: Configure
+        shell: pwsh
+        run: |
+          $vcpkg = $env:VCPKG_INSTALLATION_ROOT
+          $installed = "$vcpkg\installed\x64-windows"
+          $env:PKG_CONFIG_PATH = "$installed\lib\pkgconfig"
+          $env:PATH = "$installed\tools\pkgconf;$env:PATH"
+          $env:PKG_CONFIG = "$installed\tools\pkgconf\pkgconf.exe"   # point CMake's PkgConfig at vcpkg's pkgconf
+          cmake -S . -B build -G Ninja `
+            -DCMAKE_BUILD_TYPE=Release `
+            -DCMAKE_TOOLCHAIN_FILE="$vcpkg\scripts\buildsystems\vcpkg.cmake" `
+            -DVCPKG_TARGET_TRIPLET=x64-windows
+
+      - name: Build
+        shell: pwsh
+        run: cmake --build build
+
+      - name: Stage runtime DLLs next to the exe
+        shell: pwsh
+        run: |
+          $installed = "$env:VCPKG_INSTALLATION_ROOT\installed\x64-windows"
+          Copy-Item "$installed\bin\*.dll" build\ -Force
+
+      - name: Test (core, fatal)
+        shell: pwsh
+        run: ctest --test-dir build -R core_tests --output-on-failure
+
+      - name: Test (gl_smoke, best-effort)
+        continue-on-error: true
+        shell: pwsh
+        run: ctest --test-dir build -R gl_smoke --output-on-failure
+
+      - name: Build installer (Inno Setup)
+        shell: pwsh
+        run: |
+          choco install innosetup --no-progress -y
+          $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          & "$iscc" `
+            "/DMyVersion=${{ steps.ver.outputs.version }}" `
+            "/DSourceDir=$(Resolve-Path build)" `
+            packaging\windows\installer.iss
+          Get-ChildItem packaging\windows\dist
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-installer
+          path: packaging/windows/dist/*setup.exe
+
+      - name: Attach to release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: packaging/windows/dist/*setup.exe

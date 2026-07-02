@@ -1,0 +1,7 @@
+[Desktop Entry]
+Type=Application
+Name=Shader Streamer
+Exec=shader_streamer
+Icon=shader-streamer
+Categories=AudioVideo;Graphics;
+Terminal=false

@@ -1,0 +1,6 @@
+#!/bin/sh
+# AppImage entry point. The app loads shaders via paths relative to the CWD, so cd into
+# the bundled bin dir (which contains shaders/) before launching.
+HERE="$(dirname "$(readlink -f "$0")")"
+cd "$HERE/usr/bin" || exit 1
+exec ./shader_streamer "$@"
