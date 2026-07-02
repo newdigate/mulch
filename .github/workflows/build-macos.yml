@@ -48,8 +48,11 @@ jobs:
         run: pip install jinja2
 
       - name: Configure
-        run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
-          -DPython_EXECUTABLE="$pythonLocation/bin/python" -DPython3_EXECUTABLE="$pythonLocation/bin/python"
+        run: |
+          PY="$(command -v python)"
+          "$PY" -c "import jinja2; print('jinja2', jinja2.__version__)"   # fail fast if the wrong interpreter
+          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release \
+            -DPython_EXECUTABLE="$PY" -DPython3_EXECUTABLE="$PY" -DPython_FIND_FRAMEWORK=NEVER
 
       - name: Build
         run: cmake --build build -j

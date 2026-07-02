@@ -266,7 +266,7 @@ target_include_directories(shader_streamer PRIVATE src ${libsoundio_SOURCE_DIR} 
 target_compile_definitions(shader_streamer PRIVATE GLFW_INCLUDE_NONE TINYGLTF_ENABLE_DRACO
   OSS_DEFAULT_FONT="${OSS_DEFAULT_FONT}")
 target_link_libraries(shader_streamer PRIVATE ui_thirdparty glad_gl41 glm::glm libsoundio_static rtmidi
-  tinyobjloader meshoptimizer draco_static PkgConfig::FFMPEG nfd)
+  tinyobjloader meshoptimizer draco::draco PkgConfig::FFMPEG nfd)
 
 # --- Tests (GL-free core only) ---
 enable_testing()
@@ -379,7 +379,7 @@ target_include_directories(gl_smoke PRIVATE src ${tinygltf_SOURCE_DIR}
   ${stb_SOURCE_DIR} ${earcut_SOURCE_DIR}/include ${CMAKE_BINARY_DIR})
 target_compile_definitions(gl_smoke PRIVATE GLFW_INCLUDE_NONE TINYGLTF_ENABLE_DRACO
   OSS_DEFAULT_FONT="${OSS_DEFAULT_FONT}")
-target_link_libraries(gl_smoke PRIVATE glad_gl41 glfw glm::glm OpenGL::GL tinyobjloader meshoptimizer draco_static PkgConfig::FFMPEG)
+target_link_libraries(gl_smoke PRIVATE glad_gl41 glfw glm::glm OpenGL::GL tinyobjloader meshoptimizer draco::draco PkgConfig::FFMPEG)
 add_test(NAME gl_smoke COMMAND gl_smoke WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
 
 # Copy shaders next to the executable so the app can be run from the build dir too
