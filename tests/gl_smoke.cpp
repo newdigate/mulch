@@ -264,7 +264,7 @@ int main() {
           const Port& pf = probe.inputs()[0];
           if (!(pf.type == PortType::String && pf.assetBacked && pf.folderPicker && pf.assetType == AssetType::Image))
             { fs::remove_all(dir); glfwTerminate(); return fail("Sequencer.folder not a folder picker"); }
-          if (probe.inputs().size() != 4 || !probe.inputs()[2].integer)
+          if (probe.inputs().size() != 5 || !probe.inputs()[2].integer)
             { fs::remove_all(dir); glfwTerminate(); return fail("Sequencer 'beat length' not an int input at port 2"); } }
 
         Graph g;
@@ -312,6 +312,46 @@ int main() {
 
         fs::remove_all(dir);
         std::fprintf(stderr, "gl_smoke OK: Image Sequencer cycled a folder (async prefetch, free-run + sync)\n");
+    }
+
+    // --- Scenario: Image Sequencer cross-fades between images ---
+    {
+        namespace fs = std::filesystem;
+        fs::path dir = fs::temp_directory_path() / "oss_imgseq_fade";
+        fs::remove_all(dir);
+        fs::create_directories(dir);
+        bool wrote = writeSolidPNG((dir / "0.png").string(), 255, 0, 0)     // red
+                  && writeSolidPNG((dir / "1.png").string(), 0, 255, 0);    // green
+        if (!wrote) { fs::remove_all(dir); glfwTerminate(); return fail("write fade fixtures"); }
+
+        Graph g;
+        auto seq = std::make_unique<ImageSequencerNode>();
+        auto out = std::make_unique<OutputNode>();
+        seq->initGL(); out->initGL();
+        seq->inputDefault(0) = Value(dir.string());   // folder
+        seq->inputDefault(1) = Value(1.0f);           // duration = 1s
+        seq->inputDefault(2) = Value(1.0f);           // beat length
+        seq->inputDefault(3) = Value(false);          // sync off
+        seq->inputDefault(4) = Value(0.5f);           // fade duration = 0.5s
+        int sId = g.addNode(std::move(seq));
+        int oId = g.addNode(std::move(out));
+        if (!g.connect(sId, 0, oId, 0)) { fs::remove_all(dir); glfwTerminate(); return fail("connect fade Sequencer->Output"); }
+
+        // Step in 20 ms frames: red is shown, image 1 (green) prefetches, then at ~1 s the fade
+        // starts and mix(red, green, m) is on the output for ~0.5 s before it resolves to green.
+        bool sawBlend = false, reachedGreen = false;
+        for (int f = 0; f < 2000 && !reachedGreen; ++f) {
+            g.evaluate(0.02f);
+            TexRef t = dynamic_cast<OutputNode*>(g.findNode(oId))->current();
+            if (t.id == 0) continue;
+            int r, gg, b, a; readCentre(t, r, gg, b, a);
+            if (r > 60 && gg > 60 && b < 60) sawBlend = true;   // a red+green blend (mid-fade)
+            if (gg > 200 && r < 60)          reachedGreen = true;  // resolved to the incoming image
+        }
+        fs::remove_all(dir);
+        if (!sawBlend)     { glfwTerminate(); return fail("cross-fade produced no red/green blend"); }
+        if (!reachedGreen) { glfwTerminate(); return fail("cross-fade did not resolve to green"); }
+        std::fprintf(stderr, "gl_smoke OK: Image Sequencer cross-fade blends red->green\n");
     }
 
     // --- Scenario 2: Colour(red) + Colour(blue) -> Mix(0.5) -> Output ---
