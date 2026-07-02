@@ -24,6 +24,14 @@ it doesn't FetchContent cleanly. When a fetched dep's bundled CMake is too old f
 CMake 4.x, it's relaxed with `CMAKE_POLICY_VERSION_MINIMUM 3.5` around its
 `FetchContent_MakeAvailable`.
 
+**CI / packaging.** `.github/workflows/build-{linux,macos,windows}.yml` build + package the app per
+OS: Linux AppImage (`linuxdeploy` + `appimagetool`, GTK plugin), macOS `.app` for arm64 (`macos-14`)
++ Intel x64 (`macos-13`) with dylibs bundled via `dylibbundler`, and a Windows Inno Setup installer
+(MSVC + vcpkg FFmpeg). They run on push/PR (artifacts) + attach to a Release on `v*` tags; packages
+are unsigned. Helper files live in `packaging/{linux,macos,windows}/`. Because `ShaderNode` loads
+shaders by CWD-relative path, each package launches the app with `shaders/` as the working directory
+(AppImage `AppRun`, `.app` launcher script, installer shortcut `WorkingDir`).
+
 ## Architecture
 
 - **`Value`** (`src/core/Value.h`) is the one currency on every edge:

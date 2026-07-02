@@ -56,6 +56,22 @@ handles stay straight lines, and older projects load unchanged.
 Try it: wire `Sine → Audio Out` to hear a tone and `Sine → Spectrograph → Output`
 to see it; or `Mesh Loader → Shaded Render → Output` to spin a 3D model.
 
+## Downloads & CI
+
+Three GitHub Actions workflows (`.github/workflows/build-{linux,macos,windows}.yml`) build the app
+and produce native packages on every push to `main`/`develop` and on pull requests (downloadable
+from the Actions run), and attach them to a GitHub Release when a `v*` tag is pushed:
+
+- **Linux** → AppImage (`ubuntu-22.04`; bundles FFmpeg/GTK via `linuxdeploy` + `appimagetool`).
+- **macOS** → `.app` zip for both Apple-Silicon **arm64** (`macos-14`) and Intel **x64** (`macos-13`);
+  FFmpeg dylibs bundled with `dylibbundler`, so no Homebrew needed at runtime.
+- **Windows** → Inno Setup installer (`windows-latest`, MSVC + vcpkg FFmpeg).
+
+Packages are **unsigned**, so first launch goes through the OS "unidentified developer" prompt
+(macOS: right-click → Open, or `xattr -dr com.apple.quarantine`; Windows: "More info" → "Run anyway").
+Each package launches the app with `shaders/` as the working directory, so the shipped app finds its
+shaders. Packaging helper files live in `packaging/{linux,macos,windows}/`.
+
 ## Modules
 
 | | |
