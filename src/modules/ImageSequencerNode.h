@@ -132,27 +132,31 @@ public:
             status_ = std::to_string(shownIndex_ + 1) + "/" + std::to_string(n)
                     + "  " + fileBaseName(files_[(std::size_t)shownIndex_]);
 
-        // Render the (possibly blended) frame into the FBO and publish it.
+        // Publish the frame. When not fading, output the current image directly (no FBO pass) --
+        // zero-cost for instant cuts and dwell, matching the pre-crossfade behavior. The blend
+        // pass runs only during an active fade.
+        if (!fading_) {
+            ctx.out<TexRef>(0, (shownIndex_ >= 0 && texShown_) ? TexRef{ texShown_, wShown_, hShown_ }
+                                                               : TexRef{});
+            return;
+        }
+
         int fw = ctx.prefs ? ctx.prefs->textureWidth  : kCanvasW;
         int fh = ctx.prefs ? ctx.prefs->textureHeight : kCanvasH;
         if (fbo_.width() != fw || fbo_.height() != fh) fbo_.create(fw, fh);
-        if (shownIndex_ >= 0 && texShown_) {
-            fbo_.bind();
-            glUseProgram(fadeProg_);
-            glActiveTexture(GL_TEXTURE0);
-            glBindTexture(GL_TEXTURE_2D, texShown_);
-            glUniform1i(glGetUniformLocation(fadeProg_, "uFrom"), 0);
-            glActiveTexture(GL_TEXTURE1);
-            glBindTexture(GL_TEXTURE_2D, fading_ ? texNext_ : texShown_);
-            glUniform1i(glGetUniformLocation(fadeProg_, "uTo"), 1);
-            glUniform1f(glGetUniformLocation(fadeProg_, "uMix"), fading_ ? m : 0.0f);
-            glActiveTexture(GL_TEXTURE0);   // restore default unit
-            fsq_.draw();
-            Framebuffer::unbind();
-            ctx.out<TexRef>(0, TexRef{ fbo_.texture(), fbo_.width(), fbo_.height() });
-        } else {
-            ctx.out<TexRef>(0, TexRef{});
-        }
+        fbo_.bind();
+        glUseProgram(fadeProg_);
+        glActiveTexture(GL_TEXTURE0);
+        glBindTexture(GL_TEXTURE_2D, texShown_);
+        glUniform1i(glGetUniformLocation(fadeProg_, "uFrom"), 0);
+        glActiveTexture(GL_TEXTURE1);
+        glBindTexture(GL_TEXTURE_2D, texNext_);
+        glUniform1i(glGetUniformLocation(fadeProg_, "uTo"), 1);
+        glUniform1f(glGetUniformLocation(fadeProg_, "uMix"), m);
+        glActiveTexture(GL_TEXTURE0);   // restore default unit
+        fsq_.draw();
+        Framebuffer::unbind();
+        ctx.out<TexRef>(0, TexRef{ fbo_.texture(), fbo_.width(), fbo_.height() });
     }
 
     std::string statusLine() const override { return status_; }
