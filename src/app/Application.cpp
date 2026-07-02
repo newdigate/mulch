@@ -1,4 +1,6 @@
 #include "app/Application.h"
+#include "ui/DockLayout.h"
+#include <imgui_internal.h>   // ImGuiDockNode / DockBuilderGetNode for the first-run/reset check
 #include "modules/ColourNode.h"
 #include "modules/ArpeggiatorNode.h"
 #include "modules/ChordPlayerNode.h"
@@ -213,10 +215,22 @@ void Application::frame(float dt) {
     io.onLibSave   = [this]{ saveLibraryOrPrompt(); };
     io.onLibSaveAs = [this]{ saveLibraryAs(); };
     io.onLibRemap = [this]{ assets_.openRemap(); };
+    io.onResetLayout = [this]{ wantResetLayout_ = true; };
     io.status = projectStatus_;
     io.showPreferences = &showPreferences_;
     io.showAssets = &showAssets_;
     drawTransportBar(graph_.transport(), &io);   // top toolbar: tempo + play/stop/scrub
+
+    // Host dockspace for the editor panels. DockSpaceOverViewport creates the node when
+    // submitted, so a fresh run (no imgui.ini) shows an empty node -> build the default;
+    // a restored-from-ini node is non-empty and is left alone. Reset forces a rebuild.
+    ImGuiID dockId = beginDockHost();
+    ImGuiDockNode* dockNode = ImGui::DockBuilderGetNode(dockId);
+    if (wantResetLayout_ || dockNode == nullptr || dockNode->IsEmpty()) {
+        buildDefaultDockLayout(dockId);
+        wantResetLayout_ = false;
+    }
+
     editor_.draw(graph_, [this](const std::string& t, glm::vec2 p){ return addNodeOfType(t, p); });
     automation_.draw(graph_);                // automation timeline window
     preferences_.draw(prefs_, [this]{ savePreferences(); }, &showPreferences_);

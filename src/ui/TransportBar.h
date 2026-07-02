@@ -16,6 +16,7 @@ struct ProjectBarIO {
     std::function<void()> onLibSave;    // Asset Library > Save
     std::function<void()> onLibSaveAs;  // Asset Library > Save As
     std::function<void()> onLibRemap;   // Asset Library > Remap Directory
+    std::function<void()> onResetLayout;  // View > Reset Layout (restore the default dock layout)
     std::string status;                 // shown after the buttons
     bool*       showPreferences = nullptr;   // toggled by the View > Preferences item (if non-null)
     bool*       showAssets      = nullptr;   // toggled by the View > Assets item (if non-null)

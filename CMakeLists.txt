@@ -34,7 +34,7 @@ FetchContent_Declare(glm GIT_REPOSITORY https://github.com/g-truc/glm.git GIT_TA
 FetchContent_MakeAvailable(glm)
 
 # --- Dear ImGui (sources only; we build the lib ourselves) ---
-FetchContent_Declare(imgui GIT_REPOSITORY https://github.com/ocornut/imgui.git GIT_TAG v1.91.5)
+FetchContent_Declare(imgui GIT_REPOSITORY https://github.com/ocornut/imgui.git GIT_TAG v1.91.5-docking)
 FetchContent_MakeAvailable(imgui)
 
 # --- imgui-node-editor ---
@@ -245,6 +245,7 @@ set(APP_SOURCES
   src/ui/PreferencesPanel.cpp
   src/ui/FileDialog.cpp
   src/ui/AssetsPanel.cpp
+  src/ui/DockLayout.cpp
   src/app/ThreadPriority.cpp
   src/app/MidiSyncEngine.cpp
   src/app/Application.cpp
