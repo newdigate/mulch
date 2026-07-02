@@ -317,6 +317,11 @@ void AssetsPanel::draw(AssetLibrary& lib, bool* open, const std::string& mediaDi
                     {"mp4", "mov", "mkv", "avi", "webm"});
             ImGui::EndTabItem();
         }
+        if (ImGui::BeginTabItem("Image")) {
+            drawTab(lib, AssetType::Image, "image file",
+                    {"png", "jpg", "jpeg", "bmp", "tga", "gif", "hdr", "psd"});
+            ImGui::EndTabItem();
+        }
         if (ImGui::BeginTabItem("MIDI")) {
             drawTab(lib, AssetType::Midi, "MIDI file", {"mid", "midi"});
             ImGui::EndTabItem();

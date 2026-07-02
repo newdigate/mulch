@@ -33,6 +33,7 @@ static const char* assetTypeName(AssetType t) {
         case AssetType::Video: return "Video";
         case AssetType::Midi:  return "MIDI";
         case AssetType::Mesh:  return "3D";
+        case AssetType::Image: return "Image";
     }
     return "media";
 }
