@@ -40,6 +40,9 @@ jobs:
           key: macos-${{ matrix.arch }}-deps-${{ hashFiles('CMakeLists.txt') }}
           restore-keys: macos-${{ matrix.arch }}-deps-
 
+      - name: Install jinja2 (the glad GL-loader generator needs it)
+        run: python3 -m pip install --break-system-packages jinja2
+
       - name: Configure
         run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
 

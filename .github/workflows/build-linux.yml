@@ -11,7 +11,7 @@ permissions:
 
 jobs:
   build:
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
 
@@ -34,7 +34,7 @@ jobs:
             libgtk-3-dev \
             libasound2-dev libpulse-dev \
             xvfb libgl1-mesa-dri \
-            libfuse2 imagemagick desktop-file-utils
+            libfuse2t64 imagemagick desktop-file-utils
 
       - name: Cache FetchContent deps
         uses: actions/cache@v4
@@ -42,6 +42,9 @@ jobs:
           path: build/_deps
           key: linux-deps-${{ hashFiles('CMakeLists.txt') }}
           restore-keys: linux-deps-
+
+      - name: Install jinja2 (the glad GL-loader generator needs it)
+        run: python3 -m pip install --break-system-packages jinja2
 
       - name: Configure
         run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
