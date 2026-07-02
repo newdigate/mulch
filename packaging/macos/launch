@@ -1,0 +1,5 @@
+#!/bin/sh
+# .app entry point (CFBundleExecutable). The app loads shaders via paths relative to the
+# CWD, so cd into Contents/MacOS (which contains shaders/) before launching.
+cd "$(dirname "$0")" || exit 1
+exec ./shader_streamer "$@"
