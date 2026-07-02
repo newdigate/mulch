@@ -41,6 +41,9 @@
 #include "gfx/VideoDecoder.h"
 #include "gfx/VideoEncoder.h"
 #include "gfx/TextGeometry.h"
+#define STB_IMAGE_WRITE_IMPLEMENTATION
+#include "stb_image_write.h"
+#include "modules/ImageStreamerNode.h"
 #include <chrono>
 #include <cmath>
 #include <thread>
@@ -76,6 +79,36 @@ static void readCentre(TexRef tex, int& r, int& g, int& b, int& a) {
     glGetTexImage(GL_TEXTURE_2D, 0, GL_RGBA, GL_UNSIGNED_BYTE, px.data());
     size_t i = ((size_t)(tex.h/2) * tex.w + (tex.w/2)) * 4;
     r = px[i]; g = px[i+1]; b = px[i+2]; a = px[i+3];
+}
+
+// Read the texel nearest UV (u,v in [0,1]); vertical orientation doesn't matter for
+// horizontal (u) checks. Used by the image scenarios.
+static void readAtUV(TexRef tex, float u, float v, int& r, int& g, int& b, int& a) {
+    std::vector<unsigned char> px((size_t)tex.w * tex.h * 4);
+    glBindTexture(GL_TEXTURE_2D, tex.id);
+    glGetTexImage(GL_TEXTURE_2D, 0, GL_RGBA, GL_UNSIGNED_BYTE, px.data());
+    int x = (int)(u * (tex.w - 1));
+    int y = (int)(v * (tex.h - 1));
+    size_t i = ((size_t)y * tex.w + x) * 4;
+    r = px[i]; g = px[i+1]; b = px[i+2]; a = px[i+3];
+}
+
+// Write a 64x64 PNG: left half red, right half green. Returns the path (or "" on failure).
+static std::string writeSplitFixture() {
+    const int W = 64, H = 64;
+    std::vector<unsigned char> px((size_t)W * H * 4);
+    for (int y = 0; y < H; ++y)
+        for (int x = 0; x < W; ++x) {
+            size_t i = ((size_t)y * W + x) * 4;
+            bool left = x < W / 2;
+            px[i+0] = left ? 255 : 0;
+            px[i+1] = left ? 0   : 255;
+            px[i+2] = 0;
+            px[i+3] = 255;
+        }
+    std::string path = "gl_smoke_image_fixture.png";
+    if (!stbi_write_png(path.c_str(), W, H, 4, px.data(), W * 4)) return std::string();
+    return path;
 }
 
 int main() {
@@ -137,6 +170,33 @@ int main() {
             glfwTerminate(); return fail("centre pixel not orange");
         }
         std::fprintf(stderr, "gl_smoke OK: Colour->Output pipeline rendered orange\n");
+    }
+
+    // --- Scenario: Image Streamer loads a split image ---
+    {
+        std::string fixture = writeSplitFixture();
+        if (fixture.empty()) { glfwTerminate(); return fail("write image fixture"); }
+
+        Graph g;
+        auto img = std::make_unique<ImageStreamerNode>();
+        auto out = std::make_unique<OutputNode>();
+        img->initGL(); out->initGL();
+        img->inputDefault(0) = Value(fixture);          // set the "file" path
+        int iId = g.addNode(std::move(img));
+        int oId = g.addNode(std::move(out));
+        if (!g.connect(iId, 0, oId, 0)) { std::remove(fixture.c_str()); glfwTerminate(); return fail("connect ImageStreamer->Output"); }
+
+        g.evaluate(1.0f / 60.0f);
+        TexRef tex = dynamic_cast<OutputNode*>(g.findNode(oId))->current();
+        std::remove(fixture.c_str());
+        if (tex.id == 0 || tex.w <= 0 || tex.h <= 0) { glfwTerminate(); return fail("image output texture not produced"); }
+
+        int r, gg, b, a;
+        readAtUV(tex, 0.25f, 0.5f, r, gg, b, a);   // left quarter -> red
+        if (!(r > 200 && gg < 60)) { glfwTerminate(); return fail("image left half not red"); }
+        readAtUV(tex, 0.75f, 0.5f, r, gg, b, a);   // right quarter -> green
+        if (!(gg > 200 && r < 60)) { glfwTerminate(); return fail("image right half not green"); }
+        std::fprintf(stderr, "gl_smoke OK: Image Streamer loaded a split image\n");
     }
 
     // --- Scenario 2: Colour(red) + Colour(blue) -> Mix(0.5) -> Output ---

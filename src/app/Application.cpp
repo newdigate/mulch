@@ -2,6 +2,7 @@
 #include "ui/DockLayout.h"
 #include <imgui_internal.h>   // ImGuiDockNode / DockBuilderGetNode for the first-run/reset check
 #include "modules/ColourNode.h"
+#include "modules/ImageStreamerNode.h"
 #include "modules/ArpeggiatorNode.h"
 #include "modules/ChordPlayerNode.h"
 #include "modules/AutomationNode.h"
@@ -50,6 +51,7 @@ namespace oss {
 
 std::unique_ptr<Node> makeNode(const std::string& type) {
     if (type == "Colour")      return std::make_unique<ColourNode>();
+    if (type == "Image Streamer") return std::make_unique<ImageStreamerNode>();
     if (type == "Video")       return std::make_unique<VideoPlayerNode>();
     if (type == "Sine")        return std::make_unique<SineWaveNode>();
     if (type == "Acid Bass")   return std::make_unique<AcidNode>();
@@ -92,7 +94,7 @@ std::unique_ptr<Node> makeNode(const std::string& type) {
 
 const std::vector<NodeCategory>& nodeCategories() {
     static const std::vector<NodeCategory> cats = {
-        { "Texture", { "Colour", "Video", "Mix", "Compositor", "Recorder", "Output" } },
+        { "Texture", { "Colour", "Image Streamer", "Video", "Mix", "Compositor", "Kaleidoscope", "Recorder", "Output" } },
         { "Audio",   { "Sine", "Acid Bass", "Audio File", "Audio In", "Audio Mix", "Mono to Stereo", "Stereo to Mono", "Crossover Filter", "Spectrograph", "Oscilloscope", "Drum Machine", "Audio Out" } },
         { "MIDI",    { "MIDI In", "MIDI File", "Step Seq", "Chord Player", "Arpeggiator", "MIDI Merge", "MIDI Out", "Pitch Graph" } },
         { "3D",      { "Mesh Loader", "Text 2D", "Text 3D", "World Transform", "Wireframe", "Shaded Render", "Skybox", "Vertex Trail" } },
