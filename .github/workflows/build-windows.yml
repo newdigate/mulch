@@ -43,9 +43,13 @@ jobs:
       - name: Set up MSVC
         uses: ilammy/msvc-dev-cmd@v1
 
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
       - name: Install jinja2 (the glad GL-loader generator needs it)
         shell: pwsh
-        run: python -m pip install jinja2
+        run: pip install jinja2
 
       - name: Configure
         shell: pwsh
@@ -58,7 +62,9 @@ jobs:
           cmake -S . -B build -G Ninja `
             -DCMAKE_BUILD_TYPE=Release `
             -DCMAKE_TOOLCHAIN_FILE="$vcpkg\scripts\buildsystems\vcpkg.cmake" `
-            -DVCPKG_TARGET_TRIPLET=x64-windows
+            -DVCPKG_TARGET_TRIPLET=x64-windows `
+            -DPython_EXECUTABLE="$env:pythonLocation\python.exe" `
+            -DPython3_EXECUTABLE="$env:pythonLocation\python.exe"
 
       - name: Build
         shell: pwsh
