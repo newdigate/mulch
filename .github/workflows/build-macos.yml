@@ -16,7 +16,7 @@ jobs:
       matrix:
         include:
           - { runner: macos-14, arch: arm64 }
-          - { runner: macos-13, arch: x64 }
+          - { runner: self-hosted, arch: x64 }   # Intel: GitHub-hosted macos-13 is scarce; use a registered self-hosted x86 runner
     runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v4
