@@ -177,6 +177,15 @@ shaders by CWD-relative path, each package launches the app with `shaders/` as t
   (polar wedge fold with `segments`/`rotation`/`zoom`/`center` ports — wire `rotation` to an
   LFO to spin). Both live in the **Texture** category. `ImageLoader` is unit-tested in
   `core_tests`; both nodes are `gl_smoke`-checked (image round-trip + fold symmetry).
+  A sibling **Image Sequencer** (`src/modules/ImageSequencerNode.h`, header-only) plays a
+  *folder* of images in sequence: its `folder` input is a **folder picker** (a new
+  `Port::folderPicker` built by `Node::addImageFolderInput`; the editor's `NodePopup` lists
+  `uniqueAssetFolders(byType(Image))` — the distinct image-containing folders in the library —
+  and copies the chosen folder path in). The node scans that folder on disk (`listImagesInDir`,
+  `std::filesystem` in `gfx/ImageLoader`) and advances one image every `duration` — seconds when
+  free-running, or beats when `sync` is on (`syncedImageIndex`, stateless from `transport.beats()`,
+  in GL-free `core/ImageSequence.h`) — decoding one image at a time. `parentDir`/`uniqueAssetFolders`/
+  `listImagesInDir`/`syncedImageIndex` are unit-tested; the cycle (free-run + sync) is `gl_smoke`-checked.
 - **Pitch Graph** — `PitchGraphNode` (`src/modules/PitchGraphNode.h`, header-only) turns
   incoming MIDI into a scrolling pitch-vs-time graph as colored line geometry. The GL-free
   `core/PitchGraph` holds a rolling note history (note-on opens a segment, note-off closes
