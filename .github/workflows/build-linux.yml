@@ -1,0 +1,105 @@
+name: build-linux
+
+on:
+  push:
+    branches: [main, develop]
+    tags: ['v*']
+  pull_request:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Compute version
+        id: ver
+        run: |
+          if [ "${GITHUB_REF_TYPE}" = "tag" ]; then
+            echo "version=${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
+          else
+            echo "version=dev-$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential cmake ninja-build pkg-config git wget file \
+            libavformat-dev libavcodec-dev libavutil-dev libswscale-dev libswresample-dev \
+            xorg-dev libgl1-mesa-dev \
+            libgtk-3-dev \
+            libasound2-dev libpulse-dev \
+            xvfb libgl1-mesa-dri \
+            libfuse2 imagemagick desktop-file-utils
+
+      - name: Cache FetchContent deps
+        uses: actions/cache@v4
+        with:
+          path: build/_deps
+          key: linux-deps-${{ hashFiles('CMakeLists.txt') }}
+          restore-keys: linux-deps-
+
+      - name: Configure
+        run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build
+        run: cmake --build build -j
+
+      - name: Test (core, fatal)
+        run: ctest --test-dir build -R core_tests --output-on-failure
+
+      - name: Test (gl_smoke, best-effort)
+        continue-on-error: true
+        run: xvfb-run -a ctest --test-dir build -R gl_smoke --output-on-failure
+
+      - name: Assemble AppDir
+        run: |
+          set -eux
+          APPDIR=AppDir
+          mkdir -p "$APPDIR/usr/bin" \
+                   "$APPDIR/usr/share/applications" \
+                   "$APPDIR/usr/share/icons/hicolor/256x256/apps"
+          cp build/shader_streamer "$APPDIR/usr/bin/"
+          cp -r build/shaders "$APPDIR/usr/bin/shaders"
+          cp packaging/linux/shader-streamer.desktop "$APPDIR/usr/share/applications/shader-streamer.desktop"
+          cp packaging/linux/AppRun "$APPDIR/AppRun"
+          chmod +x "$APPDIR/AppRun"
+          convert -size 256x256 xc:'#1a1c22' \
+            "$APPDIR/usr/share/icons/hicolor/256x256/apps/shader-streamer.png"
+
+      - name: Build AppImage
+        run: |
+          set -eux
+          export APPIMAGE_EXTRACT_AND_RUN=1 ARCH=x86_64
+          wget -q https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous/linuxdeploy-x86_64.AppImage
+          wget -q https://raw.githubusercontent.com/linuxdeploy/linuxdeploy-plugin-gtk/master/linuxdeploy-plugin-gtk.sh
+          wget -q https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage
+          chmod +x linuxdeploy-x86_64.AppImage linuxdeploy-plugin-gtk.sh appimagetool-x86_64.AppImage
+          # Bundle shared-lib deps (FFmpeg) + GTK modules into the AppDir. Do NOT use --output here;
+          # linuxdeploy writes its own AppRun, which we overwrite next.
+          ./linuxdeploy-x86_64.AppImage \
+            --appdir AppDir \
+            --plugin gtk \
+            --desktop-file AppDir/usr/share/applications/shader-streamer.desktop \
+            --icon-file AppDir/usr/share/icons/hicolor/256x256/apps/shader-streamer.png
+          # Restore our AppRun (linuxdeploy overwrote it); it cd's to usr/bin so shaders/ resolves.
+          cp packaging/linux/AppRun AppDir/AppRun
+          chmod +x AppDir/AppRun
+          # appimagetool packages the AppDir verbatim (it does NOT touch AppRun).
+          ./appimagetool-x86_64.AppImage AppDir "Shader_Streamer-${{ steps.ver.outputs.version }}-x86_64.AppImage"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-appimage
+          path: Shader_Streamer-*-x86_64.AppImage
+
+      - name: Attach to release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: Shader_Streamer-*-x86_64.AppImage
