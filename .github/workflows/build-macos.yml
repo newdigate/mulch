@@ -40,16 +40,14 @@ jobs:
           key: macos-${{ matrix.arch }}-deps-${{ hashFiles('CMakeLists.txt') }}
           restore-keys: macos-${{ matrix.arch }}-deps-
 
-      - uses: actions/setup-python@v5
-        with:
-          python-version: '3.12'
-
       - name: Install jinja2 (the glad GL-loader generator needs it)
-        run: pip install jinja2
+        # Use the runner's own python3 (not actions/setup-python: its prebuilt macOS pkg
+        # hardcodes /Users/runner/hostedtoolcache and can't install on a self-hosted runner).
+        run: python3 -m pip install --break-system-packages jinja2
 
       - name: Configure
         run: |
-          PY="$(command -v python)"
+          PY="$(command -v python3)"
           "$PY" -c "import jinja2; print('jinja2', jinja2.__version__)"   # fail fast if the wrong interpreter
           cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release \
             -DPython_EXECUTABLE="$PY" -DPython3_EXECUTABLE="$PY" -DPython_FIND_FRAMEWORK=NEVER
