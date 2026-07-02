@@ -44,7 +44,9 @@
 #define STB_IMAGE_WRITE_IMPLEMENTATION
 #include "stb_image_write.h"
 #include "modules/ImageStreamerNode.h"
+#include "modules/ImageSequencerNode.h"
 #include "modules/KaleidoscopeNode.h"
+#include <filesystem>
 #include <chrono>
 #include <cmath>
 #include <thread>
@@ -110,6 +112,14 @@ static std::string writeSplitFixture() {
     std::string path = "gl_smoke_image_fixture.png";
     if (!stbi_write_png(path.c_str(), W, H, 4, px.data(), W * 4)) return std::string();
     return path;
+}
+
+// Write a 16x16 solid-colour PNG at `path`. Returns true on success.
+static bool writeSolidPNG(const std::string& path, unsigned char r, unsigned char g, unsigned char b) {
+    const int W = 16, H = 16;
+    std::vector<unsigned char> px((size_t)W * H * 4);
+    for (size_t i = 0; i < px.size(); i += 4) { px[i]=r; px[i+1]=g; px[i+2]=b; px[i+3]=255; }
+    return stbi_write_png(path.c_str(), W, H, 4, px.data(), W * 4) != 0;
 }
 
 int main() {
@@ -236,6 +246,53 @@ int main() {
         readAtUV(tex, 0.3f, 0.5f, r2, g2, b2, a2);
         if (!(g2 > 200 && r2 < 60)) { glfwTerminate(); return fail("kaleidoscope did not fold the left half"); }
         std::fprintf(stderr, "gl_smoke OK: Kaleidoscope folds (symmetric + wedge-folded)\n");
+    }
+
+    // --- Scenario: Image Sequencer cycles a folder of images ---
+    {
+        namespace fs = std::filesystem;
+        fs::path dir = fs::temp_directory_path() / "oss_imgseq_smoke";
+        fs::remove_all(dir);
+        fs::create_directories(dir);
+        bool wrote = writeSolidPNG((dir / "0.png").string(), 255, 0, 0)     // red
+                  && writeSolidPNG((dir / "1.png").string(), 0, 255, 0)     // green
+                  && writeSolidPNG((dir / "2.png").string(), 0, 0, 255);    // blue
+        if (!wrote) { fs::remove_all(dir); glfwTerminate(); return fail("write sequencer fixtures"); }
+
+        // Port-flag check (pure CPU; the ctor doesn't touch GL).
+        { ImageSequencerNode probe; const Port& p = probe.inputs()[0];
+          if (!(p.type == PortType::String && p.assetBacked && p.folderPicker && p.assetType == AssetType::Image))
+            { fs::remove_all(dir); glfwTerminate(); return fail("Sequencer.folder not a folder picker"); } }
+
+        Graph g;
+        auto seq = std::make_unique<ImageSequencerNode>();
+        auto out = std::make_unique<OutputNode>();
+        seq->initGL(); out->initGL();
+        seq->inputDefault(0) = Value(dir.string());   // folder
+        seq->inputDefault(1) = Value(1.0f);           // duration = 1s
+        seq->inputDefault(2) = Value(false);          // sync off (free-running)
+        int sId = g.addNode(std::move(seq));
+        int oId = g.addNode(std::move(out));
+        if (!g.connect(sId, 0, oId, 0)) { fs::remove_all(dir); glfwTerminate(); return fail("connect Sequencer->Output"); }
+
+        auto centreIs = [&](int R, int G, int B)->bool {
+            TexRef t = dynamic_cast<OutputNode*>(g.findNode(oId))->current();
+            if (t.id == 0) return false;
+            int r, gg, b, a; readCentre(t, r, gg, b, a);
+            return near(r, R) && near(gg, G) && near(b, B);
+        };
+
+        g.evaluate(1.0f / 60.0f);                      // shows image 0 (red)
+        if (!centreIs(255, 0, 0)) { fs::remove_all(dir); glfwTerminate(); return fail("sequencer frame 0 not red"); }
+        g.evaluate(1.1f);                              // +1.1s -> image 1 (green)
+        if (!centreIs(0, 255, 0)) { fs::remove_all(dir); glfwTerminate(); return fail("sequencer frame 1 not green"); }
+        g.evaluate(1.1f);                              // -> image 2 (blue)
+        if (!centreIs(0, 0, 255)) { fs::remove_all(dir); glfwTerminate(); return fail("sequencer frame 2 not blue"); }
+        g.evaluate(1.1f);                              // -> wrap to image 0 (red)
+        if (!centreIs(255, 0, 0)) { fs::remove_all(dir); glfwTerminate(); return fail("sequencer did not wrap to red"); }
+
+        fs::remove_all(dir);
+        std::fprintf(stderr, "gl_smoke OK: Image Sequencer cycled a folder (red->green->blue->wrap)\n");
     }
 
     // --- Scenario 2: Colour(red) + Colour(blue) -> Mix(0.5) -> Output ---
