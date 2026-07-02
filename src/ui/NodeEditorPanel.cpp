@@ -2,6 +2,7 @@
 #include "ui/PortWidgets.h"
 #include "app/Application.h"   // for nodeCategories()
 #include "core/AssetLibrary.h"
+#include "core/AssetTree.h"
 #include <imgui.h>
 #include <imgui_node_editor.h>
 #include <glm/vec4.hpp>
@@ -312,6 +313,22 @@ void NodeEditorPanel::draw(Graph& graph,
             if (port.type == PortType::Colour) {
                 auto& c = std::get<glm::vec4>(v);
                 ImGui::ColorPicker4("##picker", &c.x, ImGuiColorEditFlags_AlphaBar);
+            } else if (port.type == PortType::String && port.assetBacked && port.folderPicker) {
+                // Pick a folder that contains assets of this type; copy the folder path in.
+                std::vector<std::string> folders =
+                    uniqueAssetFolders(graph.assets().byType(port.assetType));
+                if (folders.empty()) {
+                    ImGui::TextDisabled("No %s folders -- add images in the Assets window",
+                                        assetTypeName(port.assetType));
+                } else {
+                    const std::string cur = std::get<std::string>(v);
+                    for (const std::string& f : folders) {
+                        if (ImGui::Selectable(f.c_str(), f == cur)) {
+                            v = Value(f);
+                            ImGui::CloseCurrentPopup();
+                        }
+                    }
+                }
             } else if (port.type == PortType::String && port.assetBacked) {
                 // Pick a library asset of this type; copy its path into the field.
                 std::vector<const Asset*> assets = graph.assets().byType(port.assetType);

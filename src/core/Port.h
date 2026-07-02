@@ -27,6 +27,10 @@ struct Port {
     // Set via Node::addAssetInput. Defaults off, so ordinary String inputs are unaffected.
     bool      assetBacked = false;
     AssetType assetType   = AssetType::Audio;
+    // A folder-picker String (also assetBacked): its ▾ lists the distinct folders that
+    // contain assets of `assetType`, and picking one copies the folder path here (not an
+    // asset path). Set via Node::addImageFolderInput. Defaults off.
+    bool      folderPicker = false;
 };
 
 } // namespace oss

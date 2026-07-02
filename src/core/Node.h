@@ -108,6 +108,20 @@ protected:
         p.assetType    = type;
         inputs_.push_back(std::move(p));
     }
+    // A String input rendered like an asset field (editable + ▾), but the picker lists the
+    // distinct folders containing assets of `type` (see NodeEditorPanel). Copy-path model:
+    // selecting copies the folder path into this input. Used by Image Sequencer.
+    void addImageFolderInput(std::string n, AssetType type = AssetType::Image) {
+        Port p;
+        p.name         = std::move(n);
+        p.direction    = Direction::Input;
+        p.type         = PortType::String;
+        p.defaultValue = Value(std::string());
+        p.assetBacked  = true;
+        p.folderPicker = true;
+        p.assetType    = type;
+        inputs_.push_back(std::move(p));
+    }
     // A Float input rendered as a whole-number slider over [lo, hi] (e.g. a bar count).
     // The value is stored as a float; consumers round it. Easier to drag than a float slider.
     void addIntInput(std::string n, int def, int lo, int hi) {
