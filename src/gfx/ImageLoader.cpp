@@ -11,7 +11,11 @@ ImageData loadImage(const std::string& path, std::string& err) {
     ImageData out;
     if (path.empty()) { err = "empty path"; return out; }
 
-    stbi_set_flip_vertically_on_load(1);   // -> bottom-up rows, matching VideoDecoder
+    // Thread-local flip flag: loadImage runs concurrently (the Image Sequencer decodes on a
+    // worker thread while the main thread loads too), so the non-thread-local setter would be a
+    // data race on stb's global. The _thread variant (+ stb's thread-local stbi_failure_reason)
+    // keeps concurrent decodes race-free. -> bottom-up rows, matching VideoDecoder.
+    stbi_set_flip_vertically_on_load_thread(1);
     int w = 0, h = 0, comps = 0;
     unsigned char* data = stbi_load(path.c_str(), &w, &h, &comps, 4);   // force RGBA
     if (!data) {

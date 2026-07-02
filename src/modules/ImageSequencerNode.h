@@ -29,7 +29,8 @@ public:
         addOutput("image", PortType::Texture);
     }
     ~ImageSequencerNode() override {
-        // fetch_'s destructor joins any in-flight decode before we free the GL objects.
+        // Freeing the textures here (dtor body) before the fetch_ member joins is safe: the
+        // worker only runs the GL-free loadImage and never touches these GL objects.
         if (texShown_) glDeleteTextures(1, &texShown_);
         if (texNext_)  glDeleteTextures(1, &texNext_);
     }
@@ -47,7 +48,7 @@ public:
             folder_ = folder;
             files_  = listImagesInDir(folder);
             shownIndex_ = -1; cur_ = 0; elapsed_ = 0.0f;
-            nextReady_ = false; nextIndex_ = -1;
+            nextReady_ = false; nextIndex_ = -1; failedIndex_ = -1;
             fetch_ = std::future<ImageData>{}; fetchIndex_ = -1;   // (joins any in-flight decode)
             if (!files_.empty()) syncLoadShown(0);                 // immediate first frame
         }
@@ -64,6 +65,7 @@ public:
             fetch_.wait_for(std::chrono::seconds(0)) == std::future_status::ready) {
             ImageData img = fetch_.get();
             if (img.ok()) { upload(texNext_, wNext_, hNext_, img); nextIndex_ = fetchIndex_; nextReady_ = true; }
+            else          { failedIndex_ = fetchIndex_; }   // don't hammer a bad/missing file every frame
             fetchIndex_ = -1;   // idle
         }
 
@@ -91,8 +93,9 @@ public:
 
         // Drive the prefetch: decode the wanted image when the worker is idle.
         int want = (shownIndex_ == target) ? (target + 1) % n : target;
+        if (want != failedIndex_) failedIndex_ = -1;   // moved off the bad index -> allow a later retry
         bool haveWant = nextReady_ && nextIndex_ == want;
-        if (!haveWant && fetchIndex_ == -1) {
+        if (!haveWant && fetchIndex_ == -1 && want != failedIndex_) {
             std::string p = files_[(std::size_t)want];
             fetch_ = std::async(std::launch::async, [p]() { std::string e; return loadImage(p, e); });
             fetchIndex_ = want;
@@ -142,6 +145,7 @@ private:
     int    fetchIndex_ = -1;    // index being decoded; -1 = idle
     bool   nextReady_ = false;  // texNext_ holds a decoded image
     int    nextIndex_ = -1;     // its index
+    int    failedIndex_ = -1;   // an index whose decode failed; don't re-launch it until we move on
 };
 
 } // namespace oss
