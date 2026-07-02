@@ -326,6 +326,7 @@ add_executable(core_tests
   tests/test_bar_sync.cpp
   src/gfx/ImageLoader.cpp
   tests/test_image_loader.cpp
+  tests/test_image_sequence.cpp
   src/core/Node.cpp
   src/core/Graph.cpp
   src/core/AutomationStore.cpp

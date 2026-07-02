@@ -18,4 +18,9 @@ struct ImageData {
 // `err` with a reason. An empty path is a (silent) failure with err = "empty path".
 ImageData loadImage(const std::string& path, std::string& err);
 
+// List the image files directly in `dir` (non-recursive), sorted ascending by path.
+// Filters to the extensions loadImage decodes. Returns empty on a missing/unreadable dir
+// (never throws).
+std::vector<std::string> listImagesInDir(const std::string& dir);
+
 } // namespace oss
