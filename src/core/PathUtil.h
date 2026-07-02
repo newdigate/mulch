@@ -11,6 +11,13 @@ inline std::string fileBaseName(const std::string& path) {
     return (slash == std::string::npos) ? path : path.substr(slash + 1);
 }
 
+// The directory portion of a path (before the last '/' or '\\'); "" if there is no
+// separator (a bare filename). Complements fileBaseName (same split point).
+inline std::string parentDir(const std::string& path) {
+    std::size_t slash = path.find_last_of("/\\");
+    return (slash == std::string::npos) ? std::string() : path.substr(0, slash);
+}
+
 // Append "." + ext to `path` unless it already ends in ".<ext>" (case-insensitive).
 // `ext` is given without a dot (e.g. "oss"). Empty path or ext returns `path` unchanged.
 inline std::string ensureExtension(const std::string& path, const std::string& ext) {

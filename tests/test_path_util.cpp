@@ -22,3 +22,11 @@ TEST_CASE("ensureExtension appends only when missing (case-insensitive)") {
     CHECK(ensureExtension("foo", "OSS") == "foo.OSS");   // upper-case ext appended verbatim
     CHECK(ensureExtension("foo.oss", "OSS") == "foo.oss"); // case-insensitive match -> unchanged
 }
+
+TEST_CASE("parentDir returns the directory portion") {
+    CHECK(parentDir("a/b/c.png") == "a/b");
+    CHECK(parentDir("c.png") == "");                 // no separator -> empty
+    CHECK(parentDir("a\\b\\c.png") == "a\\b");        // backslash separator
+    CHECK(parentDir("/a/b/") == "/a/b");              // trailing slash -> dir before it
+    CHECK(parentDir("") == "");
+}
