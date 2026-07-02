@@ -40,17 +40,17 @@ jobs:
           key: macos-${{ matrix.arch }}-deps-${{ hashFiles('CMakeLists.txt') }}
           restore-keys: macos-${{ matrix.arch }}-deps-
 
-      - name: Install jinja2 (the glad GL-loader generator needs it)
-        # Use the runner's own python3 (not actions/setup-python: its prebuilt macOS pkg
-        # hardcodes /Users/runner/hostedtoolcache and can't install on a self-hosted runner).
-        run: python3 -m pip install --break-system-packages jinja2
-
       - name: Configure
+        run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+
+      - name: Install jinja2 into the interpreter CMake resolved for glad
+        # glad's find_package(Python) doesn't reliably honor -DPython_EXECUTABLE, so instead
+        # read back the interpreter it actually chose and install jinja2 there. Bulletproof on
+        # both the GitHub-hosted arm64 and the self-hosted x64 runners (no actions/setup-python).
         run: |
-          PY="$(command -v python3)"
-          "$PY" -c "import jinja2; print('jinja2', jinja2.__version__)"   # fail fast if the wrong interpreter
-          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release \
-            -DPython_EXECUTABLE="$PY" -DPython3_EXECUTABLE="$PY" -DPython_FIND_FRAMEWORK=NEVER
+          PY="$(grep -E '^Python_EXECUTABLE:' build/CMakeCache.txt | cut -d= -f2)"
+          echo "glad interpreter: $PY"
+          "$PY" -m pip install --break-system-packages jinja2
 
       - name: Build
         run: cmake --build build -j
