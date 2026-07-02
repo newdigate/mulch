@@ -74,6 +74,9 @@ if(TARGET libsoundio_static)
   if(NOT MSVC)   # GCC/Clang-only flags; MSVC (cl.exe) rejects -Wno-error
     target_compile_options(libsoundio_static PRIVATE -Wno-error -Wno-deprecated-declarations)
   endif()
+  # We link the STATIC lib, so consumers must define this or soundio.h declares the API
+  # __declspec(dllimport) on Windows (-> unresolved __imp_soundio_*). No-op elsewhere.
+  target_compile_definitions(libsoundio_static INTERFACE SOUNDIO_STATIC_LIBRARY)
   # Its bundled CMake links the CoreAudio frameworks only to its (skipped) own
   # binaries, not as usage requirements, so consumers must get them. Attach them
   # as INTERFACE deps so anything linking libsoundio_static pulls them in.
