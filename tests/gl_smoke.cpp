@@ -248,7 +248,7 @@ int main() {
         std::fprintf(stderr, "gl_smoke OK: Kaleidoscope folds (symmetric + wedge-folded)\n");
     }
 
-    // --- Scenario: Image Sequencer cycles a folder of images ---
+    // --- Scenario: Image Sequencer cycles a folder (async prefetch, split inputs) ---
     {
         namespace fs = std::filesystem;
         fs::path dir = fs::temp_directory_path() / "oss_imgseq_smoke";
@@ -259,18 +259,22 @@ int main() {
                   && writeSolidPNG((dir / "2.png").string(), 0, 0, 255);    // blue
         if (!wrote) { fs::remove_all(dir); glfwTerminate(); return fail("write sequencer fixtures"); }
 
-        // Port-flag check (pure CPU; the ctor doesn't touch GL).
-        { ImageSequencerNode probe; const Port& p = probe.inputs()[0];
-          if (!(p.type == PortType::String && p.assetBacked && p.folderPicker && p.assetType == AssetType::Image))
-            { fs::remove_all(dir); glfwTerminate(); return fail("Sequencer.folder not a folder picker"); } }
+        // Port-flag check (pure CPU; the ctor doesn't touch GL). folder=0, duration=1, beat length=2, sync=3.
+        { ImageSequencerNode probe;
+          const Port& pf = probe.inputs()[0];
+          if (!(pf.type == PortType::String && pf.assetBacked && pf.folderPicker && pf.assetType == AssetType::Image))
+            { fs::remove_all(dir); glfwTerminate(); return fail("Sequencer.folder not a folder picker"); }
+          if (probe.inputs().size() != 4 || !probe.inputs()[2].integer)
+            { fs::remove_all(dir); glfwTerminate(); return fail("Sequencer 'beat length' not an int input at port 2"); } }
 
         Graph g;
         auto seq = std::make_unique<ImageSequencerNode>();
         auto out = std::make_unique<OutputNode>();
         seq->initGL(); out->initGL();
         seq->inputDefault(0) = Value(dir.string());   // folder
-        seq->inputDefault(1) = Value(1.0f);           // duration = 1s
-        seq->inputDefault(2) = Value(false);          // sync off (free-running)
+        seq->inputDefault(1) = Value(1.0f);           // duration = 1s (free-running)
+        seq->inputDefault(2) = Value(1.0f);           // beat length = 1
+        seq->inputDefault(3) = Value(false);          // sync off
         int sId = g.addNode(std::move(seq));
         int oId = g.addNode(std::move(out));
         if (!g.connect(sId, 0, oId, 0)) { fs::remove_all(dir); glfwTerminate(); return fail("connect Sequencer->Output"); }
@@ -281,27 +285,33 @@ int main() {
             int r, gg, b, a; readCentre(t, r, gg, b, a);
             return near(r, R) && near(gg, G) && near(b, B);
         };
+        // Evaluate a big-dt frame to advance the counter, then poll small-dt frames until the
+        // async image for the new index is decoded + uploaded (or time out).
+        auto advanceUntil = [&](int R, int G, int B)->bool {
+            g.evaluate(1.1f);                                  // cross one `duration` boundary
+            for (int f = 0; f < 400; ++f) {
+                if (centreIs(R, G, B)) return true;
+                g.evaluate(0.001f);                            // poll without advancing further
+            }
+            return false;
+        };
 
-        g.evaluate(1.0f / 60.0f);                      // shows image 0 (red)
+        g.evaluate(1.0f / 60.0f);                              // image 0 loads synchronously -> red
         if (!centreIs(255, 0, 0)) { fs::remove_all(dir); glfwTerminate(); return fail("sequencer frame 0 not red"); }
-        g.evaluate(1.1f);                              // +1.1s -> image 1 (green)
-        if (!centreIs(0, 255, 0)) { fs::remove_all(dir); glfwTerminate(); return fail("sequencer frame 1 not green"); }
-        g.evaluate(1.1f);                              // -> image 2 (blue)
-        if (!centreIs(0, 0, 255)) { fs::remove_all(dir); glfwTerminate(); return fail("sequencer frame 2 not blue"); }
-        g.evaluate(1.1f);                              // -> wrap to image 0 (red)
-        if (!centreIs(255, 0, 0)) { fs::remove_all(dir); glfwTerminate(); return fail("sequencer did not wrap to red"); }
+        if (!advanceUntil(0, 255, 0)) { fs::remove_all(dir); glfwTerminate(); return fail("sequencer did not reach green"); }
+        if (!advanceUntil(0, 0, 255)) { fs::remove_all(dir); glfwTerminate(); return fail("sequencer did not reach blue"); }
+        if (!advanceUntil(255, 0, 0)) { fs::remove_all(dir); glfwTerminate(); return fail("sequencer did not wrap to red"); }
 
-        // Synced mode: the index derives from transport beats (120 bpm -> 0.5 s/beat), not dt.
-        g.findNode(sId)->inputDefault(2) = Value(true);   // sync on; duration=1 -> 1 beat/image
-        g.transport().seconds = 1.0;                      // beats = 2.0 -> image 2 (blue)
-        g.evaluate(1.0f / 60.0f);
-        if (!centreIs(0, 0, 255)) { fs::remove_all(dir); glfwTerminate(); return fail("sequencer sync beats=2 not blue"); }
-        g.transport().seconds = 0.5;                      // beats = 1.0 -> image 1 (green)
-        g.evaluate(1.0f / 60.0f);
-        if (!centreIs(0, 255, 0)) { fs::remove_all(dir); glfwTerminate(); return fail("sequencer sync beats=1 not green"); }
+        // Synced mode: index derives from transport beats (120 bpm -> 0.5 s/beat), beat length = 1.
+        g.findNode(sId)->inputDefault(3) = Value(true);        // sync on
+        g.findNode(sId)->inputDefault(2) = Value(1.0f);        // beat length = 1
+        g.transport().seconds = 1.0;                           // beats = 2.0 -> image 2 (blue)
+        bool syncedBlue = false;
+        for (int f = 0; f < 400 && !syncedBlue; ++f) { g.evaluate(0.001f); syncedBlue = centreIs(0, 0, 255); }
+        if (!syncedBlue) { fs::remove_all(dir); glfwTerminate(); return fail("sequencer sync beats=2 not blue"); }
 
         fs::remove_all(dir);
-        std::fprintf(stderr, "gl_smoke OK: Image Sequencer cycled a folder (free-run + sync)\n");
+        std::fprintf(stderr, "gl_smoke OK: Image Sequencer cycled a folder (async prefetch, free-run + sync)\n");
     }
 
     // --- Scenario 2: Colour(red) + Colour(blue) -> Mix(0.5) -> Output ---
