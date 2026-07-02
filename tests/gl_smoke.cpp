@@ -291,8 +291,17 @@ int main() {
         g.evaluate(1.1f);                              // -> wrap to image 0 (red)
         if (!centreIs(255, 0, 0)) { fs::remove_all(dir); glfwTerminate(); return fail("sequencer did not wrap to red"); }
 
+        // Synced mode: the index derives from transport beats (120 bpm -> 0.5 s/beat), not dt.
+        g.findNode(sId)->inputDefault(2) = Value(true);   // sync on; duration=1 -> 1 beat/image
+        g.transport().seconds = 1.0;                      // beats = 2.0 -> image 2 (blue)
+        g.evaluate(1.0f / 60.0f);
+        if (!centreIs(0, 0, 255)) { fs::remove_all(dir); glfwTerminate(); return fail("sequencer sync beats=2 not blue"); }
+        g.transport().seconds = 0.5;                      // beats = 1.0 -> image 1 (green)
+        g.evaluate(1.0f / 60.0f);
+        if (!centreIs(0, 255, 0)) { fs::remove_all(dir); glfwTerminate(); return fail("sequencer sync beats=1 not green"); }
+
         fs::remove_all(dir);
-        std::fprintf(stderr, "gl_smoke OK: Image Sequencer cycled a folder (red->green->blue->wrap)\n");
+        std::fprintf(stderr, "gl_smoke OK: Image Sequencer cycled a folder (free-run + sync)\n");
     }
 
     // --- Scenario 2: Colour(red) + Colour(blue) -> Mix(0.5) -> Output ---

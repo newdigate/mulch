@@ -56,7 +56,7 @@ public:
             while (elapsed_ >= duration) { elapsed_ -= duration; cur_ = (cur_ + 1) % n; }
             target = cur_;
         }
-        if (target >= n) target = n - 1;   // folder shrank between frames
+        if (target >= n) target = n - 1;   // defensive: never index past files_
 
         if (target != index_) load(target);
         ctx.out<TexRef>(0, haveTex_ ? TexRef{ tex_, w_, h_ } : TexRef{});
@@ -67,6 +67,7 @@ public:
 private:
     void load(int i) {
         index_ = i;
+        haveTex_ = false;   // on failure below, emit an empty TexRef (don't keep a stale image)
         std::string err;
         ImageData img = loadImage(files_[(std::size_t)i], err);
         if (!img.ok()) { status_ = "load failed: " + err; return; }
