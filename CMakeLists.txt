@@ -71,7 +71,9 @@ unset(CMAKE_POLICY_VERSION_MINIMUM)
 # kAudioObjectPropertyElementMaster, deprecated since macOS 12, which then fails
 # the build. Stop treating its warnings as errors (its target only).
 if(TARGET libsoundio_static)
-  target_compile_options(libsoundio_static PRIVATE -Wno-error -Wno-deprecated-declarations)
+  if(NOT MSVC)   # GCC/Clang-only flags; MSVC (cl.exe) rejects -Wno-error
+    target_compile_options(libsoundio_static PRIVATE -Wno-error -Wno-deprecated-declarations)
+  endif()
   # Its bundled CMake links the CoreAudio frameworks only to its (skipped) own
   # binaries, not as usage requirements, so consumers must get them. Attach them
   # as INTERFACE deps so anything linking libsoundio_static pulls them in.
