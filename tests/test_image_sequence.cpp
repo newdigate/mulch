@@ -21,6 +21,15 @@ TEST_CASE("syncedImageIndex wraps over the beat position") {
     CHECK(syncedImageIndex(0.0, -1.0f, 3) == 0);  // negative durationBeats -> floor guard
 }
 
+TEST_CASE("syncedImageIndex with beat length > 1 holds each image for N beats") {
+    // beatLength = 2 -> each image spans 2 beats.
+    CHECK(syncedImageIndex(0.0, 2.0f, 3) == 0);
+    CHECK(syncedImageIndex(1.9, 2.0f, 3) == 0);
+    CHECK(syncedImageIndex(2.0, 2.0f, 3) == 1);
+    CHECK(syncedImageIndex(4.0, 2.0f, 3) == 2);
+    CHECK(syncedImageIndex(6.0, 2.0f, 3) == 0);   // wrap after 3 images * 2 beats
+}
+
 TEST_CASE("listImagesInDir returns sorted image files, ignoring non-images") {
     namespace fs = std::filesystem;
     fs::path dir = fs::temp_directory_path() / "oss_imgseq_test";
