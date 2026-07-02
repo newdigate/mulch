@@ -80,9 +80,10 @@ if(TARGET libsoundio_static)
       "-framework CoreAudio" "-framework AudioUnit"
       "-framework AudioToolbox" "-framework CoreFoundation")
   elseif(UNIX)
-    # Linux: libsoundio compiles the ALSA + PulseAudio backends (from libasound2-dev
-    # / libpulse-dev), whose snd_*/pa_* symbols the consumer must link.
-    target_link_libraries(libsoundio_static INTERFACE asound pulse pthread m)
+    # Linux: libsoundio compiles the ALSA backend (from libasound2-dev); link its
+    # snd_* symbols. (The PulseAudio backend is intentionally not built — ALSA is the
+    # universal backend, and PulseAudio/PipeWire expose ALSA PCM devices anyway.)
+    target_link_libraries(libsoundio_static INTERFACE asound pthread m)
   endif()
 endif()
 
