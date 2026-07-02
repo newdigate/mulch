@@ -7,8 +7,8 @@
 namespace oss {
 
 // The four Assets-window tabs, in tab order. Persisted as the int 0..3.
-enum class AssetType { Audio, Video, Midi, Mesh };
-constexpr int kAssetTypeCount = 4;   // number of AssetType values (and Assets-window tabs)
+enum class AssetType { Audio, Video, Midi, Mesh, Image };
+constexpr int kAssetTypeCount = 5;   // number of AssetType values (and Assets-window tabs)
 
 struct Asset {
     int         id = 0;                 // unique within the library; monotonic; never reused

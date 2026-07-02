@@ -37,3 +37,20 @@ TEST_CASE("parseLibrary rejects a bad header and leaves the library untouched") 
     CHECK_FALSE(parseLibrary("not-a-lib\nasset 1 0\n", out));
     CHECK(out.all().size() == 1);   // unchanged
 }
+
+TEST_CASE("AssetType::Image is the fifth type and round-trips the codec") {
+    CHECK(kAssetTypeCount == 5);
+    CHECK((int)AssetType::Image == 4);
+
+    AssetLibrary lib;
+    int i = lib.add(AssetType::Image, "Logo", "/m/img/logo.png");
+
+    std::string text = serializeLibrary(lib);
+    AssetLibrary out;
+    REQUIRE(parseLibrary(text, out));
+    const Asset* a = out.find(i);
+    REQUIRE(a != nullptr);
+    CHECK(a->type == AssetType::Image);
+    CHECK(a->label == "Logo");
+    CHECK(a->path == "/m/img/logo.png");
+}
