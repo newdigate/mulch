@@ -79,6 +79,10 @@ if(TARGET libsoundio_static)
     target_link_libraries(libsoundio_static INTERFACE
       "-framework CoreAudio" "-framework AudioUnit"
       "-framework AudioToolbox" "-framework CoreFoundation")
+  elseif(UNIX)
+    # Linux: libsoundio compiles the ALSA + PulseAudio backends (from libasound2-dev
+    # / libpulse-dev), whose snd_*/pa_* symbols the consumer must link.
+    target_link_libraries(libsoundio_static INTERFACE asound pulse pthread m)
   endif()
 endif()
 
