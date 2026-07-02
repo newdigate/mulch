@@ -168,6 +168,15 @@ shaders by CWD-relative path, each package launches the app with `shaders/` as t
   which mirrors the GL-free reference `core/BlendModes.h` (`blendPixel` + `blendModeLabels`);
   the reference is unit-tested in `core_tests` and a `gl_smoke` scenario cross-checks the
   shader against it (one mode per code path) so they can't drift.
+- **Image Streamer / Kaleidoscope** — `ImageStreamerNode` (`src/modules/ImageStreamerNode.h`,
+  header-only) loads a still image (a new **Image** `AssetType`, the fifth Assets tab) via the
+  GL-free `gfx/ImageLoader` (an `stb_image` wrapper mirroring `VideoDecoder`, rows flipped
+  bottom-up to match) and publishes it as a `TexRef`; it loads once on path change and
+  republishes each frame. `KaleidoscopeNode` (`src/modules/KaleidoscopeNode.h`, header-only
+  `ShaderNode`) folds an input texture into a mirrored pattern in `shaders/kaleidoscope.frag`
+  (polar wedge fold with `segments`/`rotation`/`zoom`/`center` ports — wire `rotation` to an
+  LFO to spin). Both live in the **Texture** category. `ImageLoader` is unit-tested in
+  `core_tests`; both nodes are `gl_smoke`-checked (image round-trip + fold symmetry).
 - **Pitch Graph** — `PitchGraphNode` (`src/modules/PitchGraphNode.h`, header-only) turns
   incoming MIDI into a scrolling pitch-vs-time graph as colored line geometry. The GL-free
   `core/PitchGraph` holds a rolling note history (note-on opens a segment, note-off closes
@@ -222,7 +231,8 @@ shaders by CWD-relative path, each package launches the app with `shaders/` as t
   live in the GL-free `core/PathUtil.h`.
 - **Assets / media library** — the GL-free `core/AssetLibrary` is a per-project media
   library: each `Asset` is a stable, unique, never-reused `id` + an `AssetType`
-  (Audio/Video/Midi/Mesh, the four tabs) + an editable `label` and file `path`. It is owned
+  (Audio/Video/Midi/Mesh/Image, the five tabs; `Image` is appended = 4, so the codec's
+  type int stays backward-compatible) + an editable `label` and file `path`. It is owned
   by `Graph` (`graph.assets()`, cleared by `Graph::clear()`) and persisted through
   `ProjectFile` as `asset <id> <type>` / `alabel` / `apath` lines (the two free-text fields
   get their own lines because the codec's `escape()` guards only `\`/`\n`, not spaces; ids

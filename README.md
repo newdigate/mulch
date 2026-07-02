@@ -77,6 +77,8 @@ shaders. Packaging helper files live in `packaging/{linux,macos,windows}/`.
 | | |
 |---|---|
 | **Colour** | colour parameter → texture |
+| **Image Streamer** | load a still image (PNG/JPG/BMP/TGA/GIF/HDR/…) → texture, from the new **Image** asset-library tab |
+| **Kaleidoscope** | fold any texture into a mirrored kaleidoscopic pattern: `segments`, `rotation` (wire an LFO to spin), `zoom`, `center` |
 | **Video** | play a video file → texture + audio; signed `rate` (negative = reverse), variable speed, loop |
 | **Mix** | blend two textures by a factor |
 | **Compositor** | blend two textures with a selectable operator (23 modes): add/subtract/difference/exclusion, multiply/screen/overlay, darken/lighten, dodge/burn, hard/soft light, divide/average, the HSL hue/saturation/color/luminosity, and bitwise and/or/xor; plus `opacity` |
