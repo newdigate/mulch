@@ -17,6 +17,8 @@ TEST_CASE("syncedImageIndex wraps over the beat position") {
     CHECK(syncedImageIndex(5.5, 1.0f, 3) == 2);   // floor(5.5)=5 -> 5 % 3 = 2
     CHECK(syncedImageIndex(10.0, 1.0f, 0) == 0);  // no images
     CHECK(syncedImageIndex(-1.0, 1.0f, 3) == 2);  // negative wraps into range
+    CHECK(syncedImageIndex(0.0, 0.0f, 3) == 0);   // zero durationBeats -> floor guard, no crash
+    CHECK(syncedImageIndex(0.0, -1.0f, 3) == 0);  // negative durationBeats -> floor guard
 }
 
 TEST_CASE("listImagesInDir returns sorted image files, ignoring non-images") {

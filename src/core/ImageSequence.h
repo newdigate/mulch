@@ -8,8 +8,8 @@ namespace oss {
 inline int syncedImageIndex(double beats, float durationBeats, int count) {
     if (count <= 0) return 0;
     double d = (double)(durationBeats > 1e-4f ? durationBeats : 1e-4f);
-    long step = (long)std::floor(beats / d);
-    long idx  = ((step % count) + count) % count;   // positive modulo
+    long long step = (long long)std::floor(beats / d);   // long long: MSVC's long is 32-bit
+    long long idx  = ((step % count) + count) % count;   // positive modulo
     return (int)idx;
 }
 

@@ -46,7 +46,7 @@ std::vector<std::string> listImagesInDir(const std::string& dir) {
         if (!ext.empty() && ext[0] == '.') ext.erase(0, 1);
         if (isImageExt(ext)) out.push_back(it->path().string());
     }
-    std::sort(out.begin(), out.end());   // same dir -> path sort == filename sort
+    std::sort(out.begin(), out.end());   // all paths share the same parent -> path sort == filename sort
     return out;
 }
 
