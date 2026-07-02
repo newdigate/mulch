@@ -1,6 +1,7 @@
 #include <doctest/doctest.h>
 #include "core/MidiTimecode.h"
 #include <vector>
+#include <initializer_list>
 
 using namespace oss;
 

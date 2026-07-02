@@ -3,6 +3,7 @@
 #include <glm/vec3.hpp>
 #include <glm/geometric.hpp>
 #include <cmath>
+#include <initializer_list>
 
 using namespace oss;
 

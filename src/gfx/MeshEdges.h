@@ -2,6 +2,7 @@
 #include <cmath>
 #include <cstddef>
 #include <vector>
+#include <initializer_list>
 
 namespace oss {
 

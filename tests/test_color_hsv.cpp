@@ -1,5 +1,6 @@
 #include <doctest/doctest.h>
 #include "core/ColorHsv.h"
+#include <initializer_list>
 
 using namespace oss;
 
