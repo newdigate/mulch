@@ -30,6 +30,15 @@ TEST_CASE("syncedImageIndex with beat length > 1 holds each image for N beats") 
     CHECK(syncedImageIndex(6.0, 2.0f, 3) == 0);   // wrap after 3 images * 2 beats
 }
 
+TEST_CASE("crossfadeMix ramps 0->1, clamps, and caps at the interval") {
+    CHECK(crossfadeMix(0.0f,  1.0f, 2.0f) == doctest::Approx(0.0f));
+    CHECK(crossfadeMix(0.5f,  1.0f, 2.0f) == doctest::Approx(0.5f));
+    CHECK(crossfadeMix(1.0f,  1.0f, 2.0f) == doctest::Approx(1.0f));
+    CHECK(crossfadeMix(2.0f,  1.0f, 2.0f) == doctest::Approx(1.0f));   // clamp past the end
+    CHECK(crossfadeMix(1.5f,  3.0f, 2.0f) == doctest::Approx(0.75f));  // cap fade to interval (2)
+    CHECK(crossfadeMix(0.5f,  0.0f, 2.0f) == doctest::Approx(1.0f));   // no fade -> instant (fully "to")
+}
+
 TEST_CASE("listImagesInDir returns sorted image files, ignoring non-images") {
     namespace fs = std::filesystem;
     fs::path dir = fs::temp_directory_path() / "oss_imgseq_test";

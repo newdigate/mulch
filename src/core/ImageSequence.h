@@ -13,4 +13,13 @@ inline int syncedImageIndex(double beats, float durationBeats, int count) {
     return (int)idx;
 }
 
+// The cross-fade blend factor (0 = from, 1 = to). Caps the effective fade at `interval` so a
+// fade never outlasts the gap between images; fadeDur <= 0 -> 1 (instant). Clamped to [0,1].
+inline float crossfadeMix(float elapsed, float fadeDur, float interval) {
+    float eff = fadeDur < interval ? fadeDur : interval;   // cap to the image interval
+    if (eff <= 0.0f) return 1.0f;
+    float m = elapsed / eff;
+    return m < 0.0f ? 0.0f : (m > 1.0f ? 1.0f : m);
+}
+
 } // namespace oss
