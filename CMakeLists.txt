@@ -236,6 +236,7 @@ set(APP_SOURCES
   src/gfx/VideoDecoder.cpp
   src/gfx/VideoEncoder.cpp
   src/gfx/TextGeometry.cpp
+  src/gfx/ImageLoader.cpp
   src/modules/AudioInputNode.cpp
   src/modules/AudioPlayerNode.cpp
   src/modules/RecorderNode.cpp
@@ -323,6 +324,8 @@ add_executable(core_tests
   tests/test_state_variable_filter.cpp
   tests/test_crossover_filter.cpp
   tests/test_bar_sync.cpp
+  src/gfx/ImageLoader.cpp
+  tests/test_image_loader.cpp
   src/core/Node.cpp
   src/core/Graph.cpp
   src/core/AutomationStore.cpp
@@ -340,7 +343,7 @@ add_executable(core_tests
   src/audio/SignalGenerator.cpp
   src/audio/AcidVoice.cpp
 )
-target_include_directories(core_tests PRIVATE src)
+target_include_directories(core_tests PRIVATE src ${stb_SOURCE_DIR})
 target_link_libraries(core_tests PRIVATE glm::glm doctest::doctest)
 add_test(NAME core_tests COMMAND core_tests)
 
@@ -365,6 +368,7 @@ add_executable(gl_smoke
   src/gfx/VideoDecoder.cpp
   src/gfx/VideoEncoder.cpp
   src/gfx/TextGeometry.cpp
+  src/gfx/ImageLoader.cpp
   src/modules/MeshLoaderNode.cpp
   src/modules/RecorderNode.cpp
   src/modules/ShadedRenderNode.cpp
