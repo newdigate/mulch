@@ -186,11 +186,15 @@ shaders by CWD-relative path, each package launches the app with `shaders/` as t
   (free-running) or every `beat length` **beats** (an int ≥ 1, transport-synced via
   `syncedImageIndex`, stateless from `transport.beats()` in GL-free `core/ImageSequence.h`). It
   **prefetches** the next image on a worker thread (`std::future<ImageData>`, idle-gated) into one
-  of two GL textures and swaps at the boundary, so transitions don't hitch (bounded memory; the
-  worker runs the GL-free `loadImage`, the graph thread uploads). Concurrent decodes are race-free
-  because `loadImage` uses stb's thread-local flip setter (`stbi_set_flip_vertically_on_load_thread`).
-  `parentDir`/`uniqueAssetFolders`/`listImagesInDir`/`syncedImageIndex` are unit-tested; the async
-  cycle (free-run + sync) is `gl_smoke`-checked.
+  of two GL textures and, at each change, **cross-dissolves** over a `fade duration` (seconds;
+  0 = instant, capped at the image interval via GL-free `crossfadeMix`) by rendering
+  `mix(from, to, m)` through its own FBO (`shaders/crossfade.frag`, the ShaderNode pattern inline;
+  the FBO pass runs only while fading — otherwise it publishes the current texture directly) — so
+  transitions don't hitch (bounded memory; the worker runs the GL-free `loadImage`, the graph thread
+  uploads + blends). Concurrent decodes are race-free because `loadImage` uses stb's thread-local
+  flip setter (`stbi_set_flip_vertically_on_load_thread`). `parentDir`/`uniqueAssetFolders`/
+  `listImagesInDir`/`syncedImageIndex`/`crossfadeMix` are unit-tested; the async cycle + fade
+  (free-run + sync) are `gl_smoke`-checked.
 - **Pitch Graph** — `PitchGraphNode` (`src/modules/PitchGraphNode.h`, header-only) turns
   incoming MIDI into a scrolling pitch-vs-time graph as colored line geometry. The GL-free
   `core/PitchGraph` holds a rolling note history (note-on opens a segment, note-off closes
