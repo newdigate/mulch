@@ -96,3 +96,18 @@ TEST_CASE("buildAssetTree on empty input yields an empty root") {
     CHECK(root.folders.empty());
     CHECK(root.files.empty());
 }
+
+TEST_CASE("uniqueAssetFolders lists distinct parent dirs, sorted, bare files dropped") {
+    std::vector<Asset> v = {
+        {1, AssetType::Image, "a", "media/fire/a.png", {}},
+        {2, AssetType::Image, "b", "media/fire/b.png", {}},
+        {3, AssetType::Image, "c", "media/rain/c.png", {}},
+        {4, AssetType::Image, "x", "other/x.png",      {}},
+        {5, AssetType::Image, "y", "y.png",            {}},   // no dir -> dropped
+    };
+    std::vector<std::string> f = uniqueAssetFolders(ptrs(v));
+    REQUIRE(f.size() == 3);
+    CHECK(f[0] == "media/fire");
+    CHECK(f[1] == "media/rain");
+    CHECK(f[2] == "other");
+}

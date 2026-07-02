@@ -4,6 +4,7 @@
 #include <utility>
 #include <vector>
 #include "core/AssetLibrary.h"   // Asset (GL-free)
+#include "core/PathUtil.h"
 
 namespace oss {
 
@@ -82,6 +83,21 @@ inline AssetTreeNode buildAssetTree(const std::vector<const Asset*>& rows) {
     }
     detail::normalize(root, /*isRoot*/true);
     return root;
+}
+
+// The distinct parent directories of `rows` (each asset's parentDir), dropping assets with
+// no directory part, sorted ascending and de-duplicated. Drives the Image Sequencer's folder
+// picker (the "image-containing folders").
+inline std::vector<std::string> uniqueAssetFolders(const std::vector<const Asset*>& rows) {
+    std::vector<std::string> out;
+    for (const Asset* a : rows) {
+        if (!a) continue;
+        std::string dir = parentDir(a->path);
+        if (!dir.empty()) out.push_back(std::move(dir));
+    }
+    std::sort(out.begin(), out.end());
+    out.erase(std::unique(out.begin(), out.end()), out.end());
+    return out;
 }
 
 } // namespace oss
