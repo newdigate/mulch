@@ -7,8 +7,8 @@
 ## Goal
 
 Three GitHub Actions workflows — one per OS — that build the app and produce a **platform-native
-package**: an **AppImage** (Linux), a **`.app` bundle** (macOS), and an **Inno Setup installer**
-(Windows). They run on push/PR (uploading the package as a workflow artifact) and, on a version
+package**: an **AppImage** (Linux), a **`.app` bundle** (macOS — both Apple-Silicon **arm64** and Intel
+**x64**), and an **Inno Setup installer** (Windows). They run on push/PR (uploading the package as a workflow artifact) and, on a version
 tag, attach the package to a GitHub Release.
 
 ## Decisions (from brainstorm)
@@ -19,6 +19,9 @@ tag, attach the package to a GitHub Release.
 - **Trigger = Both:** `push` to `main`/`develop` + `pull_request` → build + upload artifact; `push`
   of a `v*` tag → build + attach the package to the GitHub Release.
 - **Packages = platform-native:** AppImage / `.app` / installer.
+- **macOS ships both arches** as separate native `.app` packages (arm64 via `macos-14`, Intel x64
+  via `macos-13`) — a 2-leg matrix in the one macOS workflow, not a universal binary (Homebrew
+  FFmpeg is native-arch-only).
 - **Windows toolchain = MSVC + vcpkg** (FFmpeg + pkgconf from vcpkg, with GH Actions binary caching).
 - **Signing is optional and secret-gated** — unsigned by default; notarization/Authenticode steps
   run only when the relevant secrets exist.
@@ -110,9 +113,25 @@ libfuse2 imagemagick desktop-file-utils   # AppImage runtime + placeholder icon
    `.so` deps and, seeing the existing `AppRun`, keeps it). Rename output to
    `Shader_Streamer-${VERSION}-x86_64.AppImage`.
 
-## macOS workflow — `.app` bundle (`macos-latest`, arm64)
+## macOS workflow — `.app` bundle (two native arches: arm64 + Intel x64)
 
-Single-arch (arm64). Universal (arm64+x86_64) is out of scope.
+Ships **both** an Apple-Silicon and an Intel package as **separate native `.app` zips** (not a
+universal binary — Homebrew FFmpeg is native-arch-only, so `lipo`-ing a universal binary is
+impractical). The single `build-macos.yml` uses a 2-leg matrix, each leg building natively on the
+matching runner:
+
+```yaml
+strategy:
+  fail-fast: false
+  matrix:
+    include:
+      - { runner: macos-14, arch: arm64 }   # Apple Silicon
+      - { runner: macos-13, arch: x64 }     # Intel
+runs-on: ${{ matrix.runner }}
+```
+
+Each leg runs the same steps below (native brew FFmpeg for that arch) and produces
+`Shader_Streamer-${VERSION}-macos-${{ matrix.arch }}.zip`.
 
 **Install (brew):** `ffmpeg pkg-config dylibbundler` (cmake/ninja are preinstalled on the runner;
 `brew install cmake ninja` if not).
@@ -140,7 +159,8 @@ Single-arch (arm64). Universal (arm64+x86_64) is out of scope.
 6. **Optional signing/notarization**, gated on secrets (`if: ${{ secrets.MACOS_CERT_P12 != '' }}`):
    import the cert, `codesign --deep --force --options runtime`, `xcrun notarytool submit`, `staple`.
    When secrets are absent, skip → unsigned bundle.
-7. `ditto -c -k --keepParent "Shader Streamer.app" "Shader_Streamer-${VERSION}-macos-arm64.zip"`.
+7. `ditto -c -k --keepParent "Shader Streamer.app" "Shader_Streamer-${VERSION}-macos-${{ matrix.arch }}.zip"`
+   (`arm64` or `x64` per matrix leg).
 
 ## Windows workflow — Inno Setup installer (`windows-latest`, MSVC + vcpkg)
 
@@ -185,7 +205,8 @@ Start-menu shortcut with **`WorkingDir: {app}`**. `iscc` produces
 
 ## Release wiring
 
-Non-tag builds: only `actions/upload-artifact@v4` (name e.g. `linux-appimage`, `macos-app`,
+Non-tag builds: only `actions/upload-artifact@v4` (name e.g. `linux-appimage`,
+`macos-app-${{ matrix.arch }}` — distinct per arch so the two macOS legs don't collide —
 `windows-installer`). Tag builds additionally:
 ```yaml
 - if: startsWith(github.ref, 'refs/tags/v')
@@ -225,7 +246,8 @@ command.
 
 ## Out of scope (YAGNI — flag to pull in)
 
-Universal macOS binary (arm64 + x86_64); configuring the actual signing/notarization secrets;
+Universal (fat) macOS binary — both arches ship as **separate** native packages instead, since
+Homebrew FFmpeg isn't universal; configuring the actual signing/notarization secrets;
 `.deb`/`.rpm` or Homebrew formula; ARM Linux / Linux-on-`ubuntu-latest`; auto-update; caching the
 full build tree (only `_deps` is cached); the executable-relative shader-resolution code change.
 
@@ -233,7 +255,7 @@ full build tree (only `_deps` is cached); the executable-relative shader-resolut
 
 - Three files, per-OS; triggers on push(main/develop)+PR+`v*` tags; native packages; unsigned by
   default.
-- Linux `ubuntu-22.04` + AppImage; macOS `macos-latest` arm64 + `.app` zip; Windows
-  `windows-latest` MSVC+vcpkg + Inno installer.
+- Linux `ubuntu-22.04` + AppImage; macOS matrix (`macos-14` arm64 + `macos-13` x64), a per-arch
+  `.app` zip each; Windows `windows-latest` MSVC+vcpkg + Inno installer.
 - `core_tests` fatal everywhere; `gl_smoke` best-effort (xvfb on Linux, self-skip elsewhere).
 - Version = tag or `dev-<sha>`; `build/_deps` + vcpkg GHA cache.
