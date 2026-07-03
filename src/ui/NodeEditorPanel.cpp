@@ -53,6 +53,8 @@ struct NodeEditorPanel::Impl {
     ImVec2 pendingPopupPos{0.0f, 0.0f};
     int    openPopupNode = -1, openPopupPort = -1;
     ImVec2 openPopupPos{0.0f, 0.0f};
+
+    int    selectedNode = -1;   // primary selection, for the Properties/Controls panels
 };
 
 NodeEditorPanel::NodeEditorPanel() : impl_(std::make_unique<Impl>()) {
@@ -367,9 +369,22 @@ void NodeEditorPanel::draw(Graph& graph,
     }
     ed::Resume();
 
+    // Record the primary selection for the Properties/Controls panels.
+    {
+        int selCount = ed::GetSelectedObjectCount();
+        impl_->selectedNode = -1;
+        if (selCount > 0) {
+            std::vector<ed::NodeId> sel(selCount);
+            int nNodes = ed::GetSelectedNodes(sel.data(), selCount);
+            if (nNodes > 0) impl_->selectedNode = (int)sel[0].Get();
+        }
+    }
+
     ed::End();
     ed::SetCurrentEditor(nullptr);
     ImGui::End();
 }
+
+int NodeEditorPanel::selectedNodeId() const { return impl_->selectedNode; }
 
 } // namespace oss

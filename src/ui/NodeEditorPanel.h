@@ -18,6 +18,10 @@ public:
     void draw(Graph& graph,
               const std::function<int(const std::string&, glm::vec2)>& addNodeOfType);
 
+    // The primary selected node's id (first of the editor's selection), or -1 if none.
+    // Valid after draw(); used by the Properties/Controls panels.
+    int selectedNodeId() const;
+
 private:
     struct Impl;
     std::unique_ptr<Impl> impl_;
