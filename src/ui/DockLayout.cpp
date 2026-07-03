@@ -14,14 +14,17 @@ void buildDefaultDockLayout(ImGuiID dockspaceId) {
     ImGui::DockBuilderAddNode(dockspaceId, ImGuiDockNodeFlags_DockSpace);
     ImGui::DockBuilderSetNodeSize(dockspaceId, ImGui::GetMainViewport()->WorkSize);
 
-    ImGuiID mainId = dockspaceId, bottomId = 0, rightId = 0;
-    bottomId = ImGui::DockBuilderSplitNode(mainId, ImGuiDir_Down,  0.30f, nullptr, &mainId);
-    rightId  = ImGui::DockBuilderSplitNode(mainId, ImGuiDir_Right, 0.25f, nullptr, &mainId);
+    ImGuiID mainId = dockspaceId, bottomId = 0, rightId = 0, rightBottomId = 0;
+    bottomId      = ImGui::DockBuilderSplitNode(mainId,  ImGuiDir_Down,  0.30f, nullptr, &mainId);
+    rightId       = ImGui::DockBuilderSplitNode(mainId,  ImGuiDir_Right, 0.28f, nullptr, &mainId);
+    rightBottomId = ImGui::DockBuilderSplitNode(rightId, ImGuiDir_Down,  0.55f, nullptr, &rightId);
 
     ImGui::DockBuilderDockWindow("Node Graph",  mainId);
     ImGui::DockBuilderDockWindow("Automation",  bottomId);
-    ImGui::DockBuilderDockWindow("Assets",      rightId);
-    ImGui::DockBuilderDockWindow("Preferences", rightId);   // tabbed with Assets
+    ImGui::DockBuilderDockWindow("Properties",  rightId);         // upper right
+    ImGui::DockBuilderDockWindow("Assets",      rightId);         // tabbed with Properties
+    ImGui::DockBuilderDockWindow("Preferences", rightId);         // tabbed too
+    ImGui::DockBuilderDockWindow("Controls",    rightBottomId);   // lower right
     ImGui::DockBuilderFinish(dockspaceId);
 }
 

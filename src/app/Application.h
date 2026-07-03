@@ -9,6 +9,8 @@
 #include "ui/AutomationPanel.h"
 #include "ui/PreferencesPanel.h"
 #include "ui/AssetsPanel.h"
+#include "ui/PropertiesPanel.h"
+#include "ui/ControlsPanel.h"
 #include "app/MidiSyncEngine.h"
 
 struct GLFWwindow;
@@ -44,9 +46,13 @@ private:
     Preferences      prefs_;
     PreferencesPanel preferences_;
     AssetsPanel      assets_;
+    PropertiesPanel  properties_;
+    ControlsPanel    controls_;
     MidiSyncEngine   syncEngine_;
     bool             showPreferences_ = false;
     bool             showAssets_ = false;
+    bool             showProperties_ = true;
+    bool             showControls_ = true;
     bool             wantResetLayout_ = false;   // set by View > Reset Layout; rebuilds the default next frame
 
     void saveProjectAs();         // prompt for a destination, save, remember it

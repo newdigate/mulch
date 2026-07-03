@@ -227,6 +227,8 @@ void Application::frame(float dt) {
     io.status = projectStatus_;
     io.showPreferences = &showPreferences_;
     io.showAssets = &showAssets_;
+    io.showProperties = &showProperties_;
+    io.showControls = &showControls_;
     drawTransportBar(graph_.transport(), &io);   // top toolbar: tempo + play/stop/scrub
 
     // Host dockspace for the editor panels. DockSpaceOverViewport creates the node when
@@ -243,6 +245,9 @@ void Application::frame(float dt) {
     automation_.draw(graph_);                // automation timeline window
     preferences_.draw(prefs_, [this]{ savePreferences(); }, &showPreferences_);
     assets_.draw(graph_.assets(), &showAssets_, prefs_.assetLibraryDir);
+    int selNode = editor_.selectedNodeId();
+    properties_.draw(graph_, selNode, &showProperties_);
+    controls_.draw(graph_, selNode, &showControls_);
     syncEngine_.update(graph_.transport(), prefs_, dt);   // MIDI clock sync in/out
     graph_.evaluate(dt);                     // advances the transport by dt
 }
