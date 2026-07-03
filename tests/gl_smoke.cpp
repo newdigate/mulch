@@ -46,6 +46,7 @@
 #include "modules/ImageStreamerNode.h"
 #include "modules/ImageSequencerNode.h"
 #include "modules/KaleidoscopeNode.h"
+#include "modules/HsvAdjustNode.h"
 #include <filesystem>
 #include <chrono>
 #include <cmath>
@@ -1096,6 +1097,42 @@ int main() {
         if (!check(16, ca, cb)) { glfwTerminate(); return fail("Compositor Hue mismatch vs reference"); }
         if (!check(22, ca, cb)) { glfwTerminate(); return fail("Compositor XOR mismatch vs reference"); }
         std::fprintf(stderr, "gl_smoke OK: Compositor shader matches blendPixel (Multiply/Hue/XOR)\n");
+    }
+
+    // --- Scenario: HSV Adjust shader matches the adjustHsv reference ---
+    // Feed a solid colour through the node and assert the rendered centre pixel matches
+    // adjustHsv() computed on the 8-bit-quantised input (what the texture carries). near() +/-3.
+    {
+        auto quant = [](glm::vec3 c) {
+            return glm::vec3(std::round(c.x*255.0f)/255.0f,
+                             std::round(c.y*255.0f)/255.0f,
+                             std::round(c.z*255.0f)/255.0f);
+        };
+        auto check = [&](glm::vec3 in, float hue, float sat, float bright) -> bool {
+            Graph g;
+            auto col = std::make_unique<ColourNode>(); col->inputDefault(0) = glm::vec4(in, 1.0f);
+            auto adj = std::make_unique<HsvAdjustNode>();
+            adj->inputDefault(1) = hue; adj->inputDefault(2) = sat; adj->inputDefault(3) = bright;
+            auto out = std::make_unique<OutputNode>();
+            col->initGL(); adj->initGL(); out->initGL();
+            int cId = g.addNode(std::move(col));
+            int aId = g.addNode(std::move(adj));
+            int oId = g.addNode(std::move(out));
+            if (!g.connect(cId,0,aId,0) || !g.connect(aId,0,oId,0)) return false;
+            g.evaluate(1.0f/60.0f);
+            TexRef t = dynamic_cast<OutputNode*>(g.findNode(oId))->current();
+            if (!t.id) return false;
+            int r, gg, bb, aa; readCentre(t, r, gg, bb, aa);
+            glm::vec3 e = adjustHsv(quant(in), hue, sat, bright);
+            int er = (int)std::lround(e.x*255.0f), eg = (int)std::lround(e.y*255.0f), eb = (int)std::lround(e.z*255.0f);
+            std::fprintf(stderr, "gl_smoke hsv (h%.2f s%.2f v%.2f): got (%d,%d,%d) expected (%d,%d,%d)\n",
+                         hue, sat, bright, r, gg, bb, er, eg, eb);
+            return near(r,er) && near(gg,eg) && near(bb,eb);
+        };
+        if (!check(glm::vec3(1.0f,0.0f,0.0f),   1.0f/3.0f, 1.0f, 1.0f)) { glfwTerminate(); return fail("HSV Adjust hue-shift (red->green) mismatch"); }
+        if (!check(glm::vec3(0.2f,0.5f,0.8f),   0.1f,      1.0f, 0.8f)) { glfwTerminate(); return fail("HSV Adjust hue+brightness mismatch"); }
+        if (!check(glm::vec3(0.6f,0.3f,0.9f),   0.0f,      0.0f, 1.0f)) { glfwTerminate(); return fail("HSV Adjust desaturate mismatch"); }
+        std::fprintf(stderr, "gl_smoke OK: HSV Adjust shader matches adjustHsv (hue/sat/bright)\n");
     }
 
     // --- Scenario 16: Wireframe draws a per-vertex-coloured line (Pos3Color3) ---
