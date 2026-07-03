@@ -130,4 +130,13 @@ void Graph::evaluate(float dt) {
     }
 }
 
+NodeConnections nodeConnectionSummary(const Graph& g, int nodeId) {
+    NodeConnections out;
+    for (const Connection& c : g.connections()) {
+        if (c.dstNode == nodeId) out.inputs.push_back({ c.dstPort, c.srcNode, c.srcPort });
+        if (c.srcNode == nodeId) out.outputs.push_back({ c.srcPort, c.dstNode, c.dstPort });
+    }
+    return out;
+}
+
 } // namespace oss

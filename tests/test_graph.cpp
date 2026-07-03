@@ -117,3 +117,24 @@ TEST_CASE("evaluate uses the port default for an unconnected input") {
     REQUIRE(capture != nullptr);
     CHECK(capture->captured == doctest::Approx(7.0f));    // 7 + default 0
 }
+
+TEST_CASE("nodeConnectionSummary lists a node's input sources and output destinations") {
+    Graph g;
+    int a = g.addNode(std::make_unique<ConstFloat>(1.0f));   // out 0
+    int b = g.addNode(std::make_unique<AddFloats>());        // in 0, out 0
+    int c = g.addNode(std::make_unique<AddFloats>());        // in 0
+    REQUIRE(g.connect(a, 0, b, 0));   // a.out0 -> b.in0
+    REQUIRE(g.connect(b, 0, c, 0));   // b.out0 -> c.in0
+
+    NodeConnections nb = nodeConnectionSummary(g, b);
+    REQUIRE(nb.inputs.size() == 1);
+    CHECK(nb.inputs[0].port == 0);
+    CHECK(nb.inputs[0].otherNode == a);
+    CHECK(nb.inputs[0].otherPort == 0);
+    REQUIRE(nb.outputs.size() == 1);
+    CHECK(nb.outputs[0].port == 0);
+    CHECK(nb.outputs[0].otherNode == c);
+    CHECK(nb.outputs[0].otherPort == 0);
+
+    CHECK(nodeConnectionSummary(g, a).inputs.empty());   // a (ConstFloat) has no inputs
+}

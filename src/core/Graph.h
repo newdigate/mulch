@@ -73,4 +73,14 @@ private:
     std::unordered_map<int, std::vector<Value>> outputs_;  // per-frame node outputs
 };
 
+// The selected node's connections, for the Properties panel. `inputs` lists this node's connected
+// input ports (port <- otherNode.otherPort); `outputs` lists its outgoing links (port -> otherNode.
+// otherPort). GL-free. Defined in Graph.cpp.
+struct NodeConnections {
+    struct Link { int port; int otherNode; int otherPort; };
+    std::vector<Link> inputs;
+    std::vector<Link> outputs;
+};
+NodeConnections nodeConnectionSummary(const Graph& g, int nodeId);
+
 } // namespace oss
