@@ -168,6 +168,11 @@ shaders by CWD-relative path, each package launches the app with `shaders/` as t
   which mirrors the GL-free reference `core/BlendModes.h` (`blendPixel` + `blendModeLabels`);
   the reference is unit-tested in `core_tests` and a `gl_smoke` scenario cross-checks the
   shader against it (one mode per code path) so they can't drift.
+- **HSV Adjust** — `HsvAdjustNode` (`src/modules/HsvAdjustNode.h`, header-only) is a `ShaderNode`
+  that shifts the hue (turns) and scales the saturation/brightness (multipliers) of an input
+  texture in `shaders/hsv_adjust.frag`, which mirrors the GL-free `core/ColorHsv.h` `adjustHsv`
+  (`rgbToHsv` → shift/scale/clamp → `hsvToRgb`); a `gl_smoke` scenario cross-checks the shader
+  against `adjustHsv` (like the Compositor guards against `BlendModes.h`). In the **Texture** category.
 - **Image Streamer / Kaleidoscope** — `ImageStreamerNode` (`src/modules/ImageStreamerNode.h`,
   header-only) loads a still image (a new **Image** `AssetType`, the fifth Assets tab) via the
   GL-free `gfx/ImageLoader` (an `stb_image` wrapper mirroring `VideoDecoder`, rows flipped
