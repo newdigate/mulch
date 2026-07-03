@@ -39,4 +39,14 @@ inline glm::vec3 rgbToHsv(float r, float g, float b) {
     return glm::vec3(h, s, mx);
 }
 
+// Shift hue by `hueTurns` (wraps) and scale saturation/value by the given multipliers (each
+// clamped to [0,1] after scaling). rgb + result in [0,1]. GL-free; mirrored by hsv_adjust.frag.
+inline glm::vec3 adjustHsv(const glm::vec3& rgb, float hueTurns, float satMul, float brightMul) {
+    glm::vec3 hsv = rgbToHsv(rgb.x, rgb.y, rgb.z);
+    float h = hsv.x + hueTurns;                              // hsvToRgb wraps h
+    float s = std::clamp(hsv.y * satMul,    0.0f, 1.0f);
+    float v = std::clamp(hsv.z * brightMul, 0.0f, 1.0f);
+    return hsvToRgb(h, s, v);
+}
+
 } // namespace oss

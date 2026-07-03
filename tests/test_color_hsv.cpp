@@ -30,3 +30,19 @@ TEST_CASE("rgbToHsv: grey has zero saturation") {
     CHECK(hsv.y == doctest::Approx(0.0f));
     CHECK(hsv.z == doctest::Approx(0.5f));
 }
+
+TEST_CASE("adjustHsv shifts hue and scales saturation/value") {
+    glm::vec3 red(1.0f, 0.0f, 0.0f);
+    // identity: hue 0, sat 1, bright 1 -> unchanged
+    glm::vec3 id = adjustHsv(red, 0.0f, 1.0f, 1.0f);
+    CHECK(id.x == doctest::Approx(1.0f)); CHECK(id.y == doctest::Approx(0.0f)); CHECK(id.z == doctest::Approx(0.0f));
+    // +1/3 turn hue: red -> green
+    glm::vec3 g = adjustHsv(red, 1.0f/3.0f, 1.0f, 1.0f);
+    CHECK(g.x == doctest::Approx(0.0f)); CHECK(g.y == doctest::Approx(1.0f)); CHECK(g.z == doctest::Approx(0.0f));
+    // saturation 0 -> grayscale (all channels equal)
+    glm::vec3 gray = adjustHsv(red, 0.0f, 0.0f, 1.0f);
+    CHECK(gray.x == doctest::Approx(gray.y)); CHECK(gray.y == doctest::Approx(gray.z));
+    // brightness 0 -> black
+    glm::vec3 black = adjustHsv(red, 0.0f, 1.0f, 0.0f);
+    CHECK(black.x == doctest::Approx(0.0f)); CHECK(black.y == doctest::Approx(0.0f)); CHECK(black.z == doctest::Approx(0.0f));
+}
