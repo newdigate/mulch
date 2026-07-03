@@ -2,12 +2,8 @@
 #include "app/Application.h"   // for nodeCategories()
 #include <imgui.h>
 #include <imgui_node_editor.h>
-#include <glm/vec4.hpp>
-#include <algorithm>
-#include <cmath>
 #include <set>
 #include <string>
-#include <variant>
 #include <vector>
 #include <utility>
 
