@@ -250,7 +250,6 @@ set(APP_SOURCES
   src/modules/SpectrographNode.cpp
   src/modules/WireframeNode.cpp
   src/ui/NodeEditorPanel.cpp
-  src/ui/PortWidgets.cpp
   src/ui/TransportBar.cpp
   src/ui/AutomationPanel.cpp
   src/ui/PreferencesPanel.cpp
