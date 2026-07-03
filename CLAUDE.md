@@ -348,13 +348,23 @@ shaders by CWD-relative path, each package launches the app with `shaders/` as t
   `OutputNode`'s texture fullscreen. Textures/VBOs are *shared* across contexts; VAOs
   and FBOs are *not*, so each context makes its own. Node GL objects are freed with the
   editor context current (it owns them).
-  The Graph window's ImGui panels (Node Graph, Automation, Assets, Preferences) are **dockable**
+  The Graph window's ImGui panels (Node Graph, Automation, Assets, Preferences, Properties, Controls) are **dockable**
   (Dear ImGui `docking` branch, pinned `v1.91.5-docking`): `src/main.cpp` sets
   `ImGuiConfigFlags_DockingEnable` and `Application::frame` submits a host dockspace via the
   `ui/DockLayout` unit (`beginDockHost` + a crafted `buildDefaultDockLayout` that confines the
   `imgui_internal.h` DockBuilder usage) before the panels; layout persists to `imgui.ini` and
   **View → Reset Layout** rebuilds the default. The **Output stays a separate OS window**
   (multi-viewport is off), so this rule is unchanged.
+- **Properties + Controls panels** — the node editor's canvas shows nodes as **header + ports
+  only**; editing a node happens in two dockable panels driven by the editor's current selection
+  (`NodeEditorPanel::selectedNodeId`). A GL-free `core/PanelSlot.h` `inputSlot` classifier routes
+  each input: continuous Float sliders + tri-state grids → **Controls** (`ui/ControlsPanel`);
+  integer/choice fields, colour, text (+ asset/folder ▾ picker), checkboxes, and the node's
+  toggle/preset buttons → **Properties** (`ui/PropertiesPanel`), which also shows a read-only
+  connections list from the GL-free `nodeConnectionSummary` (`core/Graph`). The panels are normal
+  ImGui windows, so their popups use standard ImGui — the old canvas-coordinate `NodePopup` /
+  `PortWidgets` machinery was removed. `inputSlot` + `nodeConnectionSummary` are unit-tested; the
+  panels are app-only (no headless test), like Assets/Preferences.
 - **Real-time threads bridge through queues, not the graph.** Audio (libsoundio) and
   mesh loading (`std::async`) run off the graph thread; they hand data back via a
   lock-free SPSC ring buffer (`src/audio/SpscRingBuffer.h`) or `AsyncLoader`

@@ -27,8 +27,8 @@ first time for the fetched dependencies.
 Two windows open, sharing one GL context: a **Graph** window (the node editor) and
 an **Output** window showing the result fullscreen. Right-click the canvas to add
 nodes, drag between pins to connect, and select a node or link and press
-**Delete**/**Backspace** to remove it. Unconnected inputs show inline editors.
-The editor panels (Node Graph, Automation, Assets, Preferences) are dockable — drag to split or tab them; the layout is saved between runs, and **View → Reset Layout** restores the default. The Output stays its own window (put it fullscreen on a second display).
+**Delete**/**Backspace** to remove it. Graph nodes show just their name + ports; **select a node to edit it** in the side panels — fields (integer, colour, text, dropdowns), checkboxes, toggle buttons, and its connections in **Properties**; sliders and step grids in **Controls**.
+The editor panels (Node Graph, Automation, Properties, Controls, Assets, Preferences) are dockable — drag to split or tab them; the layout is saved between runs, and **View → Reset Layout** restores the default. The Output stays its own window (put it fullscreen on a second display).
 
 A **transport toolbar** runs along the top of the Graph window — an editable
 decimal tempo, Play / Stop / Rewind / Fast-forward, the song position shown as
@@ -190,7 +190,7 @@ ctest --test-dir build --output-on-failure
 | `src/gfx/` | OpenGL helpers, ShaderNode base, mesh loading |
 | `src/audio/` | FFT, signal generator, SPSC ring buffer |
 | `src/modules/` | the nodes |
-| `src/ui/` | node-editor panel and inline port widgets |
+| `src/ui/` | node-editor panel + the Properties / Controls / Assets / Preferences panels |
 | `shaders/` | fragment shaders |
 | `docs/superpowers/` | design spec and implementation plan |
 
