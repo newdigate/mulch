@@ -258,6 +258,7 @@ set(APP_SOURCES
   src/ui/AssetsPanel.cpp
   src/ui/DockLayout.cpp
   src/ui/ControlsPanel.cpp
+  src/ui/PropertiesPanel.cpp
   src/app/ThreadPriority.cpp
   src/app/MidiSyncEngine.cpp
   src/app/Application.cpp
