@@ -1,5 +1,8 @@
 #include <doctest/doctest.h>
 #include "audio/Spirograph.h"
+#include "modules/SpirographSynthNode.h"
+#include "core/Node.h"
+#include "core/Value.h"
 #include <cmath>
 #include <vector>
 
@@ -85,4 +88,28 @@ TEST_CASE("Spirograph curve type changes the waveform") {
     double diff = 0.0;
     for (int i = 0; i < 256; ++i) diff += std::abs(hL[i] - eL[i]);
     CHECK(diff > 1.0);   // materially different waveforms
+}
+
+TEST_CASE("SpirographSynthNode emits two bounded AudioRefs of round(sampleRate*dt) frames") {
+    SpirographSynthNode node;
+    // ports: curve, freq, ratio, pen, phase, level
+    std::vector<Value> in = { Value(0.0f), Value(220.0f), Value(4.0f),
+                              Value(0.6f), Value(0.0f),   Value(1.0f) };
+    std::vector<Value> out(2);
+    EvalContext ctx{ in, out, 1.0f / 60.0f };
+    node.evaluate(ctx);
+
+    AudioRef l = std::get<AudioRef>(out[0]);
+    AudioRef r = std::get<AudioRef>(out[1]);
+    CHECK(l.sampleRate == 48000);
+    CHECK(r.sampleRate == 48000);
+    CHECK(l.count == (std::size_t)std::lround(48000.0 / 60.0));   // 800
+    CHECK(r.count == l.count);
+    bool stereo = false;
+    for (std::size_t i = 0; i < l.count; ++i) {
+        CHECK(l.samples[i] >= -1.0001f); CHECK(l.samples[i] <= 1.0001f);
+        CHECK(r.samples[i] >= -1.0001f); CHECK(r.samples[i] <= 1.0001f);
+        if (std::abs(l.samples[i] - r.samples[i]) > 1e-4f) stereo = true;
+    }
+    CHECK(stereo);   // left (x) and right (y) are genuinely different signals
 }
