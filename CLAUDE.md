@@ -118,6 +118,17 @@ shaders by CWD-relative path, each package launches the app with `shaders/` as t
   The ladder feedback and the output are `tanh`-saturated so it's BIBO-stable and
   bounded to `[-1,1]` regardless of resonance/FM. The voice is unit-tested in
   `core_tests`; the node is header-only and GL-free.
+- **Spirograph Synth** — `SpirographSynthNode` (`src/modules/SpirographSynthNode.h`,
+  header-only) is a stereo audio oscillator generated directly from Spirograph curves. It
+  wraps the GL-free `audio/Spirograph.h` DSP, advancing θ at audio rate so a
+  hypotrochoid/epitrochoid curve's x → `left` and y → `right` mono outputs. `ratio` (R/r
+  2..12) sets the bright partial's harmonic (k = ratio∓1), `pen` (d 0..1) fades it in,
+  `curve type` picks hypo/epi; output is normalized by (bigArm+pen) so |x|,|y| ≤ 1 for all
+  params (provably bounded, no clamp — like `StateVariableFilter`). Every control is an
+  input port, so wiring an **LFO** into `ratio` morphs the timbre (the spec's multi-spiral
+  engine / feedback / built-in morph LFO are deferred extensions). Unit-tested in
+  `core_tests` (bounded, pen=0 quadrature, phase continuity, frequency, hypo≠epi); GL-free,
+  no `gl_smoke`.
 - **Crossover Filter** — `CrossoverFilterNode` (`src/modules/CrossoverFilterNode.h`, header-only,
   GL-free) splits one mono input into **bass / mid / treble** mono outputs with two cascaded
   crossovers: a state-variable filter at the `low cutoff` sends its lowpass to `bass` and its
