@@ -1,6 +1,6 @@
 # OpenGL Shader Streamer
 
-A node-graph media pipeline, in the spirit of Blender's shader editor. Wire
+Dear Imgui based node-graph media pipeline, in the spirit of Blender's shader editor. Wire
 shader, audio, MIDI, and geometry modules together and watch textures, sound, and
 3D data stream through the graph in real time. C++17 · OpenGL 4.1 · Dear ImGui.
 
