@@ -137,7 +137,10 @@ void ProjectMNode::evaluate(EvalContext& ctx) {
 
     ensureInstance(w, h);
     if (!pm_) {
-        status_ = createFailed_ ? std::string("projectM failed to initialise") : api.statusText();
+        // A loader error can be very long (macOS dlerror lists every path it tried) and the editor
+        // draws the status line unclipped, so bound it here; Preferences shows the full text.
+        status_ = createFailed_ ? std::string("projectM failed to initialise")
+                                : shortenForStatus(api.statusText(), 80);
         ctx.out<TexRef>(0, TexRef{ fbo_.texture(), fbo_.width(), fbo_.height() });
         return;
     }

@@ -21,9 +21,15 @@ constexpr int kPmStereo = 2;                       // projectm_channels::PROJECT
 // set_frame_time and create_with_opengl_load_proc are all "@since 4.2.0").
 bool isSupportedProjectMVersion(int major, int minor);
 
-// Where to look, in order: the preference path (when set), the bare platform library names via
-// the system loader, then `<homeDir>/.local/lib`, `/usr/local/lib`, `/opt/homebrew/lib` (non-Windows;
-// `homeDir` may be empty, in which case that first directory is skipped).
+// Where to look, in order. The preference path comes first, but only when it is ABSOLUTE: a
+// relative one would resolve against the current working directory (and preferences.oss is itself
+// read from the CWD), so it is ignored. Then, per platform:
+//   Windows: the bare platform names (LoadLibrary searches the app directory + PATH).
+//   Linux:   `<homeDir>/.local/lib`, the bare names (ld.so cache + standard dirs -- not the CWD),
+//            `/usr/local/lib`, `/opt/homebrew/lib`.
+//   macOS:   `<homeDir>/.local/lib`, `/usr/local/lib`, `/opt/homebrew/lib` -- NO bare names, because
+//            dlopen resolves a bare name from the current working directory first.
+// `homeDir` may be empty, in which case that first directory is skipped.
 std::vector<std::string> projectMCandidatePaths(const std::string& prefPath, const std::string& homeDir);
 
 // The resolved functions. A plain copyable struct so a candidate library is bound into a LOCAL
@@ -67,7 +73,11 @@ public:
     bool load(const std::string& prefPath);        // loadFrom(projectMCandidatePaths(prefPath, $HOME))
 
     bool available() const { return available_; }
-    const std::string& statusText()  const { return status_; }       // why not / "projectM 4.2.0"
+    // The only diagnostic the user gets. One of: "projectM <version>" when loaded; why a library
+    // that DID open was refused ("found projectM 4.1.0, needs 4.2+ (<path>)", "missing symbol X
+    // (<path>)"); "could not load <path>: <loader error>" when a candidate exists but will not
+    // open (wrong architecture, missing dependency); or "projectM not found" when none existed.
+    const std::string& statusText()  const { return status_; }
     const std::string& versionText() const { return version_; }      // "4.2.0"
     const std::string& loadedPath()  const { return loadedPath_; }
     const std::string& loadedPrefPath() const { return loadedPrefPath_; }   // the preference value of the load that succeeded

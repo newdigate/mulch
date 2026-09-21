@@ -1,10 +1,20 @@
 #include <doctest/doctest.h>
 #include "gfx/ProjectMApi.h"
 #include "system_lib.h"
+#include <filesystem>
+#include <fstream>
 #include <string>
+#include <system_error>
 #include <vector>
 
 using namespace oss;
+
+// A preference path is honoured only when it is ABSOLUTE, and on Windows a leading '/' is not.
+#if defined(_WIN32)
+static const char* kAbsPref = "C:\\pm\\projectM-4.dll";
+#else
+static const char* kAbsPref = "/opt/pm/libprojectM-4.dylib";
+#endif
 
 TEST_CASE("projectM version gate: major must be 4, minor at least 2") {
     CHECK_FALSE(isSupportedProjectMVersion(4, 1));   // 4.1.7, the latest release
@@ -15,9 +25,9 @@ TEST_CASE("projectM version gate: major must be 4, minor at least 2") {
 }
 
 TEST_CASE("projectM candidate paths: the preference comes first; no empty entries") {
-    std::vector<std::string> c = projectMCandidatePaths("/opt/pm/libprojectM-4.dylib", "/home/me");
+    std::vector<std::string> c = projectMCandidatePaths(kAbsPref, "/home/me");
     REQUIRE_FALSE(c.empty());
-    CHECK(c.front() == "/opt/pm/libprojectM-4.dylib");
+    CHECK(c.front() == kAbsPref);
     for (const std::string& s : c) CHECK_FALSE(s.empty());
 
     std::vector<std::string> d = projectMCandidatePaths("", "/home/me");
@@ -32,7 +42,38 @@ TEST_CASE("projectM candidate paths: the preference comes first; no empty entrie
     CHECK(homeAt < d.size());
     CHECK(usrLocalAt < d.size());
     CHECK(homeAt < usrLocalAt);                      // the user's own build wins over a system install
+
+    std::size_t bareAt = d.size();                   // the first entry with no '/': a bare library name
+    for (std::size_t i = 0; i < d.size(); ++i)
+        if (bareAt == d.size() && d[i].find('/') == std::string::npos) bareAt = i;
+  #if defined(__linux__)
+    CHECK(bareAt < d.size());                        // the ld.so cache is the main mechanism there...
+    CHECK(homeAt < bareAt);                          // ...but the user's own build is tried first
+  #elif defined(__APPLE__)
+    CHECK(bareAt == d.size());                       // dlopen resolves a bare name from the CWD first
+  #endif
 #endif
+}
+
+TEST_CASE("projectM candidate paths: a relative preference is ignored (it would resolve against the CWD)") {
+    std::vector<std::string> rel  = projectMCandidatePaths("libprojectM-4.dylib", "/home/me");
+    std::vector<std::string> none = projectMCandidatePaths("", "/home/me");
+    CHECK(rel == none);
+    std::vector<std::string> sub = projectMCandidatePaths("build/libprojectM-4.dylib", "/home/me");
+    CHECK(sub == none);
+}
+
+TEST_CASE("ProjectMApi: a file that exists but will not load is reported as such, not as 'not found'") {
+    namespace fs = std::filesystem;
+    fs::path bogus = fs::temp_directory_path() / "oss_not_a_library.dylib";
+    { std::ofstream f(bogus); f << "this is not a shared library\n"; }
+    ProjectMApi api;
+    CHECK_FALSE(api.loadFrom({bogus.string()}));
+    const std::string status = api.statusText();
+    std::error_code ec; fs::remove(bogus, ec);                  // clean up before asserting
+    CHECK_FALSE(api.available());
+    CHECK(status.rfind("could not load " + bogus.string(), 0) == 0);   // names the file, then the loader error
+    CHECK(status.size() > ("could not load " + bogus.string()).size()); // ...and carries a reason
 }
 
 TEST_CASE("ProjectMApi: nothing to open -> unavailable, 'not found'") {

@@ -1,5 +1,7 @@
 #include "gfx/ProjectMApi.h"
 #include <cstdlib>
+#include <filesystem>
+#include <system_error>
 #include <type_traits>
 #include <utility>
 
@@ -21,21 +23,31 @@ bool isSupportedProjectMVersion(int major, int minor) { return major == 4 && min
 
 std::vector<std::string> projectMCandidatePaths(const std::string& prefPath, const std::string& homeDir) {
     std::vector<std::string> out;
-    if (!prefPath.empty()) out.push_back(prefPath);
+    // Only an ABSOLUTE preference is honoured: a relative one would resolve against the current
+    // working directory, and preferences.oss is itself read from the CWD -- so a stray library
+    // beside whatever directory the app happened to start in could hijack the load.
+    if (!prefPath.empty() && std::filesystem::path(prefPath).is_absolute()) out.push_back(prefPath);
     const std::vector<std::string> names = platformLibraryNames();
-    // Bare names go through the system loader: on Linux that is the ld.so cache (the main
-    // mechanism there); on Windows the app dir + PATH; on current macOS almost nothing (dyld no
-    // longer applies the old /usr/local/lib fallback), so there the explicit dirs below do the work.
-    for (const std::string& n : names) out.push_back(n);
-#if !defined(_WIN32)
-    std::vector<std::string> dirs;
-    if (!homeDir.empty()) dirs.push_back(homeDir + "/.local/lib");     // the user's own build wins
-    dirs.push_back("/usr/local/lib");
-    dirs.push_back("/opt/homebrew/lib");
-    for (const std::string& d : dirs)
+    auto addDir = [&](const std::string& d) {
         for (const std::string& n : names) out.push_back(d + "/" + n);
+    };
+#if defined(_WIN32)
+    // LoadLibrary resolves a bare name from the app directory + PATH -- the only mechanism here.
+    (void)homeDir; (void)addDir;
+    for (const std::string& n : names) out.push_back(n);
 #else
-    (void)homeDir;
+    if (!homeDir.empty()) addDir(homeDir + "/.local/lib");   // the user's own build wins everywhere
+  #if defined(__linux__)
+    // A bare name goes through the ld.so cache + the standard directories -- the main install
+    // mechanism on Linux -- and does NOT search the current working directory.
+    for (const std::string& n : names) out.push_back(n);
+  #else
+    // No bare names on macOS: dlopen resolves one from the CURRENT WORKING DIRECTORY first
+    // (measured), so a stray dylib sitting next to a project would be loaded ahead of the user's
+    // own install. Explicit directories only here.
+  #endif
+    addDir("/usr/local/lib");
+    addDir("/opt/homebrew/lib");
 #endif
     return out;
 }
@@ -61,9 +73,18 @@ bool ProjectMApi::load(const std::string& prefPath) {
 bool ProjectMApi::loadFrom(const std::vector<std::string>& candidates, const std::string& prefPath) {
     if (available_) return true;
     std::string rejection;                                        // why an opened library was refused
+    std::string openError;                                        // why a library that EXISTS would not open
     for (const std::string& path : candidates) {
         DynLib lib;
-        if (!lib.open(path)) continue;
+        if (!lib.open(path)) {
+            // A candidate that is simply absent is not worth reporting, but one that is there and
+            // will not load (wrong architecture, a missing dependency of its own) is the whole
+            // diagnostic -- "not found" would send the user looking in the wrong place.
+            std::error_code ec;
+            if (openError.empty() && std::filesystem::exists(path, ec))
+                openError = "could not load " + path + ": " + lib.error();
+            continue;
+        }
         ProjectMFunctions fns;                                    // bound locally; adopted only on success
         std::string version, why;
         if (bind(lib, fns, version, why)) {
@@ -78,7 +99,11 @@ bool ProjectMApi::loadFrom(const std::vector<std::string>& candidates, const std
         }
         if (rejection.empty()) rejection = why + " (" + path + ")";   // `lib` closes here; `fns` is dropped
     }
-    status_ = rejection.empty() ? std::string("projectM not found") : rejection;
+    // Precedence: a library we opened and refused says the most; then one we could not open at
+    // all; only when nothing was even there is it "not found".
+    if      (!rejection.empty()) status_ = rejection;
+    else if (!openError.empty()) status_ = openError;
+    else                         status_ = "projectM not found";
     return false;
 }
 
