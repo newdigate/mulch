@@ -364,7 +364,9 @@ add_test(NAME core_tests COMMAND core_tests)
 foreach(pm_minor 1 2)
   add_library(pm_fake_4${pm_minor} MODULE tests/pm_fake.c)
   target_compile_definitions(pm_fake_4${pm_minor} PRIVATE PM_FAKE_MINOR=${pm_minor})
-  set_target_properties(pm_fake_4${pm_minor} PROPERTIES PREFIX "")
+  set_target_properties(pm_fake_4${pm_minor} PROPERTIES PREFIX ""
+    LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/test_modules"
+    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/test_modules")   # keep test DLLs out of the packaged app dir
 endforeach()
 add_dependencies(core_tests pm_fake_41 pm_fake_42)
 target_compile_definitions(core_tests PRIVATE

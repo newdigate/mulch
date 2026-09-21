@@ -3,6 +3,7 @@
 #include <cctype>
 #include <cmath>
 #include <cstddef>
+#include <exception>
 #include <filesystem>
 #include <string>
 #include <string_view>
@@ -40,12 +41,16 @@ inline std::vector<std::string> listPresetsInDir(const std::string& dir) {
     std::error_code ec;
     std::filesystem::directory_iterator it(dir, ec), end;
     for (; !ec && it != end; it.increment(ec)) {
-        std::error_code fec;
-        if (!it->is_regular_file(fec)) continue;
-        if (detail::lowered(it->path().extension().string()) != ".milk") continue;
-        std::string name = it->path().filename().string();
-        std::string key  = detail::lowered(name);
-        keyed.emplace_back(std::move(key), std::move(name));
+        try {
+            std::error_code fec;
+            if (!it->is_regular_file(fec)) continue;
+            if (detail::lowered(it->path().extension().string()) != ".milk") continue;
+            std::string name = it->path().filename().string();
+            std::string key  = detail::lowered(name);
+            keyed.emplace_back(std::move(key), std::move(name));
+        } catch (const std::exception&) {
+            continue;                                   // a file name this platform cannot represent: skip it
+        }
     }
     std::sort(keyed.begin(), keyed.end());                    // by lowercased name, then by exact name
     out.reserve(keyed.size());

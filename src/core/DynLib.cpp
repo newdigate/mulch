@@ -18,7 +18,9 @@ bool DynLib::open(const std::string& path) {
     close();
     error_.clear();
 #if defined(_WIN32)
-    handle_ = static_cast<void*>(LoadLibraryA(path.c_str()));
+    std::string native = path;
+    for (char& c : native) if (c == '/') c = '\\';   // LoadLibrary documents backslashes; callers pass '/'
+    handle_ = static_cast<void*>(LoadLibraryA(native.c_str()));
     if (!handle_)
         error_ = "LoadLibrary failed (" + std::to_string((unsigned long)GetLastError()) + "): " + path;
 #else

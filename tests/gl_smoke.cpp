@@ -197,7 +197,7 @@ static bool writeSolidPNG(const std::string& path, unsigned char r, unsigned cha
 }
 
 int main() {
-    // Phase 2: the five media file inputs are asset-backed with the matching AssetType.
+    // Phase 2: the six media file inputs are asset-backed with the matching AssetType.
     // Pure CPU (node constructors don't touch GL), so it runs before any GL setup --
     // a bare `return fail(...)` is correct here (no context to clean up).
     {
@@ -214,7 +214,7 @@ int main() {
         for (int v = 0; v < DrumMachineNode::kVoices; ++v)
             if (bad(dm, 4 * v, AssetType::Audio)) return fail("DrumMachine.file voice not asset-backed Audio");
         ProjectMNode       pmn; if (bad(pmn, ProjectMNode::kPreset, AssetType::Preset)) return fail("projectM.preset not asset-backed Preset");
-        std::fprintf(stderr, "gl_smoke OK: 5 media nodes expose asset-backed file inputs\n");
+        std::fprintf(stderr, "gl_smoke OK: 6 media nodes expose asset-backed file inputs\n");
     }
 
     if (!glfwInit()) return fail("glfwInit");
