@@ -46,11 +46,15 @@ std::string serializePreferences(const Preferences& p) {
 }
 
 bool parsePreferences(const std::string& text, Preferences& out) {
+    auto chomp = [](std::string& s) { if (!s.empty() && s.back() == '\r') s.pop_back(); };   // tolerate CRLF-edited files
     out = Preferences{};
     std::istringstream in(text);
     std::string line;
-    if (!std::getline(in, line) || line.rfind("oss-prefs", 0) != 0) return false;
+    if (!std::getline(in, line)) return false;
+    chomp(line);
+    if (line.rfind("oss-prefs", 0) != 0) return false;
     while (std::getline(in, line)) {
+        chomp(line);
         if (line.empty()) continue;
         std::istringstream ls(line);
         std::string kw; ls >> kw;

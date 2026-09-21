@@ -51,14 +51,14 @@ ProjectMApi& ProjectMApi::instance() {
 
 bool ProjectMApi::load(const std::string& prefPath) {
 #if defined(_WIN32)
-    return loadFrom(projectMCandidatePaths(prefPath, ""));
+    return loadFrom(projectMCandidatePaths(prefPath, ""), prefPath);
 #else
     const char* home = std::getenv("HOME");
-    return loadFrom(projectMCandidatePaths(prefPath, home ? home : ""));
+    return loadFrom(projectMCandidatePaths(prefPath, home ? home : ""), prefPath);
 #endif
 }
 
-bool ProjectMApi::loadFrom(const std::vector<std::string>& candidates) {
+bool ProjectMApi::loadFrom(const std::vector<std::string>& candidates, const std::string& prefPath) {
     if (available_) return true;
     std::string rejection;                                        // why an opened library was refused
     for (const std::string& path : candidates) {
@@ -68,11 +68,12 @@ bool ProjectMApi::loadFrom(const std::vector<std::string>& candidates) {
         std::string version, why;
         if (bind(lib, fns, version, why)) {
             static_cast<ProjectMFunctions&>(*this) = fns;
-            lib_        = std::move(lib);                         // keeps the handle open: fns stay valid
-            version_    = version;
-            loadedPath_ = path;
-            available_  = true;
-            status_     = "projectM " + version_;
+            lib_            = std::move(lib);                     // keeps the handle open: fns stay valid
+            version_        = version;
+            loadedPath_     = path;
+            loadedPrefPath_ = prefPath;
+            available_      = true;
+            status_         = "projectM " + version_;
             return true;
         }
         if (rejection.empty()) rejection = why + " (" + path + ")";   // `lib` closes here; `fns` is dropped

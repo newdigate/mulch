@@ -63,13 +63,14 @@ public:
 
     // Try each candidate until one opens, passes the version gate and resolves every symbol.
     // A no-op returning true once available. The library is never unloaded afterwards.
-    bool loadFrom(const std::vector<std::string>& candidates);
+    bool loadFrom(const std::vector<std::string>& candidates, const std::string& prefPath = "");
     bool load(const std::string& prefPath);        // loadFrom(projectMCandidatePaths(prefPath, $HOME))
 
     bool available() const { return available_; }
     const std::string& statusText()  const { return status_; }       // why not / "projectM 4.2.0"
     const std::string& versionText() const { return version_; }      // "4.2.0"
     const std::string& loadedPath()  const { return loadedPath_; }
+    const std::string& loadedPrefPath() const { return loadedPrefPath_; }   // the preference value of the load that succeeded
 
 private:
     // Version gate + resolve every symbol from `lib` into `fns`. On failure `why` says what was
@@ -79,7 +80,7 @@ private:
     DynLib      lib_;
     bool        available_ = false;
     std::string status_ = "projectM not found";
-    std::string version_, loadedPath_;
+    std::string version_, loadedPath_, loadedPrefPath_;
 };
 
 } // namespace oss

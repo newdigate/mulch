@@ -76,3 +76,12 @@ TEST_CASE("ProjectMApi: falls through absent and rejected candidates to a good o
     CHECK(api.loadFrom({"/nonexistent/other.dylib"}));   // a no-op once available
     CHECK(api.loadedPath() == OSS_PM_FAKE_42);
 }
+
+TEST_CASE("ProjectMApi remembers the preference path of the load that succeeded") {
+    ProjectMApi api;
+    CHECK(api.loadedPrefPath().empty());
+    REQUIRE(api.loadFrom({OSS_PM_FAKE_42}, "/the/pref/value"));
+    CHECK(api.loadedPrefPath() == "/the/pref/value");
+    CHECK(api.loadFrom({OSS_PM_FAKE_42}, "/a/later/pref"));      // a no-op once available...
+    CHECK(api.loadedPrefPath() == "/the/pref/value");            // ...so the remembered pref does not move
+}
