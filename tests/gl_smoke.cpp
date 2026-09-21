@@ -53,6 +53,7 @@
 #include <cstdlib>
 #include <fstream>
 #include <filesystem>
+#include <limits>
 #include <chrono>
 #include <cmath>
 #include <thread>
@@ -1878,7 +1879,35 @@ int main() {
                          100.0 * (double)stillLit / ((double)t.w * (double)t.h));
             if (stillLit * 100 <= (size_t)t.w * (size_t)t.h) { glfwTerminate(); return fail("projectM live: the previous preset stopped rendering after a missing preset"); }
 
-            std::fprintf(stderr, "gl_smoke OK: projectM live (renders, GL state + samplers contained, status, burn upright + alpha, survives hostile caller state, reports a missing preset)\n");
+            // (h) a bad dt must not latch the node black. projectM takes the accumulated time we hand
+            // it verbatim, so a NaN would poison it permanently, and a negative one makes projectM fall
+            // back to its own wall clock (losing determinism). The node clamps both to "no advance".
+            // Measured with the clamp removed: 0.0% lit here, and still 0.0% after ten good frames --
+            // it never recovers. With the clamp: 100%.
+            ins[ProjectMNode::kPreset] = Value(dir + "/a.milk");
+            for (int i = 0; i < 5; ++i) pm.evaluate(ctx);
+            ctx.dt = std::numeric_limits<float>::quiet_NaN();
+            pm.evaluate(ctx);
+            ctx.dt = -1.0f;
+            pm.evaluate(ctx);
+            ctx.dt = 1.0f / 60.0f;
+            t = std::get<TexRef>(outs[0]);
+            px.assign((size_t)t.w * t.h * 4, 0);                 // zero the canvas, as (f) and (g) do
+            glBindTexture(GL_TEXTURE_2D, t.id);
+            glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, t.w, t.h, GL_RGBA, GL_UNSIGNED_BYTE, px.data());
+            for (int i = 0; i < 10; ++i) pm.evaluate(ctx);
+            t = std::get<TexRef>(outs[0]);
+            px.assign((size_t)t.w * t.h * 4, 0);
+            glBindTexture(GL_TEXTURE_2D, t.id);
+            glGetTexImage(GL_TEXTURE_2D, 0, GL_RGBA, GL_UNSIGNED_BYTE, px.data());
+            size_t litAfterBadDt = 0;
+            for (size_t i = 0; i + 3 < px.size(); i += 4)
+                if (px[i] + px[i + 1] + px[i + 2] > 60) ++litAfterBadDt;
+            std::fprintf(stderr, "gl_smoke projectM bad dt: %.1f%% of the canvas lit after a NaN and a negative dt\n",
+                         100.0 * (double)litAfterBadDt / ((double)t.w * (double)t.h));
+            if (litAfterBadDt * 100 <= (size_t)t.w * (size_t)t.h) { glfwTerminate(); return fail("projectM live: a NaN or negative dt left the node black"); }
+
+            std::fprintf(stderr, "gl_smoke OK: projectM live (renders, GL state + samplers contained, status, burn upright + alpha, survives hostile caller state, reports a missing preset, survives a bad dt)\n");
         }
         std::error_code ec;                                      // the temp preset folders this file wrote
         std::filesystem::remove_all(std::filesystem::temp_directory_path() / "oss_projectm_smoke", ec);
