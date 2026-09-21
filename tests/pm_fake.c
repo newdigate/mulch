@@ -39,6 +39,8 @@ PM_FAKE_EXPORT void projectm_set_fps(projectm_handle h, int32_t f) { (void)h; (v
 PM_FAKE_EXPORT void projectm_set_aspect_correction(projectm_handle h, bool b) { (void)h; (void)b; }
 PM_FAKE_EXPORT void projectm_set_texture_search_paths(projectm_handle h, const char** p, size_t c) { (void)h; (void)p; (void)c; }
 PM_FAKE_EXPORT void projectm_set_preset_switch_failed_event_callback(projectm_handle h, projectm_preset_switch_failed_event cb, void* u) { (void)h; (void)cb; (void)u; }
+/* `int ch` deliberately mirrors ProjectMApi.h (which passes an int for projectm_channels), not the
+   real enum: this fake stands in for the thing under test. Do not "correct" it. */
 PM_FAKE_EXPORT void projectm_pcm_add_float(projectm_handle h, const float* s, unsigned int c, int ch) { (void)h; (void)s; (void)c; (void)ch; }
 PM_FAKE_EXPORT void projectm_opengl_render_frame_fbo(projectm_handle h, uint32_t fbo) { (void)h; (void)fbo; }
 PM_FAKE_EXPORT void projectm_opengl_burn_texture(projectm_handle h, uint32_t t, int l, int tp, int w, int ht) { (void)h; (void)t; (void)l; (void)tp; (void)w; (void)ht; }

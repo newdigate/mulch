@@ -371,14 +371,25 @@ target_compile_definitions(core_tests PRIVATE
   OSS_PM_FAKE_42="$<TARGET_FILE:pm_fake_42>")
 
 # Compile-only guard: static_asserts ProjectMApi's hand-written signatures against the real
-# projectM headers. Built only where they are installed; never linked or shipped.
+# projectM headers. Built only where headers that declare the 4.2 API are installed; never linked
+# or shipped. It must never break a build: older headers (e.g. a distro libprojectm-4-dev 4.1)
+# would be a hard compile error, so they are detected and skipped.
 find_path(PROJECTM_INCLUDE_DIR projectM-4/core.h
   HINTS "$ENV{HOME}/.local/include" /usr/local/include /opt/homebrew/include)
-if(PROJECTM_INCLUDE_DIR)
+mark_as_advanced(PROJECTM_INCLUDE_DIR)
+set(_pm_has_42 "")
+if(PROJECTM_INCLUDE_DIR AND EXISTS "${PROJECTM_INCLUDE_DIR}/projectM-4/render_opengl.h")
+  # One discriminator is enough: all the 4.2-only functions landed together.
+  file(STRINGS "${PROJECTM_INCLUDE_DIR}/projectM-4/render_opengl.h" _pm_has_42
+       REGEX "projectm_opengl_render_frame_fbo")
+endif()
+if(_pm_has_42)
   message(STATUS "projectM headers: ${PROJECTM_INCLUDE_DIR} (signature check enabled)")
   add_library(projectm_sigcheck OBJECT tests/projectm_sigcheck.cpp)
   target_include_directories(projectm_sigcheck PRIVATE src ${PROJECTM_INCLUDE_DIR})
   add_dependencies(core_tests projectm_sigcheck)
+elseif(PROJECTM_INCLUDE_DIR)
+  message(STATUS "projectM headers at ${PROJECTM_INCLUDE_DIR} predate 4.2 - signature check skipped")
 endif()
 
 # Headless GL render smoke test: renders the graph offscreen and reads back pixels.
