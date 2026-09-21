@@ -47,6 +47,7 @@
 #include "modules/ImageSequencerNode.h"
 #include "modules/KaleidoscopeNode.h"
 #include "modules/HsvAdjustNode.h"
+#include "gfx/GLStateGuard.h"
 #include <filesystem>
 #include <chrono>
 #include <cmath>
@@ -1548,6 +1549,47 @@ int main() {
             glfwTerminate(); return fail("Drum Machine: hard-left pan did not route to left only");
         }
         std::fprintf(stderr, "gl_smoke OK: Drum Machine triggers a step, accent louder, pan routes\n");
+    }
+
+    // GLStateGuard: state changed inside the scope is restored on exit.
+    {
+        Framebuffer scratch;
+        scratch.create(8, 8);
+        glBindFramebuffer(GL_FRAMEBUFFER, 0);
+        glViewport(0, 0, 17, 19);
+        glDisable(GL_BLEND); glDisable(GL_DEPTH_TEST); glDisable(GL_SCISSOR_TEST); glDisable(GL_CULL_FACE);
+        glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+        glDepthMask(GL_TRUE);
+        glUseProgram(0);
+        glBindVertexArray(0);
+        glActiveTexture(GL_TEXTURE0);
+        glBindTexture(GL_TEXTURE_2D, 0);
+        glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
+        {
+            GLStateGuard guard;
+            scratch.bind();                                   // FBO + viewport
+            glEnable(GL_BLEND); glEnable(GL_DEPTH_TEST); glEnable(GL_SCISSOR_TEST); glEnable(GL_CULL_FACE);
+            glBlendFunc(GL_ONE, GL_ONE);
+            glDepthMask(GL_FALSE);
+            glBindTexture(GL_TEXTURE_2D, scratch.texture());  // unit 0's binding
+            glActiveTexture(GL_TEXTURE3);
+            glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+        }
+        GLint fb = -1, vp[4] = {0, 0, 0, 0}, unit = 0, tex = -1, align = 0, srcRgb = 0;
+        GLboolean depthMask = GL_FALSE;
+        glGetIntegerv(GL_DRAW_FRAMEBUFFER_BINDING, &fb);
+        glGetIntegerv(GL_VIEWPORT, vp);
+        glGetIntegerv(GL_ACTIVE_TEXTURE, &unit);
+        glGetIntegerv(GL_TEXTURE_BINDING_2D, &tex);
+        glGetIntegerv(GL_UNPACK_ALIGNMENT, &align);
+        glGetIntegerv(GL_BLEND_SRC_RGB, &srcRgb);
+        glGetBooleanv(GL_DEPTH_WRITEMASK, &depthMask);
+        bool ok = fb == 0 && vp[2] == 17 && vp[3] == 19 && unit == GL_TEXTURE0 && tex == 0 &&
+                  align == 4 && srcRgb == GL_SRC_ALPHA && depthMask == GL_TRUE &&
+                  !glIsEnabled(GL_BLEND) && !glIsEnabled(GL_DEPTH_TEST) &&
+                  !glIsEnabled(GL_SCISSOR_TEST) && !glIsEnabled(GL_CULL_FACE);
+        if (!ok) { glfwTerminate(); return fail("GLStateGuard did not restore the GL state"); }
+        std::fprintf(stderr, "gl_smoke OK: GLStateGuard restores framebuffer/viewport/texture/enables\n");
     }
 
     glfwDestroyWindow(win);

@@ -16,6 +16,7 @@ public:
     static void unbind();         // bind default framebuffer (0)
 
     GLuint texture() const { return tex_; }
+    GLuint id() const { return fbo_; }     // the FBO name (for renderers that take an FBO id)
     int width()  const { return w_; }
     int height() const { return h_; }
 
