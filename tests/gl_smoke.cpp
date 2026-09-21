@@ -48,6 +48,9 @@
 #include "modules/KaleidoscopeNode.h"
 #include "modules/HsvAdjustNode.h"
 #include "gfx/GLStateGuard.h"
+#include "modules/ProjectMNode.h"
+#include <cstdlib>
+#include <fstream>
 #include <filesystem>
 #include <chrono>
 #include <cmath>
@@ -98,6 +101,37 @@ static void readAtUV(TexRef tex, float u, float v, int& r, int& g, int& b, int& 
     r = px[i]; g = px[i+1]; b = px[i+2]; a = px[i+3];
 }
 
+// A minimal Milkdrop preset authored for these tests (no third-party preset ships in the repo).
+// No warp/zoom/rotation, so a burned image stays where it was stamped; the orange outer border
+// guarantees non-black pixels even with silent audio.
+static const char* kTestPreset =
+    "[preset00]\n"
+    "fDecay=0.98\nzoom=1.0\nrot=0.0\nwarp=0.0\n"
+    "nWaveMode=0\nfWaveAlpha=1.0\nfWaveScale=1.0\n"
+    "wave_r=1.0\nwave_g=0.4\nwave_b=0.1\n"
+    "ob_size=0.04\nob_r=0.9\nob_g=0.4\nob_b=0.1\nob_a=1.0\n";
+
+// Write a.milk / b.milk / c.milk into a fresh temp folder; returns the folder ("" on failure).
+static std::string writePresetFolder() {
+    std::filesystem::path dir = std::filesystem::temp_directory_path() / "oss_projectm_smoke";
+    std::error_code ec;
+    std::filesystem::remove_all(dir, ec);
+    if (!std::filesystem::create_directories(dir, ec)) return "";
+    for (const char* n : {"a.milk", "b.milk", "c.milk"}) {
+        std::ofstream f(dir / n);
+        if (!f) return "";
+        f << kTestPreset;
+    }
+    return dir.string();
+}
+
+// The node's input defaults as a resolved input vector (what Graph::evaluate would hand it).
+static std::vector<Value> defaultInputs(const Node& n) {
+    std::vector<Value> v;
+    for (const Port& p : n.inputs()) v.push_back(p.defaultValue);
+    return v;
+}
+
 // Write a 64x64 PNG: left half red, right half green. Returns the path (or "" on failure).
 static std::string writeSplitFixture() {
     const int W = 64, H = 64;
@@ -141,6 +175,7 @@ int main() {
         DrumMachineNode    dm;
         for (int v = 0; v < DrumMachineNode::kVoices; ++v)
             if (bad(dm, 4 * v, AssetType::Audio)) return fail("DrumMachine.file voice not asset-backed Audio");
+        ProjectMNode       pmn; if (bad(pmn, ProjectMNode::kPreset, AssetType::Preset)) return fail("projectM.preset not asset-backed Preset");
         std::fprintf(stderr, "gl_smoke OK: 5 media nodes expose asset-backed file inputs\n");
     }
 
@@ -1549,6 +1584,35 @@ int main() {
             glfwTerminate(); return fail("Drum Machine: hard-left pan did not route to left only");
         }
         std::fprintf(stderr, "gl_smoke OK: Drum Machine triggers a step, accent louder, pan routes\n");
+    }
+
+    // projectM node, library-absent path (what CI sees). ProjectMApi::load() has deliberately not
+    // been called yet in this process, so the node must be inert.
+    {
+        ProjectMNode pm;
+        pm.initGL();
+        std::vector<Value> ins = defaultInputs(pm), outs(1);
+        EvalContext ctx{ins, outs, 1.0f / 60.0f, nullptr, nullptr};
+        pm.evaluate(ctx);
+        TexRef t = std::get<TexRef>(outs[0]);
+        if (t.id == 0 || t.w != kCanvasW || t.h != kCanvasH) { glfwTerminate(); return fail("projectM (inert): no canvas-sized texture"); }
+        int r, gg, b, a;
+        readCentre(t, r, gg, b, a);
+        if (!(r == 0 && gg == 0 && b == 0 && a == 255)) { glfwTerminate(); return fail("projectM (inert): texture not opaque black"); }
+        if (pm.statusLine().empty()) { glfwTerminate(); return fail("projectM (inert): empty status line"); }
+
+        // Playlist write-back needs no library: next from a.milk -> b.milk, written into the field.
+        std::string dir = writePresetFolder();
+        if (dir.empty()) { glfwTerminate(); return fail("projectM: write preset folder"); }
+        ins[ProjectMNode::kPreset] = Value(dir + "/a.milk");
+        pm.evaluate(ctx);
+        if (fileBaseName(std::get<std::string>(pm.inputDefault(ProjectMNode::kPreset))) != "a.milk") { glfwTerminate(); return fail("projectM: incoming preset not written back"); }
+        pm.onButtonPressed(1);   // next
+        pm.evaluate(ctx);        // `ins` still says a.milk, like an unchanged edge: the step must hold
+        if (fileBaseName(std::get<std::string>(pm.inputDefault(ProjectMNode::kPreset))) != "b.milk") { glfwTerminate(); return fail("projectM: next did not step to b.milk"); }
+        pm.evaluate(ctx);
+        if (fileBaseName(std::get<std::string>(pm.inputDefault(ProjectMNode::kPreset))) != "b.milk") { glfwTerminate(); return fail("projectM: step snapped back"); }
+        std::fprintf(stderr, "gl_smoke OK: projectM inert path (black texture, status '%s') + playlist write-back\n", pm.statusLine().c_str());
     }
 
     // GLStateGuard: state changed inside the scope is restored on exit.

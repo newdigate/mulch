@@ -251,6 +251,7 @@ set(APP_SOURCES
   src/modules/ShadedRenderNode.cpp
   src/modules/SpectrographNode.cpp
   src/modules/WireframeNode.cpp
+  src/modules/ProjectMNode.cpp
   src/ui/NodeEditorPanel.cpp
   src/ui/TransportBar.cpp
   src/ui/AutomationPanel.cpp
@@ -423,6 +424,7 @@ add_executable(gl_smoke
   src/modules/TextNode.cpp
   src/modules/VideoPlayerNode.cpp
   src/modules/WireframeNode.cpp
+  src/modules/ProjectMNode.cpp
   src/modules/AudioPlayerNode.cpp
   src/audio/FFT.cpp
   src/audio/SignalGenerator.cpp
