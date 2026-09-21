@@ -6,8 +6,12 @@
 
 namespace oss {
 
-// The four Assets-window tabs, in tab order. Persisted as the int 0..3.
-enum class AssetType { Audio, Video, Midi, Mesh, Image, Preset };   // append only: the codec stores the int
+// The kinds of media the Assets window groups. Persisted by AssetLibraryFile / ProjectFile as the
+// int value, so the values are APPEND-ONLY: never insert or reorder one. The Assets window's tab
+// order is its own (see AssetsPanel::draw) and deliberately differs. Only AssetsPanel's per-tab UI
+// arrays are indexed by (int)AssetType, and always by a TAB's type, never by an asset's own type --
+// which is what lets an unknown future type int be carried through a load/save untouched.
+enum class AssetType { Audio, Video, Midi, Mesh, Image, Preset };
 constexpr int kAssetTypeCount = 6;   // number of AssetType values (and Assets-window tabs)
 
 struct Asset {

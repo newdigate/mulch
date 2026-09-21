@@ -8,7 +8,7 @@
 
 namespace oss {
 
-// The "Assets" window: a tab bar (Audio / Video / MIDI / 3D). Each tab is a tag-filter toolbar
+// The "Assets" window: a tab bar (Audio / Video / Image / MIDI / 3D / Presets). Each tab is a tag-filter toolbar
 // plus a collapsible folder tree of that type's media files (name, path + Browse, tags, remove)
 // and an Add row. Edits mutate the library in place (project state, saved with the project).
 class AssetsPanel {
