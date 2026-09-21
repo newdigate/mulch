@@ -6,6 +6,8 @@
 #include "modules/ImageSequencerNode.h"
 #include "modules/KaleidoscopeNode.h"
 #include "modules/HsvAdjustNode.h"
+#include "modules/ProjectMNode.h"
+#include "gfx/ProjectMApi.h"
 #include "modules/ArpeggiatorNode.h"
 #include "modules/ChordPlayerNode.h"
 #include "modules/AutomationNode.h"
@@ -48,6 +50,7 @@
 #include "core/ProjectFile.h"
 #include "core/PathUtil.h"
 #include "core/AssetLibraryFile.h"
+#include <algorithm>
 #include <fstream>
 #include <sstream>
 
@@ -59,6 +62,7 @@ std::unique_ptr<Node> makeNode(const std::string& type) {
     if (type == "Image Sequencer") return std::make_unique<ImageSequencerNode>();
     if (type == "Kaleidoscope") return std::make_unique<KaleidoscopeNode>();
     if (type == "HSV Adjust") return std::make_unique<HsvAdjustNode>();
+    if (type == "projectM") return std::make_unique<ProjectMNode>();   // inert when the library is absent
     if (type == "Video")       return std::make_unique<VideoPlayerNode>();
     if (type == "Sine")        return std::make_unique<SineWaveNode>();
     if (type == "Acid Bass")   return std::make_unique<AcidNode>();
@@ -101,14 +105,26 @@ std::unique_ptr<Node> makeNode(const std::string& type) {
 }
 
 const std::vector<NodeCategory>& nodeCategories() {
-    static const std::vector<NodeCategory> cats = {
-        { "Texture", { "Colour", "Image Streamer", "Image Sequencer", "Video", "Mix", "Compositor", "Kaleidoscope", "HSV Adjust", "Recorder", "Output" } },
-        { "Audio",   { "Sine", "Acid Bass", "Spirograph Synth", "Audio File", "Audio In", "Audio Mix", "Mono to Stereo", "Stereo to Mono", "Crossover Filter", "Spectrograph", "Oscilloscope", "Drum Machine", "Audio Out" } },
-        { "MIDI",    { "MIDI In", "MIDI File", "Step Seq", "Chord Player", "Arpeggiator", "MIDI Merge", "MIDI Out", "Pitch Graph" } },
-        { "3D",      { "Mesh Loader", "Text 2D", "Text 3D", "World Transform", "Wireframe", "Shaded Render", "Skybox", "Vertex Trail" } },
-        { "Control", { "Automation", "LFO" } },
-        { "Shader",  { "Vertex Shader", "Deform" } },
-    };
+    // Rebuilt when projectM's availability changes (the library can be found after startup, when
+    // the Preferences path is set). The only caller iterates immediately and keeps no reference.
+    static std::vector<NodeCategory> cats;
+    static int builtFor = -1;                                    // -1 = never built, else 0/1
+    const int avail = ProjectMApi::instance().available() ? 1 : 0;
+    if (builtFor != avail) {
+        builtFor = avail;
+        cats = {
+            { "Texture", { "Colour", "Image Streamer", "Image Sequencer", "Video", "Mix", "Compositor", "Kaleidoscope", "HSV Adjust", "Recorder", "Output" } },
+            { "Audio",   { "Sine", "Acid Bass", "Spirograph Synth", "Audio File", "Audio In", "Audio Mix", "Mono to Stereo", "Stereo to Mono", "Crossover Filter", "Spectrograph", "Oscilloscope", "Drum Machine", "Audio Out" } },
+            { "MIDI",    { "MIDI In", "MIDI File", "Step Seq", "Chord Player", "Arpeggiator", "MIDI Merge", "MIDI Out", "Pitch Graph" } },
+            { "3D",      { "Mesh Loader", "Text 2D", "Text 3D", "World Transform", "Wireframe", "Shaded Render", "Skybox", "Vertex Trail" } },
+            { "Control", { "Automation", "LFO" } },
+            { "Shader",  { "Vertex Shader", "Deform" } },
+        };
+        if (avail) {
+            std::vector<std::string>& tex = cats[0].types;
+            tex.insert(std::find(tex.begin(), tex.end(), "Recorder"), "projectM");
+        }
+    }
     return cats;
 }
 
@@ -120,6 +136,7 @@ Application::Application(GLFWwindow* window) : window_(window) {
     graph_.connect(c, 0, o, 0);
     loadPreferences();
     graph_.setPreferences(&prefs_);
+    ProjectMApi::instance().load(prefs_.projectMLibraryPath);   // optional; the projectM node is inert without it
 }
 
 Application::~Application() = default;
@@ -245,7 +262,10 @@ void Application::frame(float dt) {
 
     editor_.draw(graph_, [this](const std::string& t, glm::vec2 p){ return addNodeOfType(t, p); });
     automation_.draw(graph_);                // automation timeline window
-    preferences_.draw(prefs_, [this]{ savePreferences(); }, &showPreferences_);
+    preferences_.draw(prefs_, [this]{
+        savePreferences();
+        ProjectMApi::instance().load(prefs_.projectMLibraryPath);   // no-op once loaded
+    }, &showPreferences_);
     assets_.draw(graph_.assets(), &showAssets_, prefs_.assetLibraryDir);
     int selNode = editor_.selectedNodeId();
     properties_.draw(graph_, selNode, &showProperties_);

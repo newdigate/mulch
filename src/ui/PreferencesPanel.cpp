@@ -174,6 +174,12 @@ void PreferencesPanel::draw(Preferences& prefs, const std::function<void()>& onC
             // Covers set -> changed, set -> cleared and empty -> set alike: a restart would search again.
             if (pm.available() && prefs.projectMLibraryPath != pm.loadedPrefPath())
                 ImGui::TextDisabled("Restart to load a different library.");
+            // The preference was tried and something else was loaded (e.g. it is too old and the
+            // search found a newer install): say so, or the user cannot tell their choice was ignored.
+            if (pm.available() && !prefs.projectMLibraryPath.empty() &&
+                prefs.projectMLibraryPath == pm.loadedPrefPath() &&
+                prefs.projectMLibraryPath != pm.loadedPath())
+                ImGui::TextDisabled("Preference path not used; loaded %s", pm.loadedPath().c_str());
             ImGui::PopTextWrapPos();
             ImGui::EndTabItem();
         }
