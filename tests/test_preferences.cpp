@@ -137,3 +137,20 @@ TEST_CASE("Preferences without the new dir lines parse to empty") {
     CHECK(q.projectsDir.empty());
     CHECK(q.assetLibraryDir.empty());
 }
+
+TEST_CASE("Preferences round-trips the projectM library path + textures dir") {
+    Preferences p;
+    p.projectMLibraryPath = "/Users/me/.local/lib/libprojectM-4.dylib";
+    p.projectMTexturesDir = "/Volumes/media/milkdrop textures";     // spaces survive (rest-of-line)
+    Preferences q;
+    REQUIRE(parsePreferences(serializePreferences(p), q));
+    CHECK(q.projectMLibraryPath == "/Users/me/.local/lib/libprojectM-4.dylib");
+    CHECK(q.projectMTexturesDir == "/Volumes/media/milkdrop textures");
+}
+
+TEST_CASE("Preferences without the projectM lines parse to empty") {
+    Preferences q;
+    REQUIRE(parsePreferences("oss-prefs 1\naudio-buffer 200\n", q));
+    CHECK(q.projectMLibraryPath.empty());
+    CHECK(q.projectMTexturesDir.empty());
+}

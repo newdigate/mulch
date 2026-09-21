@@ -40,6 +40,8 @@ std::string serializePreferences(const Preferences& p) {
     out += "sync-rate " + std::to_string(p.syncFrameRate) + "\n";
     if (!p.projectsDir.empty())     out += "projectsdir " + p.projectsDir + "\n";
     if (!p.assetLibraryDir.empty()) out += "assetlibdir " + p.assetLibraryDir + "\n";
+    if (!p.projectMLibraryPath.empty()) out += "pmlib " + p.projectMLibraryPath + "\n";
+    if (!p.projectMTexturesDir.empty()) out += "pmtextures " + p.projectMTexturesDir + "\n";
     return out;
 }
 
@@ -87,6 +89,8 @@ bool parsePreferences(const std::string& text, Preferences& out) {
         }
         else if (kw == "projectsdir") out.projectsDir     = rest;
         else if (kw == "assetlibdir") out.assetLibraryDir = rest;
+        else if (kw == "pmlib")      out.projectMLibraryPath = rest;
+        else if (kw == "pmtextures") out.projectMTexturesDir = rest;
     }
     return true;
 }

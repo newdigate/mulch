@@ -1,6 +1,8 @@
 #include "ui/PreferencesPanel.h"
 #include "core/Preferences.h"
 #include "ui/FileDialog.h"
+#include "core/PathUtil.h"
+#include "gfx/ProjectMApi.h"
 #include <imgui.h>
 #include <soundio/soundio.h>
 #include <RtMidi.h>
@@ -144,6 +146,30 @@ void PreferencesPanel::draw(Preferences& prefs, const std::function<void()>& onC
             };
             folderRow("Projects folder",      prefs.projectsDir);
             folderRow("Asset library folder", prefs.assetLibraryDir);
+            ImGui::Separator();
+            ImGui::TextUnformatted("projectM (optional)");
+            {   // the shared library: a file, not a folder
+                std::string& lib = prefs.projectMLibraryPath;
+                ImGui::TextUnformatted("projectM library");
+                ImGui::SameLine(160.0f);
+                ImGui::TextUnformatted(lib.empty() ? "(search the usual places)" : lib.c_str());
+                ImGui::SameLine();
+                ImGui::PushID("pmlib");
+                if (ImGui::SmallButton("Browse...")) {
+                    std::string picked = openFileDialog("projectM library", "Shared library",
+                                                        {"dylib", "so", "dll"}, parentDir(lib));
+                    if (!picked.empty()) { lib = picked; if (onChange) onChange(); }
+                }
+                ImGui::SameLine();
+                if (ImGui::SmallButton("Clear")) { lib.clear(); if (onChange) onChange(); }
+                ImGui::PopID();
+            }
+            folderRow("projectM textures", prefs.projectMTexturesDir);
+            const ProjectMApi& pm = ProjectMApi::instance();
+            ImGui::TextDisabled("%s", pm.statusText().c_str());
+            if (pm.available() && !prefs.projectMLibraryPath.empty() &&
+                prefs.projectMLibraryPath != pm.loadedPath())
+                ImGui::TextDisabled("Restart to load a different library.");
             ImGui::EndTabItem();
         }
         ImGui::EndTabBar();
