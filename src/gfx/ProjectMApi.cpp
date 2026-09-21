@@ -23,10 +23,15 @@ std::vector<std::string> projectMCandidatePaths(const std::string& prefPath, con
     std::vector<std::string> out;
     if (!prefPath.empty()) out.push_back(prefPath);
     const std::vector<std::string> names = platformLibraryNames();
-    for (const std::string& n : names) out.push_back(n);          // the system loader's own search
+    // Bare names go through the system loader: on Linux that is the ld.so cache (the main
+    // mechanism there); on Windows the app dir + PATH; on current macOS almost nothing (dyld no
+    // longer applies the old /usr/local/lib fallback), so there the explicit dirs below do the work.
+    for (const std::string& n : names) out.push_back(n);
 #if !defined(_WIN32)
-    std::vector<std::string> dirs = {"/usr/local/lib", "/opt/homebrew/lib"};
-    if (!homeDir.empty()) dirs.push_back(homeDir + "/.local/lib");
+    std::vector<std::string> dirs;
+    if (!homeDir.empty()) dirs.push_back(homeDir + "/.local/lib");     // the user's own build wins
+    dirs.push_back("/usr/local/lib");
+    dirs.push_back("/opt/homebrew/lib");
     for (const std::string& d : dirs)
         for (const std::string& n : names) out.push_back(d + "/" + n);
 #else
@@ -45,8 +50,12 @@ ProjectMApi& ProjectMApi::instance() {
 }
 
 bool ProjectMApi::load(const std::string& prefPath) {
+#if defined(_WIN32)
+    return loadFrom(projectMCandidatePaths(prefPath, ""));
+#else
     const char* home = std::getenv("HOME");
     return loadFrom(projectMCandidatePaths(prefPath, home ? home : ""));
+#endif
 }
 
 bool ProjectMApi::loadFrom(const std::vector<std::string>& candidates) {
@@ -66,7 +75,7 @@ bool ProjectMApi::loadFrom(const std::vector<std::string>& candidates) {
             status_     = "projectM " + version_;
             return true;
         }
-        if (rejection.empty()) rejection = why;                   // `lib` closes here; `fns` is dropped
+        if (rejection.empty()) rejection = why + " (" + path + ")";   // `lib` closes here; `fns` is dropped
     }
     status_ = rejection.empty() ? std::string("projectM not found") : rejection;
     return false;

@@ -22,7 +22,8 @@ constexpr int kPmStereo = 2;                       // projectm_channels::PROJECT
 bool isSupportedProjectMVersion(int major, int minor);
 
 // Where to look, in order: the preference path (when set), the bare platform library names via
-// the system loader, then well-known lib directories (non-Windows; `homeDir` may be empty).
+// the system loader, then `<homeDir>/.local/lib`, `/usr/local/lib`, `/opt/homebrew/lib` (non-Windows;
+// `homeDir` may be empty, in which case that first directory is skipped).
 std::vector<std::string> projectMCandidatePaths(const std::string& prefPath, const std::string& homeDir);
 
 // The resolved functions. A plain copyable struct so a candidate library is bound into a LOCAL
@@ -48,9 +49,17 @@ struct ProjectMFunctions {
     void     (*burnTexture)(PmHandle, std::uint32_t texture, int left, int top, int width, int height) = nullptr;
 };
 
+// Only instance() should ever load the REAL library: a local object that loads successfully
+// dlcloses the library at scope exit. Locals are for tests (fakes, or candidates that fail).
 class ProjectMApi : public ProjectMFunctions {
 public:
     static ProjectMApi& instance();                // the app-wide table (deliberately leaked; see .cpp)
+
+    ProjectMApi() = default;
+    // Not movable: a moved-from table would still look available() while its library handle,
+    // and so every pointer in it, belongs to someone else. (Copy is already deleted via DynLib.)
+    ProjectMApi(ProjectMApi&&) = delete;
+    ProjectMApi& operator=(ProjectMApi&&) = delete;
 
     // Try each candidate until one opens, passes the version gate and resolves every symbol.
     // A no-op returning true once available. The library is never unloaded afterwards.

@@ -358,6 +358,18 @@ target_include_directories(core_tests PRIVATE src ${stb_SOURCE_DIR})
 target_link_libraries(core_tests PRIVATE glm::glm doctest::doctest ${CMAKE_DL_LIBS})
 add_test(NAME core_tests COMMAND core_tests)
 
+# Two fake "projectM" modules (4.1 and 4.2) so core_tests can exercise ProjectMApi's version gate,
+# rejection message and candidate fall-through without a real projectM install. Test-only.
+foreach(pm_minor 1 2)
+  add_library(pm_fake_4${pm_minor} MODULE tests/pm_fake.c)
+  target_compile_definitions(pm_fake_4${pm_minor} PRIVATE PM_FAKE_MINOR=${pm_minor})
+  set_target_properties(pm_fake_4${pm_minor} PROPERTIES PREFIX "")
+endforeach()
+add_dependencies(core_tests pm_fake_41 pm_fake_42)
+target_compile_definitions(core_tests PRIVATE
+  OSS_PM_FAKE_41="$<TARGET_FILE:pm_fake_41>"
+  OSS_PM_FAKE_42="$<TARGET_FILE:pm_fake_42>")
+
 # Headless GL render smoke test: renders the graph offscreen and reads back pixels.
 # Requires a display/WindowServer (works locally on macOS; may be skipped in headless CI).
 add_executable(gl_smoke
