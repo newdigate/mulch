@@ -151,8 +151,15 @@ void ProjectMNode::evaluate(EvalContext& ctx) {
     {
         GLStateGuard guard;
         TexRef tin = ctx.in<TexRef>(kTexIn);
-        if (ctx.in<float>(kBurn) > 0.5f && tin.id != 0)
+        if (ctx.in<float>(kBurn) > 0.5f && tin.id != 0) {
+            // The burn draws a full-NDC quad into the preset's framebuffer and never sets a
+            // viewport of its own (ProjectM::BurnInTexture -> CopyTexture::Draw), so it inherits
+            // whatever the node before us left and would land in a corner of the canvas. Match the
+            // projectM window size; the guard puts the caller's viewport back. No flip: projectM's
+            // copy mesh maps v=1 to NDC +y, which is a GL bottom-up texture's top row.
+            glViewport(0, 0, w, h);
             api.burnTexture(pm_, tin.id, 0, 0, w, h);
+        }
         api.setFrameTime(pm_, time_);                // the app's clock, 0.0 on the first frame
         api.renderFrameFbo(pm_, fbo_.id());
     }

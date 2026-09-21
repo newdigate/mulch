@@ -125,6 +125,42 @@ static std::string writePresetFolder() {
     return dir.string();
 }
 
+// A Milkdrop-2 preset (both MILKDROP_PRESET_VERSION >= 200 and PSVERSION* are required, or projectM
+// silently uses its one-sampler default shaders) whose composite shader samples five textures, which
+// is what makes projectM bind samplers on units 1..4. Authored for these tests; no third-party
+// preset ships in the repo.
+static const char* kMultiSamplerPreset =
+    "[preset00]\n"
+    "MILKDROP_PRESET_VERSION=201\nPSVERSION=2\nPSVERSION_WARP=2\nPSVERSION_COMP=2\n"
+    "fDecay=0.98\nwarp=0.100000\nwave_a=0\n"
+    "nMotionVectorsX=16\nnMotionVectorsY=12\nmv_a=1\nbDarkenCenter=1\nbBrighten=1\n"
+    "comp_1=`shader_body\n"
+    "comp_2=`{\n"
+    "comp_3=`float3 a = tex2D(sampler_main, uv).xyz;\n"
+    "comp_4=`float3 b = tex2D(sampler_blur1, uv).xyz;\n"
+    "comp_5=`float3 c = tex2D(sampler_fw_noise_lq, uv).xyz;\n"
+    "comp_6=`float3 d = tex3D(sampler_fw_noisevol_lq, float3(uv, 0.5)).xyz;\n"
+    "comp_7=`float3 e = tex2D(sampler_blur2, uv).xyz;\n"
+    "comp_8=`ret = a*0.4 + b*0.2 + c*0.2 + d*0.1 + e*0.1;\n"
+    "comp_9=`}\n"
+    "warp_1=`shader_body\n"
+    "warp_2=`{\n"
+    "warp_3=`ret = tex2D(sampler_main, uv).xyz * 0.9 + tex2D(sampler_pc_noise_lq, uv).xyz * 0.1;\n"
+    "warp_4=`}\n";
+
+// Write the multi-sampler preset into its OWN temp folder (so the a/b/c folder stays 3 files for
+// the "(2/3)" status check); returns the file path ("" on failure).
+static std::string writeMultiSamplerPreset() {
+    std::filesystem::path dir = std::filesystem::temp_directory_path() / "oss_projectm_smoke_multi";
+    std::error_code ec;
+    std::filesystem::remove_all(dir, ec);
+    if (!std::filesystem::create_directories(dir, ec)) return "";
+    std::ofstream f(dir / "multi.milk");
+    if (!f) return "";
+    f << kMultiSamplerPreset;
+    return (dir / "multi.milk").string();
+}
+
 // The node's input defaults as a resolved input vector (what Graph::evaluate would hand it).
 static std::vector<Value> defaultInputs(const Node& n) {
     std::vector<Value> v;
@@ -1613,6 +1649,118 @@ int main() {
         pm.evaluate(ctx);
         if (fileBaseName(std::get<std::string>(pm.inputDefault(ProjectMNode::kPreset))) != "b.milk") { glfwTerminate(); return fail("projectM: step snapped back"); }
         std::fprintf(stderr, "gl_smoke OK: projectM inert path (black texture, status '%s') + playlist write-back\n", pm.statusLine().c_str());
+    }
+
+    // projectM node, live path. Needs libprojectM 4.2+ (OSS_PROJECTM_LIB overrides the search).
+    {
+        const char* envLib = std::getenv("OSS_PROJECTM_LIB");
+        ProjectMApi& api = ProjectMApi::instance();
+        if (!api.load(envLib ? envLib : "")) {
+            std::fprintf(stderr, "gl_smoke SKIP: projectM render/burn checks (%s)\n", api.statusText().c_str());
+        } else {
+            std::string dir = writePresetFolder();
+            if (dir.empty()) { glfwTerminate(); return fail("projectM live: write preset folder"); }
+
+            std::vector<float> sine(800);
+            for (std::size_t i = 0; i < sine.size(); ++i) sine[i] = 0.8f * std::sin(2.0f * 3.14159265f * 220.0f * (float)i / 48000.0f);
+
+            ProjectMNode pm;
+            pm.initGL();
+            std::vector<Value> ins = defaultInputs(pm), outs(1);
+            ins[ProjectMNode::kLeft]   = Value(AudioRef{sine.data(), sine.size(), 48000});   // right mirrors it
+            ins[ProjectMNode::kPreset] = Value(dir + "/a.milk");
+            ins[ProjectMNode::kBlend]  = Value(false);                                       // hard cut: no blend wait
+            EvalContext ctx{ins, outs, 1.0f / 60.0f, nullptr, nullptr};
+
+            // (a) GL state is unchanged across evaluate.
+            glBindFramebuffer(GL_FRAMEBUFFER, 0);
+            glViewport(0, 0, 33, 44);
+            glUseProgram(0);
+            glBindVertexArray(0);
+            for (int i = 0; i < 10; ++i) pm.evaluate(ctx);
+            GLint fb = -1, vp[4] = {0, 0, 0, 0}, prog = -1, vao = -1;
+            glGetIntegerv(GL_DRAW_FRAMEBUFFER_BINDING, &fb);
+            glGetIntegerv(GL_VIEWPORT, vp);
+            glGetIntegerv(GL_CURRENT_PROGRAM, &prog);
+            glGetIntegerv(GL_VERTEX_ARRAY_BINDING, &vao);
+            std::fprintf(stderr, "gl_smoke projectM status: %s\n", pm.statusLine().c_str());
+            if (!(fb == 0 && vp[2] == 33 && vp[3] == 44 && prog == 0 && vao == 0)) { glfwTerminate(); return fail("projectM live: GL state leaked out of evaluate"); }
+
+            // (b) it rendered something.
+            TexRef t = std::get<TexRef>(outs[0]);
+            std::vector<unsigned char> px((size_t)t.w * t.h * 4);
+            glBindTexture(GL_TEXTURE_2D, t.id);
+            glGetTexImage(GL_TEXTURE_2D, 0, GL_RGBA, GL_UNSIGNED_BYTE, px.data());
+            bool lit = false;
+            for (size_t i = 0; i + 3 < px.size() && !lit; i += 4) lit = (px[i] + px[i + 1] + px[i + 2]) > 60;
+            if (!lit) { glfwTerminate(); return fail("projectM live: output is black (see the status line above)"); }
+
+            // (c) the status shows the playlist position after a step.
+            pm.onButtonPressed(1);
+            pm.evaluate(ctx);
+            if (pm.statusLine().find("(2/3)") == std::string::npos) { glfwTerminate(); return fail("projectM live: status does not show (2/3) after next"); }
+
+            // (d) burn: a texture whose TOP half is red and BOTTOM half green (GL rows are bottom-up).
+            const int S = 64;
+            std::vector<unsigned char> img((size_t)S * S * 4);
+            for (int y = 0; y < S; ++y) for (int x = 0; x < S; ++x) {
+                unsigned char* p = &img[((size_t)y * S + x) * 4];
+                bool top = (y >= S / 2);
+                p[0] = top ? 255 : 0; p[1] = top ? 0 : 255; p[2] = 0; p[3] = 255;
+            }
+            GLuint src = 0;
+            glGenTextures(1, &src);
+            glBindTexture(GL_TEXTURE_2D, src);
+            glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+            glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, S, S, 0, GL_RGBA, GL_UNSIGNED_BYTE, img.data());
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+            ins[ProjectMNode::kTexIn] = Value(TexRef{src, S, S});
+            ins[ProjectMNode::kBurn]  = Value(1.0f);
+            for (int i = 0; i < 5; ++i) pm.evaluate(ctx);
+            t = std::get<TexRef>(outs[0]);
+            int r1, g1, b1, a1, r2, g2, b2, a2;
+            readAtUV(t, 0.2f, 0.85f, r1, g1, b1, a1);   // upper area, clear of the border and the centre wave
+            readAtUV(t, 0.2f, 0.15f, r2, g2, b2, a2);   // lower area
+            std::fprintf(stderr, "gl_smoke projectM burn: upper=(%d,%d,%d) lower=(%d,%d,%d)\n", r1, g1, b1, r2, g2, b2);
+            glDeleteTextures(1, &src);
+            bool upperRed = r1 > g1 + 40, lowerGreen = g2 > r2 + 40;
+            bool upperGreen = g1 > r1 + 40, lowerRed = r2 > g2 + 40;
+            if (upperGreen && lowerRed) { glfwTerminate(); return fail("projectM live: burn is vertically flipped (plan Task 9 Step 4)"); }
+            if (!(upperRed && lowerGreen)) { glfwTerminate(); return fail("projectM live: burned texture not visible in the output"); }
+
+            // (e) A MULTI-SAMPLER preset must not leak sampler objects or the read framebuffer.
+            // Audited against projectM 4.2: it binds a sampler per texture unit and unbinds only
+            // unit 0, and it leaves READ_FRAMEBUFFER on an internal FBO. A one-sampler preset (like
+            // kTestPreset) leaks nothing, so this needs a Milkdrop-2 preset whose shaders sample
+            // main + blur + noise textures. GLStateGuard is what contains both.
+            std::string multi = writeMultiSamplerPreset();
+            if (multi.empty()) { glfwTerminate(); return fail("projectM live: write multi-sampler preset"); }
+            ins[ProjectMNode::kBurn]   = Value(0.0f);
+            ins[ProjectMNode::kPreset] = Value(multi);
+            glBindFramebuffer(GL_READ_FRAMEBUFFER, 0);
+            for (GLuint u = 0; u < 8; ++u) glBindSampler(u, 0);
+            for (int i = 0; i < 10; ++i) pm.evaluate(ctx);
+            std::fprintf(stderr, "gl_smoke projectM multi-sampler status: %s\n", pm.statusLine().c_str());
+            if (pm.statusLine().rfind("failed:", 0) == 0) { glfwTerminate(); return fail("projectM live: the multi-sampler preset did not load, so the leak check would be vacuous"); }
+            GLint readFb = -1;
+            glGetIntegerv(GL_READ_FRAMEBUFFER_BINDING, &readFb);
+            int leaked = 0;
+            for (GLuint u = 1; u <= 5; ++u) {
+                GLint s = -1;
+                glActiveTexture(GL_TEXTURE0 + u);
+                glGetIntegerv(GL_SAMPLER_BINDING, &s);
+                if (s != 0) { ++leaked; std::fprintf(stderr, "gl_smoke projectM: sampler %d left on unit %u\n", s, u); }
+            }
+            glActiveTexture(GL_TEXTURE0);
+            if (leaked)      { glfwTerminate(); return fail("projectM live: sampler objects leaked onto texture units"); }
+            if (readFb != 0) { glfwTerminate(); return fail("projectM live: READ_FRAMEBUFFER binding leaked"); }
+
+            std::fprintf(stderr, "gl_smoke OK: projectM live (renders, GL state + samplers contained, status, burn upright)\n");
+        }
+        std::error_code ec;                                      // the temp preset folders this file wrote
+        std::filesystem::remove_all(std::filesystem::temp_directory_path() / "oss_projectm_smoke", ec);
+        std::filesystem::remove_all(std::filesystem::temp_directory_path() / "oss_projectm_smoke_multi", ec);
     }
 
     // GLStateGuard: state changed inside the scope is restored on exit.
