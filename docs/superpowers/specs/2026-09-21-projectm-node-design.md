@@ -81,13 +81,21 @@ node uses. Contains no GL headers (GL handles cross as `uint32_t`).
 - **Load:** resolve every symbol, call `projectm_get_version_components`, apply the version
   gate. The gate is a pure function, `isSupportedVersion(major, minor)` → `major == 4 &&
   minor >= 2`, so it is unit-testable.
-- **Reports:** `available()` and `statusText()` — "projectM not found", "found 4.1.7, needs
-  4.2+", or "missing symbol `<name>`".
+- **Reports:** `available()` and `statusText()` — "projectM not found", "found projectM 4.1.7,
+  needs 4.2+ (`<path>`)", or "missing symbol `<name>` (`<path>`)". A rejection names the file
+  that was rejected, because this string is the whole diagnostic UI and a user with two
+  installs needs to know which one to fix.
+- **Not movable** (and not copyable): a moved-from table would still look available while its
+  library handle, and so every pointer in it, belonged to someone else.
 - **Search order** (built by a pure, testable `candidatePaths(prefPath)`):
   1. `Preferences::projectMLibraryPath`, when set.
   2. The bare library name via the system loader: `libprojectM-4.dylib`,
-     `libprojectM-4.so.4`, `projectM-4.dll`.
-  3. `/usr/local/lib`, `/opt/homebrew/lib`, `~/.local/lib`.
+     `libprojectM-4.so.4`, `projectM-4.dll`. (Measured: current macOS `dlopen` no longer applies
+     the old `/usr/local/lib` fallback to a bare name, so on macOS step 3 does the real work;
+     on Linux the bare name, via the ld.so cache, is the main mechanism.)
+  3. `~/.local/lib`, then `/usr/local/lib`, `/opt/homebrew/lib` — the user's own build wins
+     over a system install. Windows has no explicit directories: the DLL must be beside the app,
+     on `PATH`, or named in the preference.
 - **Binding is all-or-nothing:** a candidate library is bound into a local function table that
   is adopted only when the version gate and every symbol pass, so a rejected (and then closed)
   library never leaves dangling pointers in the live table.
@@ -262,8 +270,17 @@ fault) takes the app down. That is inherent to loading the library in-process.
   `step % count` sequentially, and in shuffle mode is deterministic per seed and never out of
   range.
 - **`test_projectm_api.cpp`** — the gate rejects 4.1.7 and 5.0 and accepts 4.2.0;
-  `candidatePaths` puts the preference path first; a bogus preference path leaves the API
-  unavailable with a status text.
+  `candidatePaths` puts the preference path first and `~/.local/lib` before the system
+  directories; nothing to open → "projectM not found"; a real library that is not projectM is
+  rejected by symbol name + path. Two **fake projectM modules** (`tests/pm_fake.c`, built as
+  4.1 and 4.2, exporting the 17 functions as no-ops) make the wiring hermetic: an old library is
+  rejected with its version and path and leaves the table empty; absent and rejected candidates
+  fall through to a good one; `loadFrom` is a no-op once available.
+- **`tests/projectm_sigcheck.cpp`** — a compile-only OBJECT library that `static_assert`s all 17
+  hand-written signatures (and the `int`-for-enum / `kPmStereo` deviations) against the **real**
+  projectM headers. Built only where those headers are installed (so not in CI), never linked,
+  never shipped. It is the guard for the accepted unreleased-API risk: if 4.2.0 final changes a
+  signature, the build says so. The **app** still includes no projectM header.
 - Existing asset + preferences tests gain cases: `AssetType::Preset` (5) round-trips, older
   files still parse, the two new preferences round-trip.
 

@@ -1050,6 +1050,26 @@ EOF
 
 ---
 
+#### Task 4 — post-review amendments (applied in follow-up commits)
+
+The quality reviewer verified all 17 signatures against the real 4.2.0 headers (a `static_assert`
+comparison compiles clean, plus a live cross-ABI call test for `int`-for-enum and C `bool`). The
+committed code differs from the listing above in these ways:
+
+- A rejection names the file: `"found projectM 4.1.0, needs 4.2+ (<path>)"`,
+  `"missing symbol <name> (<path>)"`.
+- `ProjectMApi` is non-movable (deleted move ctor / assignment), with a comment that only
+  `instance()` should load the real library.
+- Candidate directories are `~/.local/lib`, `/usr/local/lib`, `/opt/homebrew/lib` (own build first);
+  `getenv("HOME")` is not called on Windows; the bare-name comment states what each OS really does.
+- `tests/pm_fake.c` is built twice (`pm_fake_41`, `pm_fake_42`, CMake `MODULE`s) so the rejection
+  message, the empty-table guarantee and candidate fall-through are unit-tested without an install.
+- `tests/projectm_sigcheck.cpp` is a compile-only `OBJECT` library, built only where
+  `projectM-4/core.h` is found, that `static_assert`s every binding against the real headers.
+  **When a binding is added to `ProjectMFunctions`, add a `SIGCHECK` line and a no-op to `pm_fake.c`.**
+
+---
+
 ### Task 5: `AssetType::Preset` — the sixth asset type
 
 **Files:**
@@ -2081,8 +2101,11 @@ In `CLAUDE.md`, directly after the **HSV Adjust** bullet (the one beginning `- *
   ~17 C-API functions we re-declare ourselves (no projectM headers), gated to major 4 / minor ≥ 2
   because `render_frame_fbo`, `burn_texture`, `set_frame_time` and `create_with_opengl_load_proc`
   are all `@since 4.2.0` (4.1.x always draws into framebuffer 0). `Application` loads it after
-  Preferences (`projectMLibraryPath`, then the platform library names, then `/usr/local/lib`,
-  `/opt/homebrew/lib`, `~/.local/lib`) and retries when the preference changes. `makeNode` always
+  Preferences (`projectMLibraryPath`, then the platform library names, then `~/.local/lib`,
+  `/usr/local/lib`, `/opt/homebrew/lib`) and retries when the preference changes. Binding is
+  all-or-nothing (a local table adopted only on success, so a rejected library leaves no dangling
+  pointers), a rejection names the file it rejected, and the singleton is deliberately leaked so
+  the library is never `dlclose`d during static destruction. `makeNode` always
   builds the node so projects open anywhere; `nodeCategories()` lists it (Texture) only while the
   library is available, and without it the node is inert (black texture + status). The asset-backed
   `preset` input (the sixth `AssetType`, **Preset**, `.milk`) is the single source of truth: its
@@ -2093,7 +2116,11 @@ In `CLAUDE.md`, directly after the **HSV Adjust** bullet (the one beginning `- *
   fixed seed). `texture in` is stamped into projectM's canvas while the `burn` gate is > 0.5
   (`burn_texture`). projectM renders straight into the node's FBO inside a `gfx/GLStateGuard`
   (RAII save/restore of the state it disturbs) and runs on the app's clock (`set_frame_time` from
-  accumulated `dt`). `PresetPlaylist`, `DynLib` and the `ProjectMApi` gate are unit-tested; the
+  accumulated `dt`). `PresetPlaylist`, `DynLib` and `ProjectMApi` are unit-tested — the last through
+  two fake projectM modules (`tests/pm_fake.c`, built as 4.1 and 4.2) — and
+  `tests/projectm_sigcheck.cpp` is a compile-only object that `static_assert`s the 17 hand-written
+  signatures against the real headers wherever they are installed (**add a `SIGCHECK` line and a
+  `pm_fake.c` no-op with every new binding**); the
   inert path + playlist write-back are always `gl_smoke`-checked, and the render / GL-state / burn
   checks run only where the library is installed (they print SKIP in CI).
 ```
@@ -2137,9 +2164,11 @@ git clone --recurse-submodules https://github.com/projectM-visualizer/projectm.g
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX="$HOME/.local" -DBUILD_SHARED_LIBS=ON && cmake --build build -j && cmake --install build
 ```
 
-The app looks in `~/.local/lib`, `/usr/local/lib`, `/opt/homebrew/lib` and the system loader's
-paths. For anywhere else, set **Preferences → Locations → projectM library**; the line underneath
-shows what the loader found. Homebrew's `projectm` formula is 3.1.12 and will not work.
+The app looks in `~/.local/lib`, then `/usr/local/lib` and `/opt/homebrew/lib`, and asks the system
+loader by bare name (on Linux that covers the usual library paths). On Windows put
+`projectM-4.dll` beside the app or on `PATH`. For anywhere else, set **Preferences → Locations →
+projectM library**; the line underneath shows what the loader found, including the path of any
+library it rejected. Homebrew's `projectm` formula is 3.1.12 and will not work.
 
 Presets are not included. Add `.milk` files in **View → Assets → Presets** and pick one on the
 node; **prev / next / random** and the bar-synced `sync` step through the other presets in the same
