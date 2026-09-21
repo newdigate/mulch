@@ -133,7 +133,16 @@ The node (see **Ports** and **Per-frame flow**). Registered as **projectM** in t
 - `gfx/GLStateGuard.h` — new RAII class. projectM changes GL state freely; the guard saves
   and restores: draw + read framebuffer bindings, viewport, program, vertex array, array
   buffer, active texture unit and its 2D binding, the blend / depth-test / cull / scissor
-  enables, blend function, depth mask, and unpack alignment.
+  enables, blend function, depth mask, and unpack alignment. It also **clears sampler-object
+  bindings on texture units 0..15**. This list was audited against projectM 4.2 running live
+  with every GL call traced: projectM binds a sampler per texture unit and unbinds only unit 0,
+  and a leftover sampler overrides the filter/wrap of whatever texture a later node binds there
+  (Skybox, Compositor, Mix, the Image Sequencer crossfade) — measurably different pixels.
+  Nothing in the app binds sampler objects, so clearing to 0 is correct and cheaper than
+  saving sixteen. The leak appears only with Milkdrop-2 presets whose shaders sample several
+  textures, so a trivial test preset hides it. The same audit showed what is NOT needed
+  (pixel-store params, colour mask, blend equation, depth func, UBO / pixel-unpack bindings,
+  sRGB) and that projectM leaves the GL error queue clean. Guard cost: 0.34 µs per use.
 - `AssetType::Preset` appended as value **5** (`kAssetTypeCount` → 6), so the asset codec's
   type integer stays backward-compatible. The Assets window gains a **Presets** tab; its
   Browse dialog filters on `.milk`.
@@ -315,6 +324,11 @@ fault) takes the app down. That is inherent to loading the library in-process.
 - **Rendering:** sine audio in, ~10 frames evaluated → the texture is not black.
 - **GL state:** framebuffer binding, viewport, program and vertex array are unchanged across
   `evaluate`.
+- **Leak containment:** with a second, **multi-sampler** Milkdrop-2 preset loaded (authored for
+  the test; its composite shader samples main + blur + noise textures), no sampler object is
+  left on units 1..5 and `READ_FRAMEBUFFER` is unchanged. The check fails the test if that
+  preset did not load (it would be vacuous), and was proven to fail when the guard's sampler
+  clearing or read-framebuffer restore is removed.
 - **Burn:** a red Colour node on `texture in` with the gate high → red-dominant output; a
   half-red / half-green fixture pins the orientation.
 - **Status:** after **next**, the status line shows `(2/3)`.

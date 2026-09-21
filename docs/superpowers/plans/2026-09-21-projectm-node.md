@@ -1467,6 +1467,25 @@ EOF
 
 ---
 
+#### Task 7 — post-review amendment (applied in a follow-up commit)
+
+The quality reviewer ran projectM 4.2 live on the development GPU with every GL call traced and
+60+ state items captured before/after each entry point. Result: on the hot path projectM leaves the
+**draw and read framebuffer**, the **viewport** and the **blend func/enable** changed (all covered by
+the listing above), and **sampler objects bound on texture units 1..N** (NOT covered). A leftover
+sampler overrides the filter/wrap of whatever texture a later node binds to that unit; the reviewer
+proved different pixels for a Compositor-shaped draw. It only shows with Milkdrop-2 presets whose
+shaders sample several textures, so a trivial test preset hides it.
+
+The committed guard therefore **clears sampler bindings on units 0..15 to 0** in its destructor
+(nothing in this app binds sampler objects, so 0 is what every node assumes), and its smoke scenario
+also pins the read-framebuffer, VAO, array-buffer and sampler behaviour. Measured cost of the whole
+guard: 0.34 µs against a 0.66-1.8 ms projectM frame. Provably NOT needed (zero calls in the trace):
+pixel-store params, colour mask, blend equation, depth func, clear colour, polygon mode, UBO /
+pixel-unpack buffer bindings, sRGB, draw/read buffers. The GL error queue is left clean.
+
+---
+
 ### Task 8: `ProjectMNode` — the node, with the always-run `gl_smoke` checks
 
 **Files:**
@@ -1848,7 +1867,47 @@ Runs fully only where Task 1 was done; elsewhere it prints SKIP and passes. CI w
 
 - [ ] **Step 1: Add the scenario**
 
-In `tests/gl_smoke.cpp`, immediately **after** the projectM inert block from Task 8 (so the library is loaded only once that block has run), add:
+First add this second test preset and its writer to `tests/gl_smoke.cpp`, directly after the
+`writePresetFolder()` helper from Task 8. It is a Milkdrop-2 preset (both `MILKDROP_PRESET_VERSION
+>= 200` and `PSVERSION*` are required, or projectM silently uses its one-sampler default shaders)
+whose composite shader samples five textures, which is what makes projectM bind samplers on units
+1..4. Authored for these tests; no third-party preset ships in the repo.
+
+```cpp
+static const char* kMultiSamplerPreset =
+    "[preset00]\n"
+    "MILKDROP_PRESET_VERSION=201\nPSVERSION=2\nPSVERSION_WARP=2\nPSVERSION_COMP=2\n"
+    "fDecay=0.98\nwarp=0.100000\nwave_a=0\n"
+    "nMotionVectorsX=16\nnMotionVectorsY=12\nmv_a=1\nbDarkenCenter=1\nbBrighten=1\n"
+    "comp_1=`shader_body\n"
+    "comp_2=`{\n"
+    "comp_3=`float3 a = tex2D(sampler_main, uv).xyz;\n"
+    "comp_4=`float3 b = tex2D(sampler_blur1, uv).xyz;\n"
+    "comp_5=`float3 c = tex2D(sampler_fw_noise_lq, uv).xyz;\n"
+    "comp_6=`float3 d = tex3D(sampler_fw_noisevol_lq, float3(uv, 0.5)).xyz;\n"
+    "comp_7=`float3 e = tex2D(sampler_blur2, uv).xyz;\n"
+    "comp_8=`ret = a*0.4 + b*0.2 + c*0.2 + d*0.1 + e*0.1;\n"
+    "comp_9=`}\n"
+    "warp_1=`shader_body\n"
+    "warp_2=`{\n"
+    "warp_3=`ret = tex2D(sampler_main, uv).xyz * 0.9 + tex2D(sampler_pc_noise_lq, uv).xyz * 0.1;\n"
+    "warp_4=`}\n";
+
+// Write the multi-sampler preset into its OWN temp folder (so the a/b/c folder stays 3 files for
+// the "(2/3)" status check); returns the file path ("" on failure).
+static std::string writeMultiSamplerPreset() {
+    std::filesystem::path dir = std::filesystem::temp_directory_path() / "oss_projectm_smoke_multi";
+    std::error_code ec;
+    std::filesystem::remove_all(dir, ec);
+    if (!std::filesystem::create_directories(dir, ec)) return "";
+    std::ofstream f(dir / "multi.milk");
+    if (!f) return "";
+    f << kMultiSamplerPreset;
+    return (dir / "multi.milk").string();
+}
+```
+
+Then, immediately **after** the projectM inert block from Task 8 (so the library is loaded only once that block has run), add:
 
 ```cpp
     // projectM node, live path. Needs libprojectM 4.2+ (OSS_PROJECTM_LIB overrides the search).
@@ -1928,7 +1987,35 @@ In `tests/gl_smoke.cpp`, immediately **after** the projectM inert block from Tas
             bool upperGreen = g1 > r1 + 40, lowerRed = r2 > g2 + 40;
             if (upperGreen && lowerRed) { glfwTerminate(); return fail("projectM live: burn is vertically flipped (plan Task 9 Step 4)"); }
             if (!(upperRed && lowerGreen)) { glfwTerminate(); return fail("projectM live: burned texture not visible in the output"); }
-            std::fprintf(stderr, "gl_smoke OK: projectM live (renders, GL state preserved, status, burn upright)\n");
+
+            // (e) A MULTI-SAMPLER preset must not leak sampler objects or the read framebuffer.
+            // Audited against projectM 4.2: it binds a sampler per texture unit and unbinds only
+            // unit 0, and it leaves READ_FRAMEBUFFER on an internal FBO. A one-sampler preset (like
+            // kTestPreset) leaks nothing, so this needs a Milkdrop-2 preset whose shaders sample
+            // main + blur + noise textures. GLStateGuard is what contains both.
+            std::string multi = writeMultiSamplerPreset();
+            if (multi.empty()) { glfwTerminate(); return fail("projectM live: write multi-sampler preset"); }
+            ins[ProjectMNode::kBurn]   = Value(0.0f);
+            ins[ProjectMNode::kPreset] = Value(multi);
+            glBindFramebuffer(GL_READ_FRAMEBUFFER, 0);
+            for (GLuint u = 0; u < 8; ++u) glBindSampler(u, 0);
+            for (int i = 0; i < 10; ++i) pm.evaluate(ctx);
+            std::fprintf(stderr, "gl_smoke projectM multi-sampler status: %s\n", pm.statusLine().c_str());
+            if (pm.statusLine().rfind("failed:", 0) == 0) { glfwTerminate(); return fail("projectM live: the multi-sampler preset did not load, so the leak check would be vacuous"); }
+            GLint readFb = -1;
+            glGetIntegerv(GL_READ_FRAMEBUFFER_BINDING, &readFb);
+            int leaked = 0;
+            for (GLuint u = 1; u <= 5; ++u) {
+                GLint s = -1;
+                glActiveTexture(GL_TEXTURE0 + u);
+                glGetIntegerv(GL_SAMPLER_BINDING, &s);
+                if (s != 0) { ++leaked; std::fprintf(stderr, "gl_smoke projectM: sampler %d left on unit %u\n", s, u); }
+            }
+            glActiveTexture(GL_TEXTURE0);
+            if (leaked)      { glfwTerminate(); return fail("projectM live: sampler objects leaked onto texture units"); }
+            if (readFb != 0) { glfwTerminate(); return fail("projectM live: READ_FRAMEBUFFER binding leaked"); }
+
+            std::fprintf(stderr, "gl_smoke OK: projectM live (renders, GL state + samplers contained, status, burn upright)\n");
         }
     }
 ```
@@ -1962,11 +2049,24 @@ to
 
 Re-run. If the burn is now missing entirely ("burned texture not visible"), the flip is anchored at `top`, so use `api.burnTexture(pm_, tin.id, 0, h, w, -h);` instead and re-run. Keep whichever makes the check pass, and keep the comment.
 
-- [ ] **Step 5: Note the alpha behaviour (no code)**
+- [ ] **Step 5: Prove the leak check catches the leak**
+
+Check (e) is only worth having if it fails when the containment is removed. Temporarily comment out
+the sampler-clearing loop in `src/gfx/GLStateGuard.h` (`for (GLuint unit = 0; ...) glBindSampler(unit, 0);`),
+rebuild `gl_smoke`, and run it. Expected: `gl_smoke projectM: sampler N left on unit U` lines followed
+by `gl_smoke FAIL: projectM live: sampler objects leaked onto texture units`. Do the same for the
+`glBindFramebuffer(GL_READ_FRAMEBUFFER, ...)` restore; expected:
+`projectM live: READ_FRAMEBUFFER binding leaked`. Restore the header after each
+(`git checkout -- src/gfx/GLStateGuard.h`), rebuild, and confirm green.
+
+If the sampler check does NOT fail with the loop removed, the multi-sampler preset is not exercising
+the path (check its status line) — stop and report; do not weaken the check.
+
+- [ ] **Step 6: Note the alpha behaviour (no code)**
 
 The second declared unknown — whether `burn_texture` respects alpha — is answered by observation in Task 11's manual run, not here. Nothing to do in this step beyond leaving `burn` as a gate.
 
-- [ ] **Step 6: Commit**
+- [ ] **Step 7: Commit**
 
 ```bash
 git add tests/gl_smoke.cpp src/modules/ProjectMNode.cpp && git commit -m "$(cat <<'EOF'
@@ -2206,7 +2306,12 @@ Check, and report each result to the user:
 2. **Picture:** add `Audio File` (or `Sine`) → projectM `left`; projectM `texture` → `Output`. Add a preset under View → Assets → Presets (e.g. from `/usr/local/opt/projectm/share/projectM/presets`), pick it on the node. The Output window animates and reacts to the audio, and is **upright** (not mirrored or upside down).
 3. **Stepping:** **next** changes the preset and the `preset` field + status line (`n/N`) follow. With `sync` on and the transport playing, it changes every `bars` bars and not before the first boundary.
 4. **Burn:** wire a `Colour` or `Image Streamer` into `texture in`, raise `burn` above 0.5: the image appears and melts when `burn` drops. Note whether a partly transparent image (a PNG with alpha) blends or overwrites — that answers the spec's alpha question.
-5. **Rest of the UI is intact** after projectM renders (ImGui panels draw normally, other texture nodes still render) — i.e. `GLStateGuard` covers what projectM disturbs.
+5. **Other texture nodes are unaffected.** With projectM running a *real* Milkdrop-2 preset (one from a
+   preset pack, not a trivial one: only multi-texture presets make projectM bind samplers on units
+   1..N), wire a **Skybox** or an **Image Sequencer** crossfade elsewhere in the graph and confirm it
+   looks the same as with the projectM node removed (smooth filtering, no blocky NEAREST sampling,
+   no wrapped edges). This is the visible symptom `GLStateGuard`'s sampler clearing prevents.
+6. **Rest of the UI is intact** after projectM renders (ImGui panels draw normally, other texture nodes still render) — i.e. `GLStateGuard` covers what projectM disturbs.
 
 If (4) shows that alpha is respected, record it in the spec's "Unknowns" section as resolved ("`burn_texture` blends with alpha; `burn` stays a gate in v1"); if it overwrites, record that instead. If anything in (2) or (5) is wrong, stop and report — do not paper over it.
 
