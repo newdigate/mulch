@@ -119,6 +119,9 @@ struct PresetSelectorInput {
 // GL-free; the directory lister is injectable for tests.
 class PresetSelector {
 public:
+    // The lister contract: every returned entry must be `dir` + "/" + file name, i.e. live in the
+    // folder that was asked for -- the selector relies on that so a button or sync selection can
+    // never change the folder.
     using Lister = std::vector<std::string> (*)(const std::string& dir);
     explicit PresetSelector(Lister lister = &listPresetsInDir) : lister_(lister) {}
 
@@ -148,9 +151,10 @@ public:
         const bool manual = changed;        // a pick or a button this frame outranks a sync boundary
 
         if (in.sync && in.playing && n > 0) {
-            long long step = syncedPresetStep(in.bars, in.everyNBars);
-            if (!syncPrimed_ || in.everyNBars != lastEveryN_) {
-                syncPrimed_ = true; lastEveryN_ = in.everyNBars; lastStep_ = step;   // (re)prime: no switch
+            const int everyN = in.everyNBars < 1 ? 1 : in.everyNBars;   // normalise once: step and re-prime agree
+            long long step = syncedPresetStep(in.bars, everyN);
+            if (!syncPrimed_ || everyN != lastEveryN_) {
+                syncPrimed_ = true; lastEveryN_ = everyN; lastStep_ = step;   // (re)prime: no switch
             } else if (step != lastStep_) {
                 lastStep_ = step;           // the boundary is consumed either way
                 if (!manual) {

@@ -54,3 +54,16 @@ TEST_CASE("DynLib: open() resets state; close() is idempotent") {
     lib.close();                                // idempotent
     CHECK_FALSE(lib.isOpen());
 }
+
+TEST_CASE("DynLib: a moved-from object has an empty error, even after a failed open") {
+    DynLib d;
+    CHECK_FALSE(d.open("/nonexistent/dir/libnope-12345.so"));
+    CHECK_FALSE(d.error().empty());
+    DynLib e(std::move(d));
+    CHECK(d.error().empty());                   // moved-from state is defined, not unspecified
+    CHECK_FALSE(e.error().empty());             // the error travelled with the move
+    DynLib f;
+    f = std::move(e);
+    CHECK(e.error().empty());
+    CHECK_FALSE(f.error().empty());
+}

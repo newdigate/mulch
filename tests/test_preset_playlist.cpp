@@ -310,6 +310,17 @@ TEST_CASE("PresetSelector: shuffle replays the same sequence after a seek and in
     CHECK(seq == again);                         // fixed seed: identical in every session
 }
 
+TEST_CASE("PresetSelector: sub-1 `bars` values all mean 1 and do not re-prime each other") {
+    PresetSelector sel(&fakeLister);
+    PresetSelectorInput in;
+    in.incoming = "/p/a.milk";
+    in.sync = true; in.playing = true;
+    in.everyNBars = 0;  in.bars = 0.5; sel.update(in);      // primes at step 0 with N = 1
+    in.everyNBars = -3; in.bars = 1.0;                      // still N = 1: a real boundary, not a re-prime
+    CHECK(sel.update(in));
+    CHECK(sel.current() == "/p/b.milk");
+}
+
 TEST_CASE("PresetSelector: the written-back path after a sync switch does not reload") {
     PresetSelector sel(&fakeLister);
     PresetSelectorInput in;
