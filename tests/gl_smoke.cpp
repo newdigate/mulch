@@ -1565,6 +1565,10 @@ int main() {
         glActiveTexture(GL_TEXTURE0);
         glBindTexture(GL_TEXTURE_2D, 0);
         glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
+        GLuint probeVao = 0; glGenVertexArrays(1, &probeVao); glBindVertexArray(probeVao);
+        GLuint probeBuf = 0; glGenBuffers(1, &probeBuf);      glBindBuffer(GL_ARRAY_BUFFER, probeBuf);
+        GLuint probeSampler = 0; glGenSamplers(1, &probeSampler);
+        glBindFramebuffer(GL_READ_FRAMEBUFFER, 0);
         {
             GLStateGuard guard;
             scratch.bind();                                   // FBO + viewport
@@ -1574,6 +1578,10 @@ int main() {
             glBindTexture(GL_TEXTURE_2D, scratch.texture());  // unit 0's binding
             glActiveTexture(GL_TEXTURE3);
             glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+            glBindVertexArray(0);
+            glBindBuffer(GL_ARRAY_BUFFER, 0);
+            glBindFramebuffer(GL_READ_FRAMEBUFFER, scratch.id());   // what projectM really leaks
+            glBindSampler(1, probeSampler);                         // ...and this: a sampler left on unit 1
         }
         GLint fb = -1, vp[4] = {0, 0, 0, 0}, unit = 0, tex = -1, align = 0, srcRgb = 0;
         GLboolean depthMask = GL_FALSE;
@@ -1584,12 +1592,22 @@ int main() {
         glGetIntegerv(GL_UNPACK_ALIGNMENT, &align);
         glGetIntegerv(GL_BLEND_SRC_RGB, &srcRgb);
         glGetBooleanv(GL_DEPTH_WRITEMASK, &depthMask);
+        GLint readFb = -1, vaoNow = -1, arrayBufNow = -1, sampler1 = -1;
+        glGetIntegerv(GL_READ_FRAMEBUFFER_BINDING, &readFb);
+        glGetIntegerv(GL_VERTEX_ARRAY_BINDING, &vaoNow);
+        glGetIntegerv(GL_ARRAY_BUFFER_BINDING, &arrayBufNow);
+        glActiveTexture(GL_TEXTURE1);
+        glGetIntegerv(GL_SAMPLER_BINDING, &sampler1);               // queried per active unit
+        glActiveTexture(GL_TEXTURE0);
         bool ok = fb == 0 && vp[2] == 17 && vp[3] == 19 && unit == GL_TEXTURE0 && tex == 0 &&
                   align == 4 && srcRgb == GL_SRC_ALPHA && depthMask == GL_TRUE &&
                   !glIsEnabled(GL_BLEND) && !glIsEnabled(GL_DEPTH_TEST) &&
-                  !glIsEnabled(GL_SCISSOR_TEST) && !glIsEnabled(GL_CULL_FACE);
+                  !glIsEnabled(GL_SCISSOR_TEST) && !glIsEnabled(GL_CULL_FACE) &&
+                  readFb == 0 && vaoNow == (GLint)probeVao && arrayBufNow == (GLint)probeBuf && sampler1 == 0;
         if (!ok) { glfwTerminate(); return fail("GLStateGuard did not restore the GL state"); }
-        std::fprintf(stderr, "gl_smoke OK: GLStateGuard restores framebuffer/viewport/texture/enables\n");
+        glBindVertexArray(0); glBindBuffer(GL_ARRAY_BUFFER, 0);
+        glDeleteSamplers(1, &probeSampler); glDeleteBuffers(1, &probeBuf); glDeleteVertexArrays(1, &probeVao);
+        std::fprintf(stderr, "gl_smoke OK: GLStateGuard restores framebuffers/viewport/VAO/buffer/texture/enables and clears samplers\n");
     }
 
     glfwDestroyWindow(win);
