@@ -2,6 +2,7 @@
 #include <algorithm>
 #include <cctype>
 #include <cmath>
+#include <cstddef>
 #include <filesystem>
 #include <string>
 #include <string_view>
@@ -60,6 +61,27 @@ inline int indexOfPreset(const std::vector<std::string>& files, const std::strin
     for (std::size_t i = 0; i < files.size(); ++i)
         if (detail::baseNameView(files[i]) == want) return (int)i;
     return -1;
+}
+
+inline constexpr std::size_t kPresetStatusNameMax = 40;   // a node status line must not stretch the node
+
+// `s` cut to at most `max` characters for a one-line status: newlines become spaces, and a cut is
+// marked with ASCII "..." (the editor's default font has no U+2026 glyph). A cut may split a UTF-8
+// sequence; ImGui then draws one replacement glyph, which is harmless.
+inline std::string shortenForStatus(std::string s, std::size_t max) {
+    for (char& c : s) if (c == '\n' || c == '\r') c = ' ';
+    if (s.size() <= max) return s;
+    if (max < 3) return s.substr(0, max);
+    return s.substr(0, max - 3) + "...";
+}
+
+// A preset's name for the status line: the file name without a trailing ".milk" (case-insensitive;
+// any other name is left intact), shortened to kPresetStatusNameMax.
+inline std::string presetDisplayName(const std::string& path) {
+    std::string name = fileBaseName(path);
+    if (name.size() > 5 && detail::lowered(name.substr(name.size() - 5)) == ".milk")
+        name.resize(name.size() - 5);
+    return shortenForStatus(std::move(name), kPresetStatusNameMax);
 }
 
 // index + delta, wrapped into [0, count). count <= 0 -> -1.

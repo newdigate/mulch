@@ -336,3 +336,24 @@ TEST_CASE("PresetSelector: the written-back path after a sync switch does not re
     CHECK_FALSE(sel.update(in));
     CHECK(sel.current() == "/p/b.milk");
 }
+
+TEST_CASE("shortenForStatus keeps short text, truncates long text with ASCII dots, flattens newlines") {
+    CHECK(shortenForStatus("abc", 10) == "abc");
+    CHECK(shortenForStatus("abcdefghij", 10) == "abcdefghij");
+    CHECK(shortenForStatus("abcdefghijk", 10) == "abcdefg...");
+    CHECK(shortenForStatus("abcdefghijk", 10).size() == 10);
+    CHECK(shortenForStatus("line1\nline2\r\nline3", 40) == "line1 line2  line3");
+    CHECK(shortenForStatus("abcdef", 2) == "ab");                 // max below 3: a plain cut, no dots
+}
+
+TEST_CASE("presetDisplayName strips only a real .milk extension and shortens long names") {
+    CHECK(presetDisplayName("/p/Geiss - Cosmic Dust.milk") == "Geiss - Cosmic Dust");
+    CHECK(presetDisplayName("/p/UPPER.MILK") == "UPPER");
+    CHECK(presetDisplayName("/p/notes.txt") == "notes.txt");      // not mangled
+    CHECK(presetDisplayName("/p/milk") == "milk");
+    CHECK(presetDisplayName("") == "");
+    std::string longName(120, 'x');
+    std::string shown = presetDisplayName("/p/" + longName + ".milk");
+    CHECK(shown.size() == kPresetStatusNameMax);
+    CHECK(shown.substr(shown.size() - 3) == "...");
+}

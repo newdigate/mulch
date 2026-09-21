@@ -2,6 +2,8 @@
 #include <GLFW/glfw3.h>
 #include <algorithm>
 #include <cmath>
+#include <filesystem>
+#include <system_error>
 #include "core/PathUtil.h"
 #include "core/Preferences.h"
 #include "gfx/Canvas.h"
@@ -83,7 +85,7 @@ void ProjectMNode::ensureInstance(int w, int h) {
 
 void ProjectMNode::onSwitchFailed(const char* file, const char* message, void* self) {
     auto* n = static_cast<ProjectMNode*>(self);
-    n->failMsg_ = "failed: " + fileBaseName(file ? file : "") + ": " + (message ? message : "");
+    n->failMsg_ = "failed: " + presetDisplayName(file ? file : "") + ": " + shortenForStatus(message ? message : "", 80);
 }
 
 void ProjectMNode::pushParams(EvalContext& ctx) {
@@ -147,9 +149,20 @@ void ProjectMNode::evaluate(EvalContext& ctx) {
     if (sel_.current() != loadedPath_) {             // also true right after a lazy create
         loadedPath_ = sel_.current();
         failMsg_.clear();
-        GLStateGuard guard;
-        enterForeignDefaults();
-        api.loadPresetFile(pm_, loadedPath_.empty() ? "idle://" : loadedPath_.c_str(), ctx.in<bool>(kBlend));
+        std::error_code ec;
+        if (loadedPath_.empty()) {
+            GLStateGuard guard;
+            enterForeignDefaults();
+            api.loadPresetFile(pm_, "idle://", ctx.in<bool>(kBlend));
+        } else if (!std::filesystem::is_regular_file(loadedPath_, ec)) {
+            // Not a file (yet): a half-typed path, or a preset that was moved. Keep what is playing and
+            // say so, rather than paying for a projectM load attempt per keystroke.
+            failMsg_ = "preset not found: " + presetDisplayName(loadedPath_);
+        } else {
+            GLStateGuard guard;
+            enterForeignDefaults();
+            api.loadPresetFile(pm_, loadedPath_.c_str(), ctx.in<bool>(kBlend));
+        }
     }
 
     // Audio: two mono edges -> interleaved LRLR. A lone connected side is mirrored (as the Recorder).
@@ -183,16 +196,14 @@ void ProjectMNode::evaluate(EvalContext& ctx) {
         api.setFrameTime(pm_, time_);                // the app's clock, 0.0 on the first frame
         api.renderFrameFbo(pm_, fbo_.id());
     }
-    time_ += ctx.dt;
+    time_ += (std::isfinite(ctx.dt) && ctx.dt > 0.0f) ? (double)ctx.dt : 0.0;   // NaN would latch projectM black; < 0 means "use the wall clock" to it
 
     if (!failMsg_.empty()) {
         status_ = failMsg_;
     } else if (sel_.current().empty()) {
         status_ = "projectM " + api.versionText() + " \xC2\xB7 no preset";
     } else {
-        std::string name = fileBaseName(sel_.current());
-        if (name.size() > 5) name.resize(name.size() - 5);                 // drop ".milk"
-        status_ = "projectM " + api.versionText() + " \xC2\xB7 " + name;
+        status_ = "projectM " + api.versionText() + " \xC2\xB7 " + presetDisplayName(sel_.current());
         if (sel_.index() >= 0)
             status_ += " (" + std::to_string(sel_.index() + 1) + "/" + std::to_string(sel_.count()) + ")";
     }
