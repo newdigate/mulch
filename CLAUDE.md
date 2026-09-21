@@ -191,11 +191,16 @@ shaders by CWD-relative path, each package launches the app with `shaders/` as t
   ~17 C-API functions we re-declare ourselves (no projectM headers), gated to major 4 / minor ≥ 2
   because `render_frame_fbo`, `burn_texture`, `set_frame_time` and `create_with_opengl_load_proc`
   are all `@since 4.2.0` (4.1.x always draws into framebuffer 0). `Application` loads it after
-  Preferences (`projectMLibraryPath`, then the platform library names, then `~/.local/lib`,
-  `/usr/local/lib`, `/opt/homebrew/lib`) and retries when the preference changes. Binding is
-  all-or-nothing (a local table adopted only on success, so a rejected library leaves no dangling
-  pointers), a rejection names the file it rejected, and the singleton is deliberately leaked so
-  the library is never `dlclose`d during static destruction. `makeNode` always builds the node so
+  Preferences (`projectMLibraryPath` — honoured only when ABSOLUTE, since a relative path would
+  resolve against the CWD that `preferences.oss` itself comes from — then `~/.local/lib` so the
+  user's own build wins, the bare platform names on Linux/Windows only, then `/usr/local/lib`,
+  `/opt/homebrew/lib`) and retries when the preference changes. **No bare names on macOS**: dlopen
+  resolves one from the current working directory first (measured), so a stray dylib beside a
+  project would hijack the load. Binding is all-or-nothing (a local table adopted only on success,
+  so a rejected library leaves no dangling pointers), a rejection names the file it rejected, a
+  candidate that exists but will not open is reported as `could not load <path>: <error>` (never as
+  "not found"), and the singleton is deliberately leaked so the library is never `dlclose`d during
+  static destruction. `makeNode` always builds the node so
   projects open anywhere; `nodeCategories()` lists it (Texture) only while the library is
   available, and without it the node is inert (black texture + status). The asset-backed `preset`
   input (the sixth `AssetType`, **Preset**, `.milk`) is the single source of truth: its folder is
@@ -215,7 +220,9 @@ shaders by CWD-relative path, each package launches the app with `shaders/` as t
   button press and `sync` boundary is a visible stall (Milkdrop-1 presets ~8 ms). The node's FBO
   is never cleared between frames, so any "did it render" test must zero the texture first.
   `PresetPlaylist`, `DynLib` and `ProjectMApi` are unit-tested — the last through two fake
-  projectM modules (`tests/pm_fake.c`, built as 4.1 and 4.2) — and `tests/projectm_sigcheck.cpp`
+  projectM modules (`tests/pm_fake.c`, built as 4.1 and 4.2 into `build/test_modules/` so the
+  Windows installer, which packs every DLL beside the exe, does not ship them) — and
+  `tests/projectm_sigcheck.cpp`
   is a compile-only object that `static_assert`s the 17 hand-written signatures against the real
   headers wherever they are installed (**add a `SIGCHECK` line and a `pm_fake.c` no-op with every
   new binding**); the inert path + playlist write-back are always `gl_smoke`-checked, and the

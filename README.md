@@ -194,11 +194,14 @@ git clone --recurse-submodules https://github.com/projectM-visualizer/projectm.g
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX="$HOME/.local" -DBUILD_SHARED_LIBS=ON && cmake --build build -j && cmake --install build
 ```
 
-The app looks in `~/.local/lib`, then `/usr/local/lib` and `/opt/homebrew/lib`, and asks the system
-loader by bare name (on Linux that covers the usual library paths). On Windows put
-`projectM-4.dll` beside the app or on `PATH`. For anywhere else, set **Preferences → Locations →
-projectM library**; the line underneath shows what the loader found, including the path of any
-library it rejected. Homebrew's `projectm` formula is 3.1.12 and will not work.
+The app looks in your own `~/.local/lib` first, then `/usr/local/lib` and `/opt/homebrew/lib`; on
+Linux it also asks the system loader by bare name (the ld.so cache and the usual library paths),
+which is skipped on macOS because there a bare name is resolved from the current working directory
+first. On Windows put `projectM-4.dll` beside the app or on `PATH`. For anywhere else, set
+**Preferences → Locations → projectM library** — it must be an absolute path. The line underneath
+shows what the loader found: the version it loaded, the path of any library it rejected, or
+`could not load <path>: …` for a library that was found but would not load (a wrong architecture,
+or a missing dependency of its own). Homebrew's `projectm` formula is 3.1.12 and will not work.
 
 Presets are not included. Add `.milk` files in **View → Assets → Presets** and pick one on the
 node; **prev / next / random** and the bar-synced `sync` step through the other presets in the same
@@ -210,8 +213,8 @@ that draws the app. Milkdrop-2 presets typically take 0.1-0.5 s, so a preset cha
 button, or on a `sync` bar boundary) briefly stalls the picture; older Milkdrop-1 presets load in a
 few milliseconds. A smooth `blend` also renders two presets for its duration.
 
-projectM is LGPL-2.1. Because it is loaded at runtime from your own installation and never
-distributed with this app, that license places no conditions on this project's.
+projectM is LGPL-2.1. This app never links against it and never distributes it: the library is
+loaded at runtime from your own installation.
 
 ## Test
 
