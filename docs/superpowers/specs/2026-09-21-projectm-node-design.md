@@ -75,27 +75,35 @@ every header: `<windows.h>` `#define`s `near`, which `tests/gl_smoke.cpp` uses a
 
 ### `gfx/ProjectMApi.{h,cpp}`
 
-Process-wide singleton holding a struct of function pointers for the ~20 projectM calls the
-node uses. Contains no GL headers (GL handles cross as `uint32_t`).
+Process-wide singleton holding a struct (`ProjectMFunctions`) of function pointers for the 17
+projectM calls the node uses. Contains no GL headers (GL handles cross as `uint32_t`).
 
 - **Load:** resolve every symbol, call `projectm_get_version_components`, apply the version
-  gate. The gate is a pure function, `isSupportedVersion(major, minor)` → `major == 4 &&
-  minor >= 2`, so it is unit-testable.
+  gate. The gate is a pure function, `isSupportedProjectMVersion(major, minor)` → `major == 4
+  && minor >= 2`, so it is unit-testable.
 - **Reports:** `available()` and `statusText()` — "projectM not found", "found projectM 4.1.7,
   needs 4.2+ (`<path>`)", or "missing symbol `<name>` (`<path>`)". A rejection names the file
   that was rejected, because this string is the whole diagnostic UI and a user with two
   installs needs to know which one to fix.
 - **Not movable** (and not copyable): a moved-from table would still look available while its
   library handle, and so every pointer in it, belonged to someone else.
-- **Search order** (built by a pure, testable `candidatePaths(prefPath)`):
-  1. `Preferences::projectMLibraryPath`, when set.
-  2. The bare library name via the system loader: `libprojectM-4.dylib`,
-     `libprojectM-4.so.4`, `projectM-4.dll`. (Measured: current macOS `dlopen` no longer applies
-     the old `/usr/local/lib` fallback to a bare name, so on macOS step 3 does the real work;
-     on Linux the bare name, via the ld.so cache, is the main mechanism.)
-  3. `~/.local/lib`, then `/usr/local/lib`, `/opt/homebrew/lib` — the user's own build wins
-     over a system install. Windows has no explicit directories: the DLL must be beside the app,
-     on `PATH`, or named in the preference.
+- **Search order** (built by a pure, testable `projectMCandidatePaths(prefPath, homeDir)`):
+  1. `Preferences::projectMLibraryPath`, when set **and absolute**. A relative path would resolve
+     against the current working directory (and `preferences.oss` is itself read from there), so
+     it is ignored.
+  2. `~/.local/lib` — the user's own build wins over any system install.
+  3. **Linux only:** the bare library name via the system loader (ld.so cache + standard
+     directories; it does not search the working directory).
+  4. `/usr/local/lib`, `/opt/homebrew/lib`.
+  - **Windows:** the preference, then the bare name `projectM-4.dll` (LoadLibrary: beside the app,
+    then `PATH`); no explicit directories.
+  - **macOS uses no bare names.** Measured during the final review: `dlopen("libprojectM-4.dylib")`
+    resolves from the **current working directory first**, so a stray dylib beside a project would
+    have been loaded automatically, ahead of `~/.local/lib`. Explicit directories only.
+- **An existing-but-unloadable library is reported**, not hidden: `could not load <path>:
+  <loader error>` (wrong architecture on Apple Silicon, a missing dependency). Precedence of the
+  status: a version/symbol rejection, else that load error, else "projectM not found". The node
+  shows at most 80 characters of it; the Preferences tab shows it all, wrapped.
 - **Binding is all-or-nothing:** a candidate library is bound into a local function table that
   is adopted only when the version gate and every symbol pass, so a rejected (and then closed)
   library never leaves dangling pointers in the live table.
@@ -109,7 +117,9 @@ node uses. Contains no GL headers (GL handles cross as `uint32_t`).
 
 - `listPresetsInDir(dir)` — `.milk` files only (case-insensitive extension), sorted
   case-insensitively, subfolders ignored.
-- `indexOf(files, path)`, `step(index, delta, count)` (wraps both ways; safe for `count == 0`).
+- `indexOfPreset(files, path)` (matches by file name), `stepPresetIndex(index, delta, count)`
+  (wraps both ways; safe for `count == 0`), and the status helpers `presetDisplayName` /
+  `shortenForStatus`.
 - `syncedPresetStep(bars, everyNBars)` → `floor(bars / N)`, and
   `syncedPresetIndex(step, count, shuffle, seed)` — stateless from `transport.bars()`, like
   `syncedImageIndex`. Sequential mode is `step % count` (an **absolute** position in the
@@ -343,6 +353,8 @@ rapid preset switches, with 0 GL errors and no leak (RSS flattens at ~63 MB).
   4.1 and 4.2, exporting the 17 functions as no-ops) make the wiring hermetic: an old library is
   rejected with its version and path and leaves the table empty; absent and rejected candidates
   fall through to a good one; `loadFrom` is a no-op once available.
+- The two fake modules build into `build/test_modules/`, not beside the executable: the Windows
+  installer packs every DLL next to the exe, and test scaffolding must not ship.
 - **`tests/projectm_sigcheck.cpp`** — a compile-only OBJECT library that `static_assert`s all 17
   hand-written signatures (and the `int`-for-enum / `kPmStereo` deviations) against the **real**
   projectM headers. Built only where those headers are installed (so not in CI), never linked,
