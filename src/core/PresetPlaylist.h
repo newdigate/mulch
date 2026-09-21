@@ -113,8 +113,9 @@ struct PresetSelectorInput {
 //     switch happens when the step number later changes (bar boundary, loop seam, seek).
 // A pick or a button in a frame outranks a sync boundary in that same frame -- the boundary is
 // consumed, so the click is never swallowed. Sync re-primes (rather than switching) when
-// `everyNBars` or the folder changes. While `sync` is on, prev/next/random hold only until the
-// next boundary, when absolute positioning reclaims the selection.
+// `everyNBars` changes; a pick in another folder is covered by the same manual-action rule.
+// While `sync` is on, prev/next/random hold only until the next boundary, when absolute
+// positioning reclaims the selection.
 // GL-free; the directory lister is injectable for tests.
 class PresetSelector {
 public:
@@ -177,10 +178,9 @@ private:
     void rescanIfFolderChanged() {
         std::string dir = parentDir(current_);
         if (dir == folder_) return;
-        folder_     = dir;
-        files_      = dir.empty() ? std::vector<std::string>{} : lister_(dir);
-        index_      = indexOfPreset(files_, current_);
-        syncPrimed_ = false;                // a new folder is a new basis for the synced step: re-prime
+        folder_ = dir;
+        files_  = dir.empty() ? std::vector<std::string>{} : lister_(dir);
+        index_  = indexOfPreset(files_, current_);
     }
 
     Lister                   lister_;

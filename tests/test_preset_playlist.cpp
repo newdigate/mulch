@@ -238,14 +238,14 @@ TEST_CASE("PresetSelector: changing `bars` re-primes instead of switching") {
     PresetSelectorInput in;
     in.incoming = "/p/a.milk";
     in.sync = true; in.playing = true; in.everyNBars = 4;
-    in.bars = 9.0;
-    sel.update(in);                              // primes at step 2
-    in.everyNBars = 1;                           // the step number would jump 2 -> 9
+    in.bars = 10.0;
+    sel.update(in);                              // primes at step 2 (10 / 4)
+    in.everyNBars = 1;                           // the step number would jump 2 -> 10, i.e. files[1]
     CHECK_FALSE(sel.update(in));                 // re-primed: no load storm while dragging the slider
     CHECK(sel.current() == "/p/a.milk");
-    in.bars = 10.0;                              // the next real boundary: step 10 -> files[1]
+    in.bars = 11.0;                              // the next real boundary: step 11 -> files[2]
     CHECK(sel.update(in));
-    CHECK(sel.current() == "/p/b.milk");
+    CHECK(sel.current() == "/p/c.milk");
 }
 
 TEST_CASE("PresetSelector: a button on a boundary frame wins, and the boundary is consumed") {
@@ -268,20 +268,21 @@ TEST_CASE("PresetSelector: a button on a boundary frame wins, and the boundary i
     CHECK(sel.current() == "/p/a.milk");
 }
 
-TEST_CASE("PresetSelector: picking a preset in another folder rescans and re-primes") {
+TEST_CASE("PresetSelector: a pick in another folder on a boundary frame is not overridden") {
     PresetSelector sel(&fakeLister);
     PresetSelectorInput in;
     in.incoming = "/p/a.milk";
     in.sync = true; in.playing = true; in.everyNBars = 1;
     in.bars = 0.5;
     sel.update(in);
-    in.incoming = "/q/y.milk"; in.bars = 1.0;    // a pick on a boundary frame, in a different folder
+    in.incoming = "/q/x.milk"; in.bars = 1.0;    // a pick on a boundary frame; sync alone would choose files[1]
     CHECK(sel.update(in));
-    CHECK(sel.current() == "/q/y.milk");         // not overridden by the synced step
+    CHECK(sel.current() == "/q/x.milk");         // the pick wins
     CHECK(sel.count() == 3);
-    CHECK(sel.index() == 1);
+    CHECK(sel.index() == 0);
     in.bars = 1.5;
-    CHECK_FALSE(sel.update(in));
+    CHECK_FALSE(sel.update(in));                 // and step 1 is not reclaimed afterwards
+    CHECK(sel.current() == "/q/x.milk");
     in.bars = 2.0;                               // step 2 -> /q files[2]
     CHECK(sel.update(in));
     CHECK(sel.current() == "/q/z.milk");
