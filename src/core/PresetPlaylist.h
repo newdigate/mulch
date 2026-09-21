@@ -4,7 +4,9 @@
 #include <cmath>
 #include <filesystem>
 #include <string>
+#include <string_view>
 #include <system_error>
+#include <utility>
 #include <vector>
 #include "core/PathUtil.h"
 
@@ -19,8 +21,11 @@ inline std::string lowered(std::string s) {
     for (char& c : s) c = (char)std::tolower((unsigned char)c);
     return s;
 }
-inline bool hasMilkExtension(const std::string& name) {
-    return name.size() > 5 && lowered(name.substr(name.size() - 5)) == ".milk";
+// The file-name part of `path` (after the last '/' or '\\') as a view: no allocation.
+inline std::string_view baseNameView(const std::string& path) {
+    std::size_t slash = path.find_last_of("/\\");
+    return slash == std::string::npos ? std::string_view(path)
+                                      : std::string_view(path).substr(slash + 1);
 }
 } // namespace detail
 
@@ -28,31 +33,32 @@ inline bool hasMilkExtension(const std::string& name) {
 // case-insensitively, sorted case-insensitively by file name. Each entry is dir + "/" + name.
 // A missing or empty `dir` yields an empty list.
 inline std::vector<std::string> listPresetsInDir(const std::string& dir) {
-    std::vector<std::string> names;
-    if (dir.empty()) return names;
+    std::vector<std::string> out;
+    if (dir.empty()) return out;
+    std::vector<std::pair<std::string, std::string>> keyed;   // (lowercased name, name)
     std::error_code ec;
     std::filesystem::directory_iterator it(dir, ec), end;
     for (; !ec && it != end; it.increment(ec)) {
         std::error_code fec;
         if (!it->is_regular_file(fec)) continue;
+        if (detail::lowered(it->path().extension().string()) != ".milk") continue;
         std::string name = it->path().filename().string();
-        if (detail::hasMilkExtension(name)) names.push_back(std::move(name));
+        std::string key  = detail::lowered(name);
+        keyed.emplace_back(std::move(key), std::move(name));
     }
-    std::sort(names.begin(), names.end(), [](const std::string& a, const std::string& b) {
-        std::string la = detail::lowered(a), lb = detail::lowered(b);
-        return la != lb ? la < lb : a < b;
-    });
-    for (std::string& n : names) n = dir + "/" + n;
-    return names;
+    std::sort(keyed.begin(), keyed.end());                    // by lowercased name, then by exact name
+    out.reserve(keyed.size());
+    for (const auto& kn : keyed) out.push_back(dir + "/" + kn.second);
+    return out;
 }
 
 // Index of `path` in `files`, matched by file name (one folder, so names are unique; this also
 // survives '/' vs '\\' differences). -1 when absent.
 inline int indexOfPreset(const std::vector<std::string>& files, const std::string& path) {
     if (path.empty()) return -1;
-    std::string want = fileBaseName(path);
+    const std::string_view want = detail::baseNameView(path);
     for (std::size_t i = 0; i < files.size(); ++i)
-        if (fileBaseName(files[i]) == want) return (int)i;
+        if (detail::baseNameView(files[i]) == want) return (int)i;
     return -1;
 }
 
@@ -64,13 +70,20 @@ inline int stepPresetIndex(int index, int delta, int count) {
 }
 
 // Which bar-synced step song position `bars` falls in: floor(bars / N). N < 1 is treated as 1.
+// A non-finite or out-of-range position yields 0 (casting it to long long would be undefined).
 inline long long syncedPresetStep(double bars, int everyNBars) {
     double n = (double)(everyNBars < 1 ? 1 : everyNBars);
-    return (long long)std::floor(bars / n);
+    double q = std::floor(bars / n);
+    if (!(q > -9.0e18 && q < 9.0e18)) return 0;               // also false for NaN
+    return (long long)q;
 }
 
 // The preset index for a synced `step`. Sequential: step mod count (an ABSOLUTE position in the
 // sorted folder). Shuffle: a hash of (step, seed), so it replays identically after a loop or seek.
+// Shuffle is a HASH, not a permutation, so consecutive steps can land on the same preset (about
+// 1 in `count`) -- that is the price of replaying identically after a loop or seek; do not "fix"
+// it into a stateful permutation. For count <= 0 it returns 0 (mirroring syncedImageIndex), so
+// callers must check the list is non-empty before indexing.
 inline int syncedPresetIndex(long long step, int count, bool shuffle, unsigned seed) {
     if (count <= 0) return 0;
     if (!shuffle) return (int)(((step % count) + count) % count);
@@ -98,6 +111,10 @@ struct PresetSelectorInput {
 //   - a button steps through the folder;
 //   - sync is edge-triggered and primed: the first synced frame only records the step, and a
 //     switch happens when the step number later changes (bar boundary, loop seam, seek).
+// A pick or a button in a frame outranks a sync boundary in that same frame -- the boundary is
+// consumed, so the click is never swallowed. Sync re-primes (rather than switching) when
+// `everyNBars` or the folder changes. While `sync` is on, prev/next/random hold only until the
+// next boundary, when absolute positioning reclaims the selection.
 // GL-free; the directory lister is injectable for tests.
 class PresetSelector {
 public:
@@ -109,13 +126,13 @@ public:
         bool changed = false;
         if (in.incoming != lastIncoming_) {
             lastIncoming_ = in.incoming;
-            if (in.incoming != current_) { current_ = in.incoming; changed = true; }
+            changed = select(in.incoming);
         }
         rescanIfFolderChanged();
         const int n = (int)files_.size();
 
-        if (in.button >= 0 && n > 0) {
-            int i = indexOfPreset(files_, current_);
+        if (in.button >= 0 && in.button <= 2 && n > 0) {
+            const int i = index_;
             int next;
             if (in.button == 2) {
                 next = (int)(in.randomValue % (unsigned)n);
@@ -127,14 +144,18 @@ public:
             }
             changed = select(files_[(std::size_t)next]) || changed;
         }
+        const bool manual = changed;        // a pick or a button this frame outranks a sync boundary
 
         if (in.sync && in.playing && n > 0) {
             long long step = syncedPresetStep(in.bars, in.everyNBars);
-            if (!syncPrimed_) { syncPrimed_ = true; lastStep_ = step; }
-            else if (step != lastStep_) {
-                lastStep_ = step;
-                int idx = syncedPresetIndex(step, n, in.shuffle, kPresetShuffleSeed);
-                changed = select(files_[(std::size_t)idx]) || changed;
+            if (!syncPrimed_ || in.everyNBars != lastEveryN_) {
+                syncPrimed_ = true; lastEveryN_ = in.everyNBars; lastStep_ = step;   // (re)prime: no switch
+            } else if (step != lastStep_) {
+                lastStep_ = step;           // the boundary is consumed either way
+                if (!manual) {
+                    int idx = syncedPresetIndex(step, n, in.shuffle, kPresetShuffleSeed);
+                    changed = select(files_[(std::size_t)idx]) || changed;
+                }
             }
         } else {
             syncPrimed_ = false;
@@ -144,26 +165,31 @@ public:
 
     const std::string& current() const { return current_; }
     int count() const { return (int)files_.size(); }
-    int index() const { return indexOfPreset(files_, current_); }
+    int index() const { return index_; }    // cached: -1 when current() is not in the folder listing
 
 private:
     bool select(const std::string& path) {
         if (path == current_) return false;
         current_ = path;
+        index_   = indexOfPreset(files_, current_);
         return true;
     }
     void rescanIfFolderChanged() {
         std::string dir = parentDir(current_);
         if (dir == folder_) return;
-        folder_ = dir;
-        files_  = dir.empty() ? std::vector<std::string>{} : lister_(dir);
+        folder_     = dir;
+        files_      = dir.empty() ? std::vector<std::string>{} : lister_(dir);
+        index_      = indexOfPreset(files_, current_);
+        syncPrimed_ = false;                // a new folder is a new basis for the synced step: re-prime
     }
 
     Lister                   lister_;
     std::vector<std::string> files_;
     std::string              folder_, current_, lastIncoming_;
+    int                      index_      = -1;
     bool                     syncPrimed_ = false;
     long long                lastStep_   = 0;
+    int                      lastEveryN_ = 0;
 };
 
 } // namespace oss

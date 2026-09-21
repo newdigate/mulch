@@ -3,6 +3,7 @@
 #include "core/PathUtil.h"
 #include <filesystem>
 #include <fstream>
+#include <limits>
 #include <set>
 #include <string>
 #include <vector>
@@ -10,9 +11,11 @@
 using namespace oss;
 namespace fs = std::filesystem;
 
-// A fixed three-preset folder for the selector tests (no disk access).
+// Fixed folders for the selector tests (no disk access).
 static std::vector<std::string> fakeLister(const std::string& dir) {
-    if (dir == "/p") return {"/p/a.milk", "/p/b.milk", "/p/c.milk"};
+    if (dir == "/p")   return {"/p/a.milk", "/p/b.milk", "/p/c.milk"};
+    if (dir == "/q")   return {"/q/x.milk", "/q/y.milk", "/q/z.milk"};
+    if (dir == "/one") return {"/one/solo.milk"};
     return {};
 }
 
@@ -23,15 +26,17 @@ TEST_CASE("listPresetsInDir: only .milk, case-insensitive, sorted, no subfolders
     for (const char* n : {"b.milk", "A.MILK", "notes.txt"}) std::ofstream(dir / n) << "x";
     std::ofstream(dir / "sub" / "x.milk") << "x";
 
-    std::vector<std::string> files = listPresetsInDir(dir.string());
+    const std::string base = dir.string();
+    std::vector<std::string> files   = listPresetsInDir(base);
+    std::vector<std::string> missing = listPresetsInDir((dir / "missing").string());
+    fs::remove_all(dir);                           // clean up before asserting: a failure leaks nothing
+
     REQUIRE(files.size() == 2);
     CHECK(fileBaseName(files[0]) == "A.MILK");
     CHECK(fileBaseName(files[1]) == "b.milk");
-    CHECK(files[0] == dir.string() + "/A.MILK");   // paths are dir + "/" + name
-
-    CHECK(listPresetsInDir((dir / "missing").string()).empty());
+    CHECK(files[0] == base + "/A.MILK");           // paths are dir + "/" + name
+    CHECK(missing.empty());
     CHECK(listPresetsInDir("").empty());
-    fs::remove_all(dir);
 }
 
 TEST_CASE("indexOfPreset matches by file name; stepPresetIndex wraps") {
@@ -55,6 +60,12 @@ TEST_CASE("syncedPresetStep advances every N bars and is stateless") {
     CHECK(syncedPresetStep(-0.5, 4) == -1);
     CHECK(syncedPresetStep(2.5, 0) == 2);      // N < 1 is treated as 1
     CHECK(syncedPresetStep(4.0, 4) == syncedPresetStep(4.0, 4));
+
+    // Non-finite / out-of-range positions must not hit an undefined double -> long long cast.
+    CHECK(syncedPresetStep(std::numeric_limits<double>::infinity(), 4) == 0);
+    CHECK(syncedPresetStep(-std::numeric_limits<double>::infinity(), 4) == 0);
+    CHECK(syncedPresetStep(std::numeric_limits<double>::quiet_NaN(), 4) == 0);
+    CHECK(syncedPresetStep(1e300, 4) == 0);
 }
 
 TEST_CASE("syncedPresetIndex: sequential is a positive modulo; shuffle is deterministic and in range") {
@@ -194,5 +205,122 @@ TEST_CASE("PresetSelector: sync ignores a stopped transport and re-primes on pla
     CHECK_FALSE(sel.update(in));
     in.bars = 7.0;                                        // step 7 -> files[1]
     CHECK(sel.update(in));
+    CHECK(sel.current() == "/p/b.milk");
+}
+
+TEST_CASE("PresetSelector: an out-of-range button is ignored") {
+    PresetSelector sel(&fakeLister);
+    PresetSelectorInput in;
+    in.incoming = "/p/a.milk";
+    sel.update(in);
+    in.button = 7;
+    CHECK_FALSE(sel.update(in));
+    CHECK(sel.current() == "/p/a.milk");
+}
+
+TEST_CASE("PresetSelector: a single-preset folder never reports a change from buttons or sync") {
+    PresetSelector sel(&fakeLister);
+    PresetSelectorInput in;
+    in.incoming = "/one/solo.milk";
+    CHECK(sel.update(in));
+    CHECK(sel.count() == 1);
+    CHECK(sel.index() == 0);
+    for (int b = 0; b <= 2; ++b) { in.button = b; in.randomValue = 5; CHECK_FALSE(sel.update(in)); }
+    in.button = -1;
+    in.sync = true; in.playing = true; in.everyNBars = 1;
+    in.bars = 0.5; CHECK_FALSE(sel.update(in));
+    in.bars = 1.5; CHECK_FALSE(sel.update(in));
+    CHECK(sel.current() == "/one/solo.milk");
+}
+
+TEST_CASE("PresetSelector: changing `bars` re-primes instead of switching") {
+    PresetSelector sel(&fakeLister);
+    PresetSelectorInput in;
+    in.incoming = "/p/a.milk";
+    in.sync = true; in.playing = true; in.everyNBars = 4;
+    in.bars = 9.0;
+    sel.update(in);                              // primes at step 2
+    in.everyNBars = 1;                           // the step number would jump 2 -> 9
+    CHECK_FALSE(sel.update(in));                 // re-primed: no load storm while dragging the slider
+    CHECK(sel.current() == "/p/a.milk");
+    in.bars = 10.0;                              // the next real boundary: step 10 -> files[1]
+    CHECK(sel.update(in));
+    CHECK(sel.current() == "/p/b.milk");
+}
+
+TEST_CASE("PresetSelector: a button on a boundary frame wins, and the boundary is consumed") {
+    PresetSelector sel(&fakeLister);
+    PresetSelectorInput in;
+    in.incoming = "/p/a.milk";
+    in.sync = true; in.playing = true; in.everyNBars = 1;
+    in.bars = 0.5;
+    sel.update(in);                              // primes at step 0
+    in.button = 0; in.bars = 1.0;                // prev (a -> c) on the frame sync would pick b
+    CHECK(sel.update(in));
+    CHECK(sel.current() == "/p/c.milk");         // the click is not swallowed
+    in.button = -1; in.bars = 1.5;
+    CHECK_FALSE(sel.update(in));                 // and step 1 is not reclaimed afterwards
+    CHECK(sel.current() == "/p/c.milk");
+    in.bars = 2.0;                               // step 2 -> files[2] = c, already current
+    CHECK_FALSE(sel.update(in));
+    in.bars = 3.0;                               // step 3 -> files[0]
+    CHECK(sel.update(in));
+    CHECK(sel.current() == "/p/a.milk");
+}
+
+TEST_CASE("PresetSelector: picking a preset in another folder rescans and re-primes") {
+    PresetSelector sel(&fakeLister);
+    PresetSelectorInput in;
+    in.incoming = "/p/a.milk";
+    in.sync = true; in.playing = true; in.everyNBars = 1;
+    in.bars = 0.5;
+    sel.update(in);
+    in.incoming = "/q/y.milk"; in.bars = 1.0;    // a pick on a boundary frame, in a different folder
+    CHECK(sel.update(in));
+    CHECK(sel.current() == "/q/y.milk");         // not overridden by the synced step
+    CHECK(sel.count() == 3);
+    CHECK(sel.index() == 1);
+    in.bars = 1.5;
+    CHECK_FALSE(sel.update(in));
+    in.bars = 2.0;                               // step 2 -> /q files[2]
+    CHECK(sel.update(in));
+    CHECK(sel.current() == "/q/z.milk");
+    CHECK(sel.index() == 2);
+}
+
+TEST_CASE("PresetSelector: shuffle replays the same sequence after a seek and in a fresh selector") {
+    auto run = [](std::vector<std::string>& out) {
+        PresetSelector sel(&fakeLister);
+        PresetSelectorInput in;
+        in.incoming = "/p/a.milk";
+        in.sync = true; in.playing = true; in.everyNBars = 1; in.shuffle = true;
+        for (int pass = 0; pass < 2; ++pass) {
+            in.bars = 0.5;                       // (re)start; the second pass is a seek back
+            sel.update(in);
+            for (int b = 1; b <= 12; ++b) { in.bars = b + 0.5; sel.update(in); out.push_back(sel.current()); }
+        }
+    };
+    std::vector<std::string> seq;
+    run(seq);
+    REQUIRE(seq.size() == 24);
+    for (int i = 0; i < 12; ++i) CHECK(seq[(std::size_t)i] == seq[(std::size_t)i + 12]);
+    std::vector<std::string> again;
+    run(again);
+    CHECK(seq == again);                         // fixed seed: identical in every session
+}
+
+TEST_CASE("PresetSelector: the written-back path after a sync switch does not reload") {
+    PresetSelector sel(&fakeLister);
+    PresetSelectorInput in;
+    in.incoming = "/p/a.milk";
+    in.sync = true; in.playing = true; in.everyNBars = 1;
+    in.bars = 0.5;
+    sel.update(in);
+    in.bars = 1.0;
+    CHECK(sel.update(in));
+    CHECK(sel.current() == "/p/b.milk");
+    in.incoming = sel.current();                 // the node wrote it back into the unconnected field
+    in.bars = 1.2;
+    CHECK_FALSE(sel.update(in));
     CHECK(sel.current() == "/p/b.milk");
 }
