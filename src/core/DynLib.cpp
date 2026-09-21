@@ -22,6 +22,7 @@ bool DynLib::open(const std::string& path) {
     if (!handle_)
         error_ = "LoadLibrary failed (" + std::to_string((unsigned long)GetLastError()) + "): " + path;
 #else
+    dlerror();                                  // discard any pending error so the one we read is dlopen's
     handle_ = dlopen(path.c_str(), RTLD_NOW | RTLD_LOCAL);
     if (!handle_) {
         const char* e = dlerror();

@@ -34,9 +34,23 @@ TEST_CASE("DynLib: move transfers ownership") {
     REQUIRE(a.open(kSystemLibPath));
     DynLib b(std::move(a));
     CHECK_FALSE(a.isOpen());
+    CHECK(a.error().empty());
     CHECK(b.isOpen());
     DynLib c;
     c = std::move(b);
     CHECK_FALSE(b.isOpen());
     CHECK(c.symbol<double (*)(double)>("cos") != nullptr);
+}
+
+TEST_CASE("DynLib: open() resets state; close() is idempotent") {
+    DynLib lib;
+    CHECK_FALSE(lib.open("/nonexistent/dir/libnope-12345.so"));
+    CHECK_FALSE(lib.error().empty());
+    REQUIRE(lib.open(kSystemLibPath));          // success after a failure
+    CHECK(lib.error().empty());                 // the error_.clear() path
+    REQUIRE(lib.open(kSystemLibPath));          // re-open while open: closes the old handle, still usable
+    CHECK(lib.symbol<double (*)(double)>("cos") != nullptr);
+    lib.close();
+    lib.close();                                // idempotent
+    CHECK_FALSE(lib.isOpen());
 }
