@@ -332,6 +332,7 @@ add_executable(core_tests
   tests/test_panel_slot.cpp
   tests/test_spirograph.cpp
   tests/test_dynlib.cpp
+  tests/test_preset_playlist.cpp
   src/core/DynLib.cpp
   src/core/Node.cpp
   src/core/Graph.cpp
