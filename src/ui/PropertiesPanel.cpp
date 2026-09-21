@@ -19,6 +19,7 @@ static const char* assetTypeName(AssetType t) {
         case AssetType::Midi:  return "MIDI";
         case AssetType::Mesh:  return "3D";
         case AssetType::Image: return "Image";
+        case AssetType::Preset: return "Preset";
     }
     return "media";
 }

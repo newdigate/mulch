@@ -25,7 +25,9 @@ bool parseAssetBlockLine(const std::string& kw, std::istringstream& ls,
         int id, typeInt; ls >> id >> typeInt;
         if (ls.fail()) return true;                        // malformed asset line -> consumed, skipped
         if (typeInt < 0) typeInt = 0;
-        if (typeInt >= kAssetTypeCount) typeInt = kAssetTypeCount - 1;
+        // An unknown (future) type is preserved verbatim, not clamped onto a known one: it shows in
+        // no tab here, and a save writes the original int back, so a round trip through an older
+        // build is lossless. Safe because nothing indexes an array by an asset's OWN type.
         assets.push_back(Asset{id, (AssetType)typeInt, "", ""});
         curAsset = &assets.back();
         return true;

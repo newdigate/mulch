@@ -47,7 +47,13 @@
 #include "modules/ImageSequencerNode.h"
 #include "modules/KaleidoscopeNode.h"
 #include "modules/HsvAdjustNode.h"
+#include "gfx/GLStateGuard.h"
+#include "gfx/GLUtil.h"
+#include "modules/ProjectMNode.h"
+#include <cstdlib>
+#include <fstream>
 #include <filesystem>
+#include <limits>
 #include <chrono>
 #include <cmath>
 #include <thread>
@@ -97,6 +103,73 @@ static void readAtUV(TexRef tex, float u, float v, int& r, int& g, int& b, int& 
     r = px[i]; g = px[i+1]; b = px[i+2]; a = px[i+3];
 }
 
+// A minimal Milkdrop preset authored for these tests (no third-party preset ships in the repo).
+// No warp/zoom/rotation, so a burned image stays where it was stamped; the orange outer border
+// guarantees non-black pixels even with silent audio.
+static const char* kTestPreset =
+    "[preset00]\n"
+    "fDecay=0.98\nzoom=1.0\nrot=0.0\nwarp=0.0\n"
+    "nWaveMode=0\nfWaveAlpha=1.0\nfWaveScale=1.0\n"
+    "wave_r=1.0\nwave_g=0.4\nwave_b=0.1\n"
+    "ob_size=0.04\nob_r=0.9\nob_g=0.4\nob_b=0.1\nob_a=1.0\n";
+
+// Write a.milk / b.milk / c.milk into a fresh temp folder; returns the folder ("" on failure).
+static std::string writePresetFolder() {
+    std::filesystem::path dir = std::filesystem::temp_directory_path() / "oss_projectm_smoke";
+    std::error_code ec;
+    std::filesystem::remove_all(dir, ec);
+    if (!std::filesystem::create_directories(dir, ec)) return "";
+    for (const char* n : {"a.milk", "b.milk", "c.milk"}) {
+        std::ofstream f(dir / n);
+        if (!f) return "";
+        f << kTestPreset;
+    }
+    return dir.string();
+}
+
+// A Milkdrop-2 preset (both MILKDROP_PRESET_VERSION >= 200 and PSVERSION* are required, or projectM
+// silently uses its one-sampler default shaders) whose composite shader samples five textures, which
+// is what makes projectM bind samplers on units 1..4. Authored for these tests; no third-party
+// preset ships in the repo.
+static const char* kMultiSamplerPreset =
+    "[preset00]\n"
+    "MILKDROP_PRESET_VERSION=201\nPSVERSION=2\nPSVERSION_WARP=2\nPSVERSION_COMP=2\n"
+    "fDecay=0.98\nwarp=0.100000\nwave_a=0\n"
+    "nMotionVectorsX=16\nnMotionVectorsY=12\nmv_a=1\nbDarkenCenter=1\nbBrighten=1\n"
+    "comp_1=`shader_body\n"
+    "comp_2=`{\n"
+    "comp_3=`float3 a = tex2D(sampler_main, uv).xyz;\n"
+    "comp_4=`float3 b = tex2D(sampler_blur1, uv).xyz;\n"
+    "comp_5=`float3 c = tex2D(sampler_fw_noise_lq, uv).xyz;\n"
+    "comp_6=`float3 d = tex3D(sampler_fw_noisevol_lq, float3(uv, 0.5)).xyz;\n"
+    "comp_7=`float3 e = tex2D(sampler_blur2, uv).xyz;\n"
+    "comp_8=`ret = a*0.4 + b*0.2 + c*0.2 + d*0.1 + e*0.1;\n"
+    "comp_9=`}\n"
+    "warp_1=`shader_body\n"
+    "warp_2=`{\n"
+    "warp_3=`ret = tex2D(sampler_main, uv).xyz * 0.9 + tex2D(sampler_pc_noise_lq, uv).xyz * 0.1;\n"
+    "warp_4=`}\n";
+
+// Write the multi-sampler preset into its OWN temp folder (so the a/b/c folder stays 3 files for
+// the "(2/3)" status check); returns the file path ("" on failure).
+static std::string writeMultiSamplerPreset() {
+    std::filesystem::path dir = std::filesystem::temp_directory_path() / "oss_projectm_smoke_multi";
+    std::error_code ec;
+    std::filesystem::remove_all(dir, ec);
+    if (!std::filesystem::create_directories(dir, ec)) return "";
+    std::ofstream f(dir / "multi.milk");
+    if (!f) return "";
+    f << kMultiSamplerPreset;
+    return (dir / "multi.milk").string();
+}
+
+// The node's input defaults as a resolved input vector (what Graph::evaluate would hand it).
+static std::vector<Value> defaultInputs(const Node& n) {
+    std::vector<Value> v;
+    for (const Port& p : n.inputs()) v.push_back(p.defaultValue);
+    return v;
+}
+
 // Write a 64x64 PNG: left half red, right half green. Returns the path (or "" on failure).
 static std::string writeSplitFixture() {
     const int W = 64, H = 64;
@@ -124,7 +197,7 @@ static bool writeSolidPNG(const std::string& path, unsigned char r, unsigned cha
 }
 
 int main() {
-    // Phase 2: the five media file inputs are asset-backed with the matching AssetType.
+    // Phase 2: the six media file inputs are asset-backed with the matching AssetType.
     // Pure CPU (node constructors don't touch GL), so it runs before any GL setup --
     // a bare `return fail(...)` is correct here (no context to clean up).
     {
@@ -140,7 +213,8 @@ int main() {
         DrumMachineNode    dm;
         for (int v = 0; v < DrumMachineNode::kVoices; ++v)
             if (bad(dm, 4 * v, AssetType::Audio)) return fail("DrumMachine.file voice not asset-backed Audio");
-        std::fprintf(stderr, "gl_smoke OK: 5 media nodes expose asset-backed file inputs\n");
+        ProjectMNode       pmn; if (bad(pmn, ProjectMNode::kPreset, AssetType::Preset)) return fail("projectM.preset not asset-backed Preset");
+        std::fprintf(stderr, "gl_smoke OK: 6 media nodes expose asset-backed file inputs\n");
     }
 
     if (!glfwInit()) return fail("glfwInit");
@@ -1548,6 +1622,355 @@ int main() {
             glfwTerminate(); return fail("Drum Machine: hard-left pan did not route to left only");
         }
         std::fprintf(stderr, "gl_smoke OK: Drum Machine triggers a step, accent louder, pan routes\n");
+    }
+
+    // projectM node, library-absent path (what CI sees). ProjectMApi::load() has deliberately not
+    // been called yet in this process, so the node must be inert.
+    {
+        ProjectMNode pm;
+        pm.initGL();
+        std::vector<Value> ins = defaultInputs(pm), outs(1);
+        EvalContext ctx{ins, outs, 1.0f / 60.0f, nullptr, nullptr};
+        pm.evaluate(ctx);
+        TexRef t = std::get<TexRef>(outs[0]);
+        if (t.id == 0 || t.w != kCanvasW || t.h != kCanvasH) { glfwTerminate(); return fail("projectM (inert): no canvas-sized texture"); }
+        int r, gg, b, a;
+        readCentre(t, r, gg, b, a);
+        if (!(r == 0 && gg == 0 && b == 0 && a == 255)) { glfwTerminate(); return fail("projectM (inert): texture not opaque black"); }
+        if (pm.statusLine().empty()) { glfwTerminate(); return fail("projectM (inert): empty status line"); }
+
+        // Playlist write-back needs no library: next from a.milk -> b.milk, written into the field.
+        std::string dir = writePresetFolder();
+        if (dir.empty()) { glfwTerminate(); return fail("projectM: write preset folder"); }
+        ins[ProjectMNode::kPreset] = Value(dir + "/a.milk");
+        pm.evaluate(ctx);
+        if (fileBaseName(std::get<std::string>(pm.inputDefault(ProjectMNode::kPreset))) != "a.milk") { glfwTerminate(); return fail("projectM: incoming preset not written back"); }
+        pm.onButtonPressed(1);   // next
+        pm.evaluate(ctx);        // `ins` still says a.milk, like an unchanged edge: the step must hold
+        if (fileBaseName(std::get<std::string>(pm.inputDefault(ProjectMNode::kPreset))) != "b.milk") { glfwTerminate(); return fail("projectM: next did not step to b.milk"); }
+        pm.evaluate(ctx);
+        if (fileBaseName(std::get<std::string>(pm.inputDefault(ProjectMNode::kPreset))) != "b.milk") { glfwTerminate(); return fail("projectM: step snapped back"); }
+        std::fprintf(stderr, "gl_smoke OK: projectM inert path (black texture, status '%s') + playlist write-back\n", pm.statusLine().c_str());
+    }
+
+    // projectM node, live path. Needs libprojectM 4.2+ (OSS_PROJECTM_LIB overrides the search).
+    {
+        const char* envLib = std::getenv("OSS_PROJECTM_LIB");
+        ProjectMApi& api = ProjectMApi::instance();
+        if (!api.load(envLib ? envLib : "")) {
+            std::fprintf(stderr, "gl_smoke SKIP: projectM render/burn checks (%s)\n", api.statusText().c_str());
+        } else {
+            std::string dir = writePresetFolder();
+            if (dir.empty()) { glfwTerminate(); return fail("projectM live: write preset folder"); }
+
+            std::vector<float> sine(800);
+            for (std::size_t i = 0; i < sine.size(); ++i) sine[i] = 0.8f * std::sin(2.0f * 3.14159265f * 220.0f * (float)i / 48000.0f);
+
+            ProjectMNode pm;
+            pm.initGL();
+            std::vector<Value> ins = defaultInputs(pm), outs(1);
+            ins[ProjectMNode::kLeft]   = Value(AudioRef{sine.data(), sine.size(), 48000});   // right mirrors it
+            ins[ProjectMNode::kPreset] = Value(dir + "/a.milk");
+            ins[ProjectMNode::kBlend]  = Value(false);                                       // hard cut: no blend wait
+            EvalContext ctx{ins, outs, 1.0f / 60.0f, nullptr, nullptr};
+
+            // (a) GL state is RESTORED, not reset. Every value installed here is non-default, so a
+            // guard that reset to GL defaults on exit instead of restoring what it saved would fail.
+            // (The 2D texture binding is deliberately not asserted: the guard only restores it for
+            // the unit that was active on entry, by design.)
+            GLuint probeVao = 0, probeBuf = 0;
+            glGenVertexArrays(1, &probeVao);
+            glGenBuffers(1, &probeBuf);
+            GLuint probeProg = linkProgram(
+                "#version 410 core\nvoid main() { gl_Position = vec4(0.0); }\n",
+                "#version 410 core\nout vec4 f;\nvoid main() { f = vec4(1.0, 0.0, 1.0, 1.0); }\n");
+            if (probeProg == 0) { glfwTerminate(); return fail("projectM live: could not link the GL-state probe program"); }
+            glBindFramebuffer(GL_FRAMEBUFFER, 0);
+            glViewport(0, 0, 33, 44);
+            glUseProgram(probeProg);
+            glBindVertexArray(probeVao);
+            glBindBuffer(GL_ARRAY_BUFFER, probeBuf);
+            glActiveTexture(GL_TEXTURE3);
+            for (int i = 0; i < 10; ++i) pm.evaluate(ctx);
+            GLint fb = -1, vp[4] = {0, 0, 0, 0}, prog = -1, vao = -1, arrayBuf = -1, activeTex = 0;
+            glGetIntegerv(GL_DRAW_FRAMEBUFFER_BINDING, &fb);
+            glGetIntegerv(GL_VIEWPORT, vp);
+            glGetIntegerv(GL_CURRENT_PROGRAM, &prog);
+            glGetIntegerv(GL_VERTEX_ARRAY_BINDING, &vao);
+            glGetIntegerv(GL_ARRAY_BUFFER_BINDING, &arrayBuf);
+            glGetIntegerv(GL_ACTIVE_TEXTURE, &activeTex);
+            std::fprintf(stderr, "gl_smoke projectM status: %s\n", pm.statusLine().c_str());
+            bool stateKept = fb == 0 && vp[2] == 33 && vp[3] == 44 && prog == (GLint)probeProg &&
+                             vao == (GLint)probeVao && arrayBuf == (GLint)probeBuf &&
+                             activeTex == GL_TEXTURE3;
+            glActiveTexture(GL_TEXTURE0);
+            glUseProgram(0); glBindVertexArray(0); glBindBuffer(GL_ARRAY_BUFFER, 0);
+            glDeleteProgram(probeProg); glDeleteBuffers(1, &probeBuf); glDeleteVertexArrays(1, &probeVao);
+            if (!stateKept) { glfwTerminate(); return fail("projectM live: GL state leaked out of evaluate"); }
+
+            // (b) it rendered something.
+            TexRef t = std::get<TexRef>(outs[0]);
+            std::vector<unsigned char> px((size_t)t.w * t.h * 4);
+            glBindTexture(GL_TEXTURE_2D, t.id);
+            glGetTexImage(GL_TEXTURE_2D, 0, GL_RGBA, GL_UNSIGNED_BYTE, px.data());
+            bool lit = false;
+            for (size_t i = 0; i + 3 < px.size() && !lit; i += 4) lit = (px[i] + px[i + 1] + px[i + 2]) > 60;
+            if (!lit) { glfwTerminate(); return fail("projectM live: output is black (see the status line above)"); }
+
+            // (c) the status shows the playlist position after a step.
+            pm.onButtonPressed(1);
+            pm.evaluate(ctx);
+            if (pm.statusLine().find("(2/3)") == std::string::npos) { glfwTerminate(); return fail("projectM live: status does not show (2/3) after next"); }
+
+            // (d) burn: a texture whose TOP half is red and BOTTOM half green (GL rows are bottom-up).
+            const int S = 64;
+            std::vector<unsigned char> img((size_t)S * S * 4);
+            for (int y = 0; y < S; ++y) for (int x = 0; x < S; ++x) {
+                unsigned char* p = &img[((size_t)y * S + x) * 4];
+                bool top = (y >= S / 2);
+                p[0] = top ? 255 : 0; p[1] = top ? 0 : 255; p[2] = 0; p[3] = 255;
+            }
+            GLuint src = 0;
+            glGenTextures(1, &src);
+            glBindTexture(GL_TEXTURE_2D, src);
+            glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+            glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, S, S, 0, GL_RGBA, GL_UNSIGNED_BYTE, img.data());
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+            ins[ProjectMNode::kTexIn] = Value(TexRef{src, S, S});
+            ins[ProjectMNode::kBurn]  = Value(1.0f);
+            for (int i = 0; i < 5; ++i) pm.evaluate(ctx);
+            t = std::get<TexRef>(outs[0]);
+            int r1, g1, b1, a1, r2, g2, b2, a2;
+            readAtUV(t, 0.2f, 0.85f, r1, g1, b1, a1);   // upper area, clear of the border and the centre wave
+            readAtUV(t, 0.2f, 0.15f, r2, g2, b2, a2);   // lower area
+            std::fprintf(stderr, "gl_smoke projectM burn: upper=(%d,%d,%d) lower=(%d,%d,%d)\n", r1, g1, b1, r2, g2, b2);
+            bool upperRed = r1 > g1 + 40, lowerGreen = g2 > r2 + 40;
+            bool upperGreen = g1 > r1 + 40, lowerRed = r2 > g2 + 40;
+            if (upperGreen && lowerRed) { glfwTerminate(); return fail("projectM live: burn is vertically flipped (plan Task 9 Step 4)"); }
+            if (!(upperRed && lowerGreen)) { glfwTerminate(); return fail("projectM live: burned texture not visible in the output"); }
+
+            // (d2) burn respects alpha: a transparent region must NOT overwrite the canvas.
+            // Top half opaque red, bottom half GREEN WITH ALPHA 0. With the node's straight-alpha
+            // blend the lower area keeps the preset's own pixels; an unblended copy would write green.
+            // (d)'s stamp has to be gone first or this would prove nothing. fDecay=0.98 is far too
+            // slow: measured, the lower sample is still (0,142,0) after 60 burn-off frames and
+            // (0,46,0) after 120 -- green-dominant throughout, and only creeping up on the
+            // threshold. So hard-cut to a third preset file instead: a freshly loaded preset
+            // starts on a clean canvas, in 5 frames.
+            ins[ProjectMNode::kPreset] = Value(dir + "/c.milk");
+            ins[ProjectMNode::kBurn]   = Value(0.0f);
+            for (int i = 0; i < 5; ++i) pm.evaluate(ctx);
+            t = std::get<TexRef>(outs[0]);
+            int r3, g3, b3, a3;
+            readAtUV(t, 0.2f, 0.15f, r3, g3, b3, a3);
+            std::fprintf(stderr, "gl_smoke projectM pre-alpha-burn lower=(%d,%d,%d)\n", r3, g3, b3);
+            if (g3 > r3 + 40) { glfwTerminate(); return fail("projectM live: canvas still green before the alpha burn, so it would prove nothing"); }
+            for (int y = 0; y < S; ++y) for (int x = 0; x < S; ++x) {
+                unsigned char* p = &img[((size_t)y * S + x) * 4];
+                bool top = (y >= S / 2);
+                p[0] = top ? 255 : 0; p[1] = top ? 0 : 255; p[2] = 0; p[3] = top ? 255 : 0;
+            }
+            glBindTexture(GL_TEXTURE_2D, src);
+            glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+            glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, S, S, GL_RGBA, GL_UNSIGNED_BYTE, img.data());
+            ins[ProjectMNode::kBurn] = Value(1.0f);
+            for (int i = 0; i < 5; ++i) pm.evaluate(ctx);
+            t = std::get<TexRef>(outs[0]);
+            int r4, g4, b4, a4, r5, g5, b5, a5;
+            readAtUV(t, 0.2f, 0.85f, r4, g4, b4, a4);
+            readAtUV(t, 0.2f, 0.15f, r5, g5, b5, a5);
+            std::fprintf(stderr, "gl_smoke projectM alpha burn: upper=(%d,%d,%d) lower=(%d,%d,%d)\n", r4, g4, b4, r5, g5, b5);
+            glDeleteTextures(1, &src);
+            if (!(r4 > g4 + 40)) { glfwTerminate(); return fail("projectM live: the opaque half of the alpha burn did not land"); }
+            if (g5 > r5 + 40)    { glfwTerminate(); return fail("projectM live: burn ignored alpha (a transparent region overwrote the canvas)"); }
+
+            // (e) A MULTI-SAMPLER preset must not leak sampler objects or the read framebuffer.
+            // Audited against projectM 4.2: it binds a sampler per texture unit and unbinds only
+            // unit 0, and it leaves READ_FRAMEBUFFER on an internal FBO. A one-sampler preset (like
+            // kTestPreset) leaks nothing, so this needs a Milkdrop-2 preset whose shaders sample
+            // main + blur + noise textures. GLStateGuard is what contains both.
+            std::string multi = writeMultiSamplerPreset();
+            if (multi.empty()) { glfwTerminate(); return fail("projectM live: write multi-sampler preset"); }
+            ins[ProjectMNode::kBurn]   = Value(0.0f);
+            ins[ProjectMNode::kPreset] = Value(multi);
+            glBindFramebuffer(GL_READ_FRAMEBUFFER, 0);
+            for (GLuint u = 0; u < 8; ++u) glBindSampler(u, 0);
+            // Units 1..5 start on a SENTINEL, not 0, so the assertion below stays meaningful even if a
+            // future projectM binds no samplers at all (or this preset quietly falls back to the
+            // one-sampler default shaders): the guard must clear them either way.
+            GLuint sentinel = 0;
+            glGenSamplers(1, &sentinel);
+            for (GLuint u = 1; u <= 5; ++u) glBindSampler(u, sentinel);
+            for (int i = 0; i < 10; ++i) pm.evaluate(ctx);
+            std::fprintf(stderr, "gl_smoke projectM multi-sampler status: %s\n", pm.statusLine().c_str());
+            if (pm.statusLine().rfind("failed:", 0) == 0) { glfwTerminate(); return fail("projectM live: the multi-sampler preset did not load, so the leak check would be vacuous"); }
+            GLint readFb = -1;
+            glGetIntegerv(GL_READ_FRAMEBUFFER_BINDING, &readFb);
+            int leaked = 0;
+            for (GLuint u = 1; u <= 5; ++u) {
+                GLint s = -1;
+                glActiveTexture(GL_TEXTURE0 + u);
+                glGetIntegerv(GL_SAMPLER_BINDING, &s);
+                if (s != 0) { ++leaked; std::fprintf(stderr, "gl_smoke projectM: sampler %d left on unit %u\n", s, u); }
+            }
+            glActiveTexture(GL_TEXTURE0);
+            glDeleteSamplers(1, &sentinel);
+            if (leaked)      { glfwTerminate(); return fail("projectM live: sampler objects leaked onto texture units"); }
+            if (readFb != 0) { glfwTerminate(); return fail("projectM live: READ_FRAMEBUFFER binding leaked"); }
+
+            // (f) projectM must render correctly whatever GL state the previous node left, and hand it back.
+            // It never touches scissor/cull/depth anywhere in its source, and sets no blend state for a
+            // plain texture copy, so a badly-behaved node upstream could clip or erase its whole output.
+            ins[ProjectMNode::kPreset] = Value(dir + "/a.milk");
+            ins[ProjectMNode::kBurn]   = Value(0.0f);
+            // Zero the node's canvas first. Nothing clears it between frames -- the preset's output
+            // covers it every frame -- so a render that got scissored away entirely would leave (e)'s
+            // picture sitting there and this check would pass without projectM drawing a thing.
+            // (Measured: without this the hostile run reports 100% lit; with it, 0%.)
+            t = std::get<TexRef>(outs[0]);
+            px.assign((size_t)t.w * t.h * 4, 0);
+            glBindTexture(GL_TEXTURE_2D, t.id);
+            glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, t.w, t.h, GL_RGBA, GL_UNSIGNED_BYTE, px.data());
+            glEnable(GL_SCISSOR_TEST); glScissor(0, 0, 1, 1);      // would clip everything but one pixel
+            glEnable(GL_CULL_FACE);
+            glEnable(GL_DEPTH_TEST);
+            glEnable(GL_BLEND); glBlendFunc(GL_ZERO, GL_ONE);      // would draw nothing at all
+            for (int i = 0; i < 10; ++i) pm.evaluate(ctx);
+            bool handedBack = glIsEnabled(GL_SCISSOR_TEST) && glIsEnabled(GL_CULL_FACE) &&
+                              glIsEnabled(GL_DEPTH_TEST) && glIsEnabled(GL_BLEND);
+            GLint srcRgb = 0, dstRgb = 0;
+            glGetIntegerv(GL_BLEND_SRC_RGB, &srcRgb); glGetIntegerv(GL_BLEND_DST_RGB, &dstRgb);
+            glDisable(GL_SCISSOR_TEST); glDisable(GL_CULL_FACE); glDisable(GL_DEPTH_TEST); glDisable(GL_BLEND);
+            glBlendFunc(GL_ONE, GL_ZERO);
+            if (!handedBack || srcRgb != GL_ZERO || dstRgb != GL_ONE) { glfwTerminate(); return fail("projectM live: did not hand the caller's GL state back"); }
+            t = std::get<TexRef>(outs[0]);
+            px.assign((size_t)t.w * t.h * 4, 0);
+            glBindTexture(GL_TEXTURE_2D, t.id);
+            glGetTexImage(GL_TEXTURE_2D, 0, GL_RGBA, GL_UNSIGNED_BYTE, px.data());
+            size_t litPixels = 0;
+            for (size_t i = 0; i + 3 < px.size(); i += 4)
+                if (px[i] + px[i + 1] + px[i + 2] > 60) ++litPixels;
+            std::fprintf(stderr, "gl_smoke projectM hostile state: %.1f%% of the canvas lit\n",
+                         100.0 * (double)litPixels / ((double)t.w * (double)t.h));
+            if (litPixels * 100 <= (size_t)t.w * (size_t)t.h) { glfwTerminate(); return fail("projectM live: output was clipped/culled/blended away by the caller's GL state"); }
+
+            // (g) a preset path that is not a file must be REPORTED, not handed to projectM: typing a
+            // path changes the incoming value per keystroke, and a load attempt each time costs tens of
+            // milliseconds. What is already playing must keep rendering.
+            ins[ProjectMNode::kPreset] = Value(dir + "/a.milk");
+            for (int i = 0; i < 5; ++i) pm.evaluate(ctx);
+            t = std::get<TexRef>(outs[0]);
+            px.assign((size_t)t.w * t.h * 4, 0);                 // zero the canvas, as (f) does
+            glBindTexture(GL_TEXTURE_2D, t.id);
+            glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, t.w, t.h, GL_RGBA, GL_UNSIGNED_BYTE, px.data());
+            ins[ProjectMNode::kPreset] = Value(dir + "/missing.milk");
+            for (int i = 0; i < 5; ++i) pm.evaluate(ctx);
+            std::fprintf(stderr, "gl_smoke projectM missing preset status: %s\n", pm.statusLine().c_str());
+            if (pm.statusLine().rfind("preset not found: missing", 0) != 0) { glfwTerminate(); return fail("projectM live: a missing preset was not reported"); }
+            t = std::get<TexRef>(outs[0]);
+            px.assign((size_t)t.w * t.h * 4, 0);
+            glBindTexture(GL_TEXTURE_2D, t.id);
+            glGetTexImage(GL_TEXTURE_2D, 0, GL_RGBA, GL_UNSIGNED_BYTE, px.data());
+            size_t stillLit = 0;
+            for (size_t i = 0; i + 3 < px.size(); i += 4)
+                if (px[i] + px[i + 1] + px[i + 2] > 60) ++stillLit;
+            std::fprintf(stderr, "gl_smoke projectM missing preset: %.1f%% of the canvas still lit\n",
+                         100.0 * (double)stillLit / ((double)t.w * (double)t.h));
+            if (stillLit * 100 <= (size_t)t.w * (size_t)t.h) { glfwTerminate(); return fail("projectM live: the previous preset stopped rendering after a missing preset"); }
+
+            // (h) a bad dt must not latch the node black. projectM takes the accumulated time we hand
+            // it verbatim, so a NaN would poison it permanently, and a negative one makes projectM fall
+            // back to its own wall clock (losing determinism). The node clamps both to "no advance".
+            // Measured with the clamp removed: 0.0% lit here, and still 0.0% after ten good frames --
+            // it never recovers. With the clamp: 100%.
+            ins[ProjectMNode::kPreset] = Value(dir + "/a.milk");
+            for (int i = 0; i < 5; ++i) pm.evaluate(ctx);
+            ctx.dt = std::numeric_limits<float>::quiet_NaN();
+            pm.evaluate(ctx);
+            ctx.dt = -1.0f;
+            pm.evaluate(ctx);
+            ctx.dt = 1.0f / 60.0f;
+            t = std::get<TexRef>(outs[0]);
+            px.assign((size_t)t.w * t.h * 4, 0);                 // zero the canvas, as (f) and (g) do
+            glBindTexture(GL_TEXTURE_2D, t.id);
+            glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, t.w, t.h, GL_RGBA, GL_UNSIGNED_BYTE, px.data());
+            for (int i = 0; i < 10; ++i) pm.evaluate(ctx);
+            t = std::get<TexRef>(outs[0]);
+            px.assign((size_t)t.w * t.h * 4, 0);
+            glBindTexture(GL_TEXTURE_2D, t.id);
+            glGetTexImage(GL_TEXTURE_2D, 0, GL_RGBA, GL_UNSIGNED_BYTE, px.data());
+            size_t litAfterBadDt = 0;
+            for (size_t i = 0; i + 3 < px.size(); i += 4)
+                if (px[i] + px[i + 1] + px[i + 2] > 60) ++litAfterBadDt;
+            std::fprintf(stderr, "gl_smoke projectM bad dt: %.1f%% of the canvas lit after a NaN and a negative dt\n",
+                         100.0 * (double)litAfterBadDt / ((double)t.w * (double)t.h));
+            if (litAfterBadDt * 100 <= (size_t)t.w * (size_t)t.h) { glfwTerminate(); return fail("projectM live: a NaN or negative dt left the node black"); }
+
+            std::fprintf(stderr, "gl_smoke OK: projectM live (renders, GL state + samplers contained, status, burn upright + alpha, survives hostile caller state, reports a missing preset, survives a bad dt)\n");
+        }
+        std::error_code ec;                                      // the temp preset folders this file wrote
+        std::filesystem::remove_all(std::filesystem::temp_directory_path() / "oss_projectm_smoke", ec);
+        std::filesystem::remove_all(std::filesystem::temp_directory_path() / "oss_projectm_smoke_multi", ec);
+    }
+
+    // GLStateGuard: state changed inside the scope is restored on exit.
+    {
+        Framebuffer scratch;
+        scratch.create(8, 8);
+        glBindFramebuffer(GL_FRAMEBUFFER, 0);
+        glViewport(0, 0, 17, 19);
+        glDisable(GL_BLEND); glDisable(GL_DEPTH_TEST); glDisable(GL_SCISSOR_TEST); glDisable(GL_CULL_FACE);
+        glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+        glDepthMask(GL_TRUE);
+        glUseProgram(0);
+        glBindVertexArray(0);
+        glActiveTexture(GL_TEXTURE0);
+        glBindTexture(GL_TEXTURE_2D, 0);
+        glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
+        GLuint probeVao = 0; glGenVertexArrays(1, &probeVao); glBindVertexArray(probeVao);
+        GLuint probeBuf = 0; glGenBuffers(1, &probeBuf);      glBindBuffer(GL_ARRAY_BUFFER, probeBuf);
+        GLuint probeSampler = 0; glGenSamplers(1, &probeSampler);
+        glBindFramebuffer(GL_READ_FRAMEBUFFER, 0);
+        {
+            GLStateGuard guard;
+            scratch.bind();                                   // FBO + viewport
+            glEnable(GL_BLEND); glEnable(GL_DEPTH_TEST); glEnable(GL_SCISSOR_TEST); glEnable(GL_CULL_FACE);
+            glBlendFunc(GL_ONE, GL_ONE);
+            glDepthMask(GL_FALSE);
+            glBindTexture(GL_TEXTURE_2D, scratch.texture());  // unit 0's binding
+            glActiveTexture(GL_TEXTURE3);
+            glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+            glBindVertexArray(0);
+            glBindBuffer(GL_ARRAY_BUFFER, 0);
+            glBindFramebuffer(GL_READ_FRAMEBUFFER, scratch.id());   // what projectM really leaks
+            glBindSampler(1, probeSampler);                         // ...and this: a sampler left on unit 1
+        }
+        GLint fb = -1, vp[4] = {0, 0, 0, 0}, unit = 0, tex = -1, align = 0, srcRgb = 0;
+        GLboolean depthMask = GL_FALSE;
+        glGetIntegerv(GL_DRAW_FRAMEBUFFER_BINDING, &fb);
+        glGetIntegerv(GL_VIEWPORT, vp);
+        glGetIntegerv(GL_ACTIVE_TEXTURE, &unit);
+        glGetIntegerv(GL_TEXTURE_BINDING_2D, &tex);
+        glGetIntegerv(GL_UNPACK_ALIGNMENT, &align);
+        glGetIntegerv(GL_BLEND_SRC_RGB, &srcRgb);
+        glGetBooleanv(GL_DEPTH_WRITEMASK, &depthMask);
+        GLint readFb = -1, vaoNow = -1, arrayBufNow = -1, sampler1 = -1;
+        glGetIntegerv(GL_READ_FRAMEBUFFER_BINDING, &readFb);
+        glGetIntegerv(GL_VERTEX_ARRAY_BINDING, &vaoNow);
+        glGetIntegerv(GL_ARRAY_BUFFER_BINDING, &arrayBufNow);
+        glActiveTexture(GL_TEXTURE1);
+        glGetIntegerv(GL_SAMPLER_BINDING, &sampler1);               // queried per active unit
+        glActiveTexture(GL_TEXTURE0);
+        bool ok = fb == 0 && vp[2] == 17 && vp[3] == 19 && unit == GL_TEXTURE0 && tex == 0 &&
+                  align == 4 && srcRgb == GL_SRC_ALPHA && depthMask == GL_TRUE &&
+                  !glIsEnabled(GL_BLEND) && !glIsEnabled(GL_DEPTH_TEST) &&
+                  !glIsEnabled(GL_SCISSOR_TEST) && !glIsEnabled(GL_CULL_FACE) &&
+                  readFb == 0 && vaoNow == (GLint)probeVao && arrayBufNow == (GLint)probeBuf && sampler1 == 0;
+        if (!ok) { glfwTerminate(); return fail("GLStateGuard did not restore the GL state"); }
+        glBindVertexArray(0); glBindBuffer(GL_ARRAY_BUFFER, 0);
+        glDeleteSamplers(1, &probeSampler); glDeleteBuffers(1, &probeBuf); glDeleteVertexArrays(1, &probeVao);
+        std::fprintf(stderr, "gl_smoke OK: GLStateGuard restores framebuffers/viewport/VAO/buffer/texture/enables and clears samplers\n");
     }
 
     glfwDestroyWindow(win);

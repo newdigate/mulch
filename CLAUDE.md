@@ -184,6 +184,49 @@ shaders by CWD-relative path, each package launches the app with `shaders/` as t
   texture in `shaders/hsv_adjust.frag`, which mirrors the GL-free `core/ColorHsv.h` `adjustHsv`
   (`rgbToHsv` → shift/scale/clamp → `hsvToRgb`); a `gl_smoke` scenario cross-checks the shader
   against `adjustHsv` (like the Compositor guards against `BlendModes.h`). In the **Texture** category.
+- **projectM** — `ProjectMNode` (`src/modules/ProjectMNode.{h,cpp}`) runs the Milkdrop-compatible
+  projectM visualizer: `left`/`right` audio in → `texture` out. **libprojectM 4.2+ is loaded at
+  runtime, never linked or bundled** (LGPL-2.1): the GL-free `core/DynLib` (`dlopen`/`LoadLibrary`,
+  platform headers confined to its `.cpp`) backs `gfx/ProjectMApi` — a process-wide table of the
+  ~17 C-API functions we re-declare ourselves (no projectM headers), gated to major 4 / minor ≥ 2
+  because `render_frame_fbo`, `burn_texture`, `set_frame_time` and `create_with_opengl_load_proc`
+  are all `@since 4.2.0` (4.1.x always draws into framebuffer 0). `Application` loads it after
+  Preferences (`projectMLibraryPath` — honoured only when ABSOLUTE, since a relative path would
+  resolve against the CWD that `preferences.oss` itself comes from — then `~/.local/lib` so the
+  user's own build wins, the bare platform names on Linux/Windows only, then `/usr/local/lib`,
+  `/opt/homebrew/lib`) and retries when the preference changes. **No bare names on macOS**: dlopen
+  resolves one from the current working directory first (measured), so a stray dylib beside a
+  project would hijack the load. Binding is all-or-nothing (a local table adopted only on success,
+  so a rejected library leaves no dangling pointers), a rejection names the file it rejected, a
+  candidate that exists but will not open is reported as `could not load <path>: <error>` (never as
+  "not found"), and the singleton is deliberately leaked so the library is never `dlclose`d during
+  static destruction. `makeNode` always builds the node so
+  projects open anywhere; `nodeCategories()` lists it (Texture) only while the library is
+  available, and without it the node is inert (black texture + status). The asset-backed `preset`
+  input (the sixth `AssetType`, **Preset**, `.milk`) is the single source of truth: its folder is
+  the playlist for the **prev / next / random** buttons and the bar-synced step, all decided by
+  the GL-free, unit-tested `PresetSelector` (`core/PresetPlaylist.h`) — an incoming change loads,
+  steps write the path back through `inputDefault()`, and `sync` is edge-triggered and primed
+  (stateless `floor(bars/N)`; sequential = absolute position, shuffle = a hash with a fixed seed).
+  `texture in` is stamped into projectM's canvas while the `burn` gate is > 0.5 (`burn_texture`,
+  with the viewport and STRAIGHT-alpha blending pinned by the node, because projectM sets
+  neither). projectM renders straight into the node's FBO inside a `gfx/GLStateGuard` (RAII
+  save/restore of the state it disturbs, which also CLEARS the sampler objects projectM leaves on
+  texture units 1..N) after `enterForeignDefaults()` puts blend/depth/cull/scissor into GL's
+  defaults — the guard protects us from projectM, that call protects projectM from whatever the
+  previous node left. It runs on the app's clock (`set_frame_time` from accumulated `dt`), so
+  output is deterministic. **A preset change is synchronous on the graph thread** (projectM 4.2
+  has no async load): Milkdrop-2 presets cost p50 176 ms / p95 340 ms / max 547 ms, so every pick,
+  button press and `sync` boundary is a visible stall (Milkdrop-1 presets ~8 ms). The node's FBO
+  is never cleared between frames, so any "did it render" test must zero the texture first.
+  `PresetPlaylist`, `DynLib` and `ProjectMApi` are unit-tested — the last through two fake
+  projectM modules (`tests/pm_fake.c`, built as 4.1 and 4.2 into `build/test_modules/` so the
+  Windows installer, which packs every DLL beside the exe, does not ship them) — and
+  `tests/projectm_sigcheck.cpp`
+  is a compile-only object that `static_assert`s the 17 hand-written signatures against the real
+  headers wherever they are installed (**add a `SIGCHECK` line and a `pm_fake.c` no-op with every
+  new binding**); the inert path + playlist write-back are always `gl_smoke`-checked, and the
+  render / GL-state / burn checks run only where the library is installed (they print SKIP in CI).
 - **Image Streamer / Kaleidoscope** — `ImageStreamerNode` (`src/modules/ImageStreamerNode.h`,
   header-only) loads a still image (a new **Image** `AssetType`, the fifth Assets tab) via the
   GL-free `gfx/ImageLoader` (an `stb_image` wrapper mirroring `VideoDecoder`, rows flipped
@@ -265,8 +308,11 @@ shaders by CWD-relative path, each package launches the app with `shaders/` as t
   live in the GL-free `core/PathUtil.h`.
 - **Assets / media library** — the GL-free `core/AssetLibrary` is a per-project media
   library: each `Asset` is a stable, unique, never-reused `id` + an `AssetType`
-  (Audio/Video/Midi/Mesh/Image, the five tabs; `Image` is appended = 4, so the codec's
-  type int stays backward-compatible) + an editable `label` and file `path`. It is owned
+  (Audio/Video/Midi/Mesh/Image/Preset, the six tabs; new types are appended — `Image` = 4,
+  `Preset` = 5 — so the codec's type int stays backward-compatible; an unknown FUTURE type int
+  is carried through a load/save untouched rather than clamped onto a known type — it shows in
+  no tab — which is safe because nothing indexes an array by an asset's own type) + an editable
+  `label` and file `path`. It is owned
   by `Graph` (`graph.assets()`, cleared by `Graph::clear()`) and persisted through
   `ProjectFile` as `asset <id> <type>` / `alabel` / `apath` lines (the two free-text fields
   get their own lines because the codec's `escape()` guards only `\`/`\n`, not spaces; ids
@@ -276,9 +322,9 @@ shaders by CWD-relative path, each package launches the app with `shaders/` as t
   A `String` input flagged `assetBacked` (an `AssetType`, set by `Node::addAssetInput`) renders
   in the editor as the text field plus a ▾ picker (the deferred `NodePopup`) listing
   `graph.assets().byType(type)`; selecting copies the asset's `path` into the field (copy-path,
-  no live binding — no node/eval/`.oss` change). The five media inputs use it: Audio Player,
-  Video Player, Mesh Loader, MIDI File, and the Drum Machine's four voices. The
-  library + codec are unit-tested in `core_tests`; the panel/dialog are app-only (no headless test).
+  no live binding — no node/eval/`.oss` change). The six media inputs use it: Audio Player,
+  Video Player, Mesh Loader, MIDI File, the Drum Machine's four voices, and projectM's `preset`.
+  The library + codec are unit-tested in `core_tests`; the panel/dialog are app-only (no headless test).
   Each `Asset` also carries `tags`; the library holds a `tagColors_` registry (tag → `glm::vec4`,
   default hue from the tag-name hash via `core/ColorHsv.h`). `ui/AssetsPanel` renders a Tags column
   of colored chips + a per-tab tag-filter toolbar (`tagsForType`; left-click toggles an OR filter,
@@ -319,6 +365,11 @@ shaders by CWD-relative path, each package launches the app with `shaders/` as t
   Two location prefs (`projectsDir`, `assetLibraryDir`) seed the file dialogs (project dialogs default
   to the former; library + per-asset media + remap dialogs to the latter) via a new `defaultPath` arg
   on `ui/FileDialog` (+ a `pickFolderDialog`); set in the Preferences **Locations** tab.
+  The same tab holds the projectM node's `projectMLibraryPath` (a file, picked with no extension
+  filter because the Linux runtime file is `libprojectM-4.so.4`) and `projectMTexturesDir`, plus the
+  loader's status line and hints (restart needed; preference path tried but another install loaded).
+  `parsePreferences` tolerates CRLF line endings (a trailing `\r` used to survive on every
+  rest-of-line value).
 - **MIDI sync** — the GL-free `core/MidiClock` holds the Beat Clock protocol math (a
   `BeatClockReader` deriving tempo/position/play from timestamped 24-PPQN ticks + Start/Stop/
   Continue + Song Position, plus SPP/message helpers; unit-tested). The app-level

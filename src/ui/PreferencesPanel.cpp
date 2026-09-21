@@ -1,6 +1,8 @@
 #include "ui/PreferencesPanel.h"
 #include "core/Preferences.h"
 #include "ui/FileDialog.h"
+#include "core/PathUtil.h"
+#include "gfx/ProjectMApi.h"
 #include <imgui.h>
 #include <soundio/soundio.h>
 #include <RtMidi.h>
@@ -144,6 +146,41 @@ void PreferencesPanel::draw(Preferences& prefs, const std::function<void()>& onC
             };
             folderRow("Projects folder",      prefs.projectsDir);
             folderRow("Asset library folder", prefs.assetLibraryDir);
+            ImGui::Separator();
+            ImGui::TextUnformatted("projectM (optional)");
+            {   // the shared library: a file, not a folder. Buttons come BEFORE the path so a long
+                // path can never push them off the window; the path wraps on its own line.
+                std::string& lib = prefs.projectMLibraryPath;
+                ImGui::TextUnformatted("projectM library");
+                ImGui::SameLine(160.0f);
+                ImGui::PushID("pmlib");
+                if (ImGui::SmallButton("Browse...")) {
+                    // No extension filter: the Linux runtime file is libprojectM-4.so.4 (extension
+                    // ".4"), which a "so" filter would hide -- and that is the file to pick.
+                    std::string picked = openFileDialog("projectM library", "Shared library", {}, parentDir(lib));
+                    if (!picked.empty()) { lib = picked; if (onChange) onChange(); }
+                }
+                ImGui::SameLine();
+                if (ImGui::SmallButton("Clear")) { lib.clear(); if (onChange) onChange(); }
+                ImGui::PopID();
+                ImGui::PushTextWrapPos(0.0f);
+                ImGui::TextDisabled("%s", lib.empty() ? "(search the usual places)" : lib.c_str());
+                ImGui::PopTextWrapPos();
+            }
+            folderRow("projectM textures", prefs.projectMTexturesDir);
+            const ProjectMApi& pm = ProjectMApi::instance();
+            ImGui::PushTextWrapPos(0.0f);                       // a rejection status carries a path
+            ImGui::TextDisabled("%s", pm.statusText().c_str());
+            // Covers set -> changed, set -> cleared and empty -> set alike: a restart would search again.
+            if (pm.available() && prefs.projectMLibraryPath != pm.loadedPrefPath())
+                ImGui::TextDisabled("Restart to load a different library.");
+            // The preference was tried and something else was loaded (e.g. it is too old and the
+            // search found a newer install): say so, or the user cannot tell their choice was ignored.
+            if (pm.available() && !prefs.projectMLibraryPath.empty() &&
+                prefs.projectMLibraryPath == pm.loadedPrefPath() &&
+                prefs.projectMLibraryPath != pm.loadedPath())
+                ImGui::TextDisabled("Preference path not used; loaded %s", pm.loadedPath().c_str());
+            ImGui::PopTextWrapPos();
             ImGui::EndTabItem();
         }
         ImGui::EndTabBar();

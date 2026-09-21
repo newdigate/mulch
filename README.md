@@ -81,6 +81,7 @@ shaders. Packaging helper files live in `packaging/{linux,macos,windows}/`.
 | **Image Sequencer** | play a folder of images in sequence: one every `duration` seconds, or every `beat length` beats when `sync` is on, with an optional `fade duration` cross-dissolve between them; the next image is prefetched on a background thread so transitions stay smooth. Pick the folder from your Image assets' folders |
 | **Kaleidoscope** | fold any texture into a mirrored kaleidoscopic pattern: `segments`, `rotation` (wire an LFO to spin), `zoom`, `center` |
 | **HSV Adjust** | shift the hue (turns) and scale saturation & brightness of a texture; wire `hue` to an LFO to cycle colours |
+| **projectM** *(optional)* | Milkdrop-compatible audio visualizer → texture: `left`/`right` audio in, a `preset` (.milk) picked from the **Presets** assets tab, **prev / next / random** buttons plus a bar-synced `sync` step, and a `burn` gate to composite a texture into the scene. Only appears in the Add menu when `libprojectM-4` is found at runtime — see [projectM (optional)](#projectm-optional) below |
 | **Video** | play a video file → texture + audio; signed `rate` (negative = reverse), variable speed, loop |
 | **Mix** | blend two textures by a factor |
 | **Compositor** | blend two textures with a selectable operator (23 modes): add/subtract/difference/exclusion, multiply/screen/overlay, darken/lighten, dodge/burn, hard/soft light, divide/average, the HSL hue/saturation/color/luminosity, and bitwise and/or/xor; plus `opacity` |
@@ -151,7 +152,7 @@ picker appears when MTC is selected). MTC carries position, not tempo.
 ### Assets
 
 The toolbar **View** menu's **Assets** item opens an Assets window: a per-project media library with
-**Audio / Video / MIDI / 3D** tabs. Each tab is a table of media files — add a file, edit its
+**Audio / Video / Image / MIDI / 3D / Presets** tabs. Each tab is a table of media files — add a file, edit its
 label and path inline, pick a path with the **...** Browse button (a native file dialog), or remove it.
 **Add files…** opens a native multi-select dialog (filtered to the tab's media type) and adds every
 chosen file at once. Each file
@@ -173,6 +174,47 @@ Library**, **Save** / **Save As** a portable `.osslib`, and **Remap Directory** 
 across every asset path (handy when a library was built on another machine). A project stores a
 *reference* to its library and loads it on open. Set a default **Projects** folder and **Asset
 library** folder under Preferences → Locations to make the file dialogs open where you keep things.
+
+## projectM (optional)
+
+The **projectM** node (Texture menu) runs the Milkdrop-compatible
+[projectM](https://github.com/projectM-visualizer/projectm) visualizer on the graph's audio. It is
+optional: the app loads `libprojectM-4` at runtime if it finds it, and the node only appears in the
+add-node menu when it does. Nothing is linked or bundled.
+
+It needs **projectM 4.2 or later**. 4.2 is not released yet (the latest release, 4.1.7, cannot
+render into a framebuffer), so build it from source. This commit is the one the node was developed
+against:
+
+```bash
+git clone --recurse-submodules https://github.com/projectM-visualizer/projectm.git && cd projectm && git checkout 1e7ef7803b69024d1e0656705670adda2ffac817 && git submodule update --init --recursive
+```
+
+```bash
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX="$HOME/.local" -DBUILD_SHARED_LIBS=ON && cmake --build build -j && cmake --install build
+```
+
+The app looks in your own `~/.local/lib` first, then `/usr/local/lib` and `/opt/homebrew/lib`; on
+Linux it also asks the system loader by bare name (the ld.so cache and the usual library paths),
+which is skipped on macOS because there a bare name is resolved from the current working directory
+first. On Windows put `projectM-4.dll` beside the app or on `PATH`. For anywhere else, set
+**Preferences → Locations → projectM library** — it must be an absolute path. The line underneath
+shows what the loader found: the version it loaded, the path of any library it rejected, or
+`could not load <path>: …` for a library that was found but would not load (a wrong architecture,
+or a missing dependency of its own). Homebrew's `projectm` formula is 3.1.12 and will not work.
+
+Presets are not included. Add `.milk` files in **View → Assets → Presets** and pick one on the
+node; **prev / next / random** and the bar-synced `sync` step through the other presets in the same
+folder. Milkdrop texture packs can be pointed to with **projectM textures** in the same
+Preferences tab.
+
+Changing preset is not free: projectM compiles each preset when it is loaded, on the same thread
+that draws the app. Milkdrop-2 presets typically take 0.1-0.5 s, so a preset change (by hand, by
+button, or on a `sync` bar boundary) briefly stalls the picture; older Milkdrop-1 presets load in a
+few milliseconds. A smooth `blend` also renders two presets for its duration.
+
+projectM is LGPL-2.1. This app never links against it and never distributes it: the library is
+loaded at runtime from your own installation.
 
 ## Test
 

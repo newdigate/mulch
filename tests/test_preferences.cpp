@@ -137,3 +137,40 @@ TEST_CASE("Preferences without the new dir lines parse to empty") {
     CHECK(q.projectsDir.empty());
     CHECK(q.assetLibraryDir.empty());
 }
+
+TEST_CASE("Preferences round-trips the projectM library path + textures dir") {
+    Preferences p;
+    p.projectMLibraryPath = "/Users/me/.local/lib/libprojectM-4.dylib";
+    p.projectMTexturesDir = "/Volumes/media/milkdrop textures";     // spaces survive (rest-of-line)
+    Preferences q;
+    REQUIRE(parsePreferences(serializePreferences(p), q));
+    CHECK(q.projectMLibraryPath == "/Users/me/.local/lib/libprojectM-4.dylib");
+    CHECK(q.projectMTexturesDir == "/Volumes/media/milkdrop textures");
+}
+
+TEST_CASE("Preferences without the projectM lines parse to empty") {
+    Preferences q;
+    REQUIRE(parsePreferences("oss-prefs 1\naudio-buffer 200\n", q));
+    CHECK(q.projectMLibraryPath.empty());
+    CHECK(q.projectMTexturesDir.empty());
+}
+
+TEST_CASE("Preferences parses hand-written projectM lines, including a Windows path with spaces") {
+    Preferences q;
+    REQUIRE(parsePreferences("oss-prefs 1\n"
+                             "pmlib C:\\Program Files\\projectM\\projectM-4.dll\n"
+                             "pmtextures /m/milkdrop tex\n", q));
+    CHECK(q.projectMLibraryPath == "C:\\Program Files\\projectM\\projectM-4.dll");
+    CHECK(q.projectMTexturesDir == "/m/milkdrop tex");
+}
+
+TEST_CASE("Preferences tolerates CRLF line endings (no trailing CR left on a path)") {
+    Preferences q;
+    REQUIRE(parsePreferences("oss-prefs 1\r\n"
+                             "pmlib /opt/pm/libprojectM-4.so.4\r\n"
+                             "projectsdir /Users/me/My Projects\r\n"
+                             "audio-buffer 200\r\n", q));
+    CHECK(q.projectMLibraryPath == "/opt/pm/libprojectM-4.so.4");
+    CHECK(q.projectsDir == "/Users/me/My Projects");
+    CHECK(q.audioBufferMs == 200);
+}

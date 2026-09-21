@@ -330,6 +330,10 @@ void AssetsPanel::draw(AssetLibrary& lib, bool* open, const std::string& mediaDi
             drawTab(lib, AssetType::Mesh, "3D model", {"obj", "gltf", "glb"});
             ImGui::EndTabItem();
         }
+        if (ImGui::BeginTabItem("Presets")) {
+            drawTab(lib, AssetType::Preset, "Milkdrop preset", {"milk"});
+            ImGui::EndTabItem();
+        }
         ImGui::EndTabBar();
     }
     ImGui::End();

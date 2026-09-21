@@ -224,6 +224,7 @@ set(APP_SOURCES
   src/core/Oscilloscope.cpp
   src/core/PitchGraph.cpp
   src/core/VertexTrail.cpp
+  src/core/DynLib.cpp
   src/audio/FFT.cpp
   src/audio/SignalGenerator.cpp
   src/audio/AcidVoice.cpp
@@ -237,6 +238,7 @@ set(APP_SOURCES
   src/gfx/VideoEncoder.cpp
   src/gfx/TextGeometry.cpp
   src/gfx/ImageLoader.cpp
+  src/gfx/ProjectMApi.cpp
   src/modules/AudioInputNode.cpp
   src/modules/AudioPlayerNode.cpp
   src/modules/RecorderNode.cpp
@@ -249,6 +251,7 @@ set(APP_SOURCES
   src/modules/ShadedRenderNode.cpp
   src/modules/SpectrographNode.cpp
   src/modules/WireframeNode.cpp
+  src/modules/ProjectMNode.cpp
   src/ui/NodeEditorPanel.cpp
   src/ui/TransportBar.cpp
   src/ui/AutomationPanel.cpp
@@ -271,7 +274,7 @@ target_include_directories(shader_streamer PRIVATE src ${libsoundio_SOURCE_DIR} 
 target_compile_definitions(shader_streamer PRIVATE GLFW_INCLUDE_NONE TINYGLTF_ENABLE_DRACO
   OSS_DEFAULT_FONT="${OSS_DEFAULT_FONT}")
 target_link_libraries(shader_streamer PRIVATE ui_thirdparty glad_gl41 glm::glm libsoundio_static rtmidi
-  tinyobjloader meshoptimizer draco::draco PkgConfig::FFMPEG nfd)
+  tinyobjloader meshoptimizer draco::draco PkgConfig::FFMPEG nfd ${CMAKE_DL_LIBS})
 
 # --- Tests (GL-free core only) ---
 enable_testing()
@@ -330,6 +333,11 @@ add_executable(core_tests
   tests/test_image_sequence.cpp
   tests/test_panel_slot.cpp
   tests/test_spirograph.cpp
+  tests/test_dynlib.cpp
+  tests/test_preset_playlist.cpp
+  tests/test_projectm_api.cpp
+  src/gfx/ProjectMApi.cpp
+  src/core/DynLib.cpp
   src/core/Node.cpp
   src/core/Graph.cpp
   src/core/AutomationStore.cpp
@@ -348,8 +356,44 @@ add_executable(core_tests
   src/audio/AcidVoice.cpp
 )
 target_include_directories(core_tests PRIVATE src ${stb_SOURCE_DIR})
-target_link_libraries(core_tests PRIVATE glm::glm doctest::doctest)
+target_link_libraries(core_tests PRIVATE glm::glm doctest::doctest ${CMAKE_DL_LIBS})
 add_test(NAME core_tests COMMAND core_tests)
+
+# Two fake "projectM" modules (4.1 and 4.2) so core_tests can exercise ProjectMApi's version gate,
+# rejection message and candidate fall-through without a real projectM install. Test-only.
+foreach(pm_minor 1 2)
+  add_library(pm_fake_4${pm_minor} MODULE tests/pm_fake.c)
+  target_compile_definitions(pm_fake_4${pm_minor} PRIVATE PM_FAKE_MINOR=${pm_minor})
+  set_target_properties(pm_fake_4${pm_minor} PROPERTIES PREFIX ""
+    LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/test_modules"
+    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/test_modules")   # keep test DLLs out of the packaged app dir
+endforeach()
+add_dependencies(core_tests pm_fake_41 pm_fake_42)
+target_compile_definitions(core_tests PRIVATE
+  OSS_PM_FAKE_41="$<TARGET_FILE:pm_fake_41>"
+  OSS_PM_FAKE_42="$<TARGET_FILE:pm_fake_42>")
+
+# Compile-only guard: static_asserts ProjectMApi's hand-written signatures against the real
+# projectM headers. Built only where headers that declare the 4.2 API are installed; never linked
+# or shipped. It must never break a build: older headers (e.g. a distro libprojectm-4-dev 4.1)
+# would be a hard compile error, so they are detected and skipped.
+find_path(PROJECTM_INCLUDE_DIR projectM-4/core.h
+  HINTS "$ENV{HOME}/.local/include" /usr/local/include /opt/homebrew/include)
+mark_as_advanced(PROJECTM_INCLUDE_DIR)
+set(_pm_has_42 "")
+if(PROJECTM_INCLUDE_DIR AND EXISTS "${PROJECTM_INCLUDE_DIR}/projectM-4/render_opengl.h")
+  # One discriminator is enough: all the 4.2-only functions landed together.
+  file(STRINGS "${PROJECTM_INCLUDE_DIR}/projectM-4/render_opengl.h" _pm_has_42
+       REGEX "projectm_opengl_render_frame_fbo")
+endif()
+if(_pm_has_42)
+  message(STATUS "projectM headers: ${PROJECTM_INCLUDE_DIR} (signature check enabled)")
+  add_library(projectm_sigcheck OBJECT tests/projectm_sigcheck.cpp)
+  target_include_directories(projectm_sigcheck PRIVATE src ${PROJECTM_INCLUDE_DIR})
+  add_dependencies(core_tests projectm_sigcheck)
+elseif(PROJECTM_INCLUDE_DIR)
+  message(STATUS "projectM headers at ${PROJECTM_INCLUDE_DIR} predate 4.2 - signature check skipped")
+endif()
 
 # Headless GL render smoke test: renders the graph offscreen and reads back pixels.
 # Requires a display/WindowServer (works locally on macOS; may be skipped in headless CI).
@@ -364,6 +408,7 @@ add_executable(gl_smoke
   src/core/MidiFile.cpp
   src/core/PitchGraph.cpp
   src/core/VertexTrail.cpp
+  src/core/DynLib.cpp
   src/gfx/GLUtil.cpp
   src/gfx/Framebuffer.cpp
   src/gfx/FullscreenPass.cpp
@@ -373,6 +418,7 @@ add_executable(gl_smoke
   src/gfx/VideoEncoder.cpp
   src/gfx/TextGeometry.cpp
   src/gfx/ImageLoader.cpp
+  src/gfx/ProjectMApi.cpp
   src/modules/MeshLoaderNode.cpp
   src/modules/RecorderNode.cpp
   src/modules/ShadedRenderNode.cpp
@@ -380,6 +426,7 @@ add_executable(gl_smoke
   src/modules/TextNode.cpp
   src/modules/VideoPlayerNode.cpp
   src/modules/WireframeNode.cpp
+  src/modules/ProjectMNode.cpp
   src/modules/AudioPlayerNode.cpp
   src/audio/FFT.cpp
   src/audio/SignalGenerator.cpp
@@ -390,7 +437,7 @@ target_include_directories(gl_smoke PRIVATE src ${tinygltf_SOURCE_DIR}
   ${stb_SOURCE_DIR} ${earcut_SOURCE_DIR}/include ${CMAKE_BINARY_DIR})
 target_compile_definitions(gl_smoke PRIVATE GLFW_INCLUDE_NONE TINYGLTF_ENABLE_DRACO
   OSS_DEFAULT_FONT="${OSS_DEFAULT_FONT}")
-target_link_libraries(gl_smoke PRIVATE glad_gl41 glfw glm::glm OpenGL::GL tinyobjloader meshoptimizer draco::draco PkgConfig::FFMPEG)
+target_link_libraries(gl_smoke PRIVATE glad_gl41 glfw glm::glm OpenGL::GL tinyobjloader meshoptimizer draco::draco PkgConfig::FFMPEG ${CMAKE_DL_LIBS})
 add_test(NAME gl_smoke COMMAND gl_smoke WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
 
 # Copy shaders next to the executable so the app can be run from the build dir too

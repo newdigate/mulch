@@ -21,6 +21,8 @@ struct Preferences {
     int         syncFrameRate = 3; // MTC send rate: 0=24 1=25 2=29.97df 3=30 (receive auto-detects)
     std::string projectsDir;       // default dir for project Open/Save dialogs ("" = OS default)
     std::string assetLibraryDir;   // default dir for asset-library + media dialogs ("" = OS default)
+    std::string projectMLibraryPath; // libprojectM-4 shared library to load ("" = search the usual places)
+    std::string projectMTexturesDir; // extra Milkdrop texture search folder for the projectM node ("" = none)
 
     bool midiInputEnabled(const std::string& name) const;
     void setMidiInputEnabled(const std::string& name, bool on);   // idempotent add/remove

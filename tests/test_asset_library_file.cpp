@@ -39,7 +39,6 @@ TEST_CASE("parseLibrary rejects a bad header and leaves the library untouched") 
 }
 
 TEST_CASE("AssetType::Image is the fifth type and round-trips the codec") {
-    CHECK(kAssetTypeCount == 5);
     CHECK((int)AssetType::Image == 4);
 
     AssetLibrary lib;
@@ -53,4 +52,38 @@ TEST_CASE("AssetType::Image is the fifth type and round-trips the codec") {
     CHECK(a->type == AssetType::Image);
     CHECK(a->label == "Logo");
     CHECK(a->path == "/m/img/logo.png");
+}
+
+TEST_CASE("AssetType::Preset is the sixth type and round-trips the codec") {
+    CHECK(kAssetTypeCount == 6);
+    CHECK((int)AssetType::Preset == 5);       // appended, so older files' type ints are unchanged
+
+    AssetLibrary lib;
+    int i = lib.add(AssetType::Preset, "Cosmic Dust", "/m/presets/Geiss - Cosmic Dust.milk");
+
+    AssetLibrary out;
+    REQUIRE(parseLibrary(serializeLibrary(lib), out));
+    const Asset* a = out.find(i);
+    REQUIRE(a != nullptr);
+    CHECK(a->type == AssetType::Preset);
+    CHECK(a->path == "/m/presets/Geiss - Cosmic Dust.milk");
+    CHECK(out.byType(AssetType::Preset).size() == 1);
+    CHECK(out.byType(AssetType::Image).empty());
+}
+
+TEST_CASE("An unknown (future) asset type int is preserved verbatim; a negative one clamps to 0") {
+    AssetLibrary out;
+    REQUIRE(parseLibrary("oss-assetlib 1\n"
+                         "asset 7 99\napath /m/x.future\n"
+                         "asset 8 -3\napath /m/y.neg\n", out));
+    const Asset* future = out.find(7);
+    const Asset* neg    = out.find(8);
+    REQUIRE(future != nullptr);
+    REQUIRE(neg != nullptr);
+    CHECK(future->path == "/m/x.future");             // the asset survives
+    CHECK((int)future->type == 99);                   // not clamped onto a known type
+    CHECK(neg->type == AssetType::Audio);             // negative clamps to 0
+    for (int t = 0; t < kAssetTypeCount; ++t)         // it shows up in no tab
+        for (const Asset* a : out.byType((AssetType)t)) CHECK(a->id != 7);
+    CHECK(serializeLibrary(out).find("asset 7 99") != std::string::npos);   // a save writes it back
 }
