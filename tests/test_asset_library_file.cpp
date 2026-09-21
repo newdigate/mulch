@@ -39,7 +39,7 @@ TEST_CASE("parseLibrary rejects a bad header and leaves the library untouched") 
 }
 
 TEST_CASE("AssetType::Image is the fifth type and round-trips the codec") {
-    CHECK(kAssetTypeCount == 5);
+    CHECK(kAssetTypeCount == 6);
     CHECK((int)AssetType::Image == 4);
 
     AssetLibrary lib;
@@ -53,4 +53,20 @@ TEST_CASE("AssetType::Image is the fifth type and round-trips the codec") {
     CHECK(a->type == AssetType::Image);
     CHECK(a->label == "Logo");
     CHECK(a->path == "/m/img/logo.png");
+}
+
+TEST_CASE("AssetType::Preset is the sixth type and round-trips the codec") {
+    CHECK((int)AssetType::Preset == 5);       // appended, so older files' type ints are unchanged
+
+    AssetLibrary lib;
+    int i = lib.add(AssetType::Preset, "Cosmic Dust", "/m/presets/Geiss - Cosmic Dust.milk");
+
+    AssetLibrary out;
+    REQUIRE(parseLibrary(serializeLibrary(lib), out));
+    const Asset* a = out.find(i);
+    REQUIRE(a != nullptr);
+    CHECK(a->type == AssetType::Preset);
+    CHECK(a->path == "/m/presets/Geiss - Cosmic Dust.milk");
+    CHECK(out.byType(AssetType::Preset).size() == 1);
+    CHECK(out.byType(AssetType::Image).empty());
 }
