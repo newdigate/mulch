@@ -88,7 +88,12 @@ node uses. Contains no GL headers (GL handles cross as `uint32_t`).
   2. The bare library name via the system loader: `libprojectM-4.dylib`,
      `libprojectM-4.so.4`, `projectM-4.dll`.
   3. `/usr/local/lib`, `/opt/homebrew/lib`, `~/.local/lib`.
-- **Lifetime:** loaded once at startup, after Preferences. Never unloaded while the app runs.
+- **Binding is all-or-nothing:** a candidate library is bound into a local function table that
+  is adopted only when the version gate and every symbol pass, so a rejected (and then closed)
+  library never leaves dangling pointers in the live table.
+- **Lifetime:** loaded once at startup, after Preferences. Never unloaded: the singleton is
+  deliberately leaked, because a static object's destructor would `dlclose` a GL-touching
+  library during static destruction, after the GL contexts are gone (a classic crash-at-exit).
   If the preference is set later, the app retries only when nothing is loaded yet; otherwise
   the Preferences panel shows "restart to apply".
 

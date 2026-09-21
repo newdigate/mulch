@@ -789,6 +789,9 @@ TEST_CASE("ProjectMApi: a real library that is not projectM is rejected by name"
     CHECK_FALSE(api.loadFrom({kSystemLibPath}));
     CHECK_FALSE(api.available());
     CHECK(api.statusText() == "missing symbol projectm_get_version_components");
+    CHECK(api.getVersionComponents == nullptr);      // a rejected library leaves the table empty
+    CHECK(api.create == nullptr);
+    CHECK(api.renderFrameFbo == nullptr);
 }
 ```
 
@@ -837,21 +840,10 @@ bool isSupportedProjectMVersion(int major, int minor);
 // the system loader, then well-known lib directories (non-Windows; `homeDir` may be empty).
 std::vector<std::string> projectMCandidatePaths(const std::string& prefPath, const std::string& homeDir);
 
-class ProjectMApi {
-public:
-    static ProjectMApi& instance();                // the app-wide table
-
-    // Try each candidate until one opens, passes the version gate and resolves every symbol.
-    // A no-op returning true once available. The library is never unloaded afterwards.
-    bool loadFrom(const std::vector<std::string>& candidates);
-    bool load(const std::string& prefPath);        // loadFrom(projectMCandidatePaths(prefPath, $HOME))
-
-    bool available() const { return available_; }
-    const std::string& statusText()  const { return status_; }       // why not / "projectM 4.2.0"
-    const std::string& versionText() const { return version_; }      // "4.2.0"
-    const std::string& loadedPath()  const { return loadedPath_; }
-
-    // --- the resolved functions (valid only while available()) ---
+// The resolved functions. A plain copyable struct so a candidate library is bound into a LOCAL
+// table and adopted only on success: a rejected library is closed without ever leaving dangling
+// pointers in the live table. All null until ProjectMApi::available().
+struct ProjectMFunctions {
     void     (*getVersionComponents)(int* major, int* minor, int* patch) = nullptr;
     PmHandle (*create)(PmLoadProc loadProc, void* userData) = nullptr;   // ..._with_opengl_load_proc
     void     (*destroy)(PmHandle) = nullptr;
@@ -869,9 +861,26 @@ public:
     void     (*pcmAddFloat)(PmHandle, const float* samples, unsigned int countPerChannel, int channels) = nullptr;
     void     (*renderFrameFbo)(PmHandle, std::uint32_t framebufferId) = nullptr;
     void     (*burnTexture)(PmHandle, std::uint32_t texture, int left, int top, int width, int height) = nullptr;
+};
+
+class ProjectMApi : public ProjectMFunctions {
+public:
+    static ProjectMApi& instance();                // the app-wide table (deliberately leaked; see .cpp)
+
+    // Try each candidate until one opens, passes the version gate and resolves every symbol.
+    // A no-op returning true once available. The library is never unloaded afterwards.
+    bool loadFrom(const std::vector<std::string>& candidates);
+    bool load(const std::string& prefPath);        // loadFrom(projectMCandidatePaths(prefPath, $HOME))
+
+    bool available() const { return available_; }
+    const std::string& statusText()  const { return status_; }       // why not / "projectM 4.2.0"
+    const std::string& versionText() const { return version_; }      // "4.2.0"
+    const std::string& loadedPath()  const { return loadedPath_; }
 
 private:
-    bool bind(DynLib& lib, std::string& why);      // version gate + resolve all; `why` on failure
+    // Version gate + resolve every symbol from `lib` into `fns`. On failure `why` says what was
+    // wrong and `fns` must be discarded (the caller closes `lib`).
+    static bool bind(const DynLib& lib, ProjectMFunctions& fns, std::string& version, std::string& why);
 
     DynLib      lib_;
     bool        available_ = false;
@@ -884,7 +893,7 @@ private:
 
 - [ ] **Step 5: Write `src/gfx/ProjectMApi.cpp`**
 
-If Task 1 Step 3 recorded a different library file name, use it in `platformLibraryNames()`.
+If Task 1 Step 3 recorded a different library file name, use it in `platformLibraryNames()`. (Task 1 was run on the development Mac: the installed files are `libprojectM-4.dylib` → `libprojectM-4.4.dylib` → `libprojectM-4.4.2.0.dylib`, matching the names below, and all 17 symbols resolved below are exported.)
 
 ```cpp
 #include "gfx/ProjectMApi.h"
@@ -925,8 +934,12 @@ std::vector<std::string> projectMCandidatePaths(const std::string& prefPath, con
 }
 
 ProjectMApi& ProjectMApi::instance() {
-    static ProjectMApi api;
-    return api;
+    // Deliberately leaked. A function-local static OBJECT would run ~DynLib (dlclose) during
+    // static destruction -- after main returns and the GL contexts are gone -- and unloading a
+    // GL-touching library at that point is the classic plugin crash-at-exit. The projectM library
+    // is never unloaded; the OS reclaims it with the process.
+    static ProjectMApi* api = new ProjectMApi();
+    return *api;
 }
 
 bool ProjectMApi::load(const std::string& prefPath) {
@@ -940,21 +953,24 @@ bool ProjectMApi::loadFrom(const std::vector<std::string>& candidates) {
     for (const std::string& path : candidates) {
         DynLib lib;
         if (!lib.open(path)) continue;
-        std::string why;
-        if (bind(lib, why)) {
-            lib_        = std::move(lib);
+        ProjectMFunctions fns;                                    // bound locally; adopted only on success
+        std::string version, why;
+        if (bind(lib, fns, version, why)) {
+            static_cast<ProjectMFunctions&>(*this) = fns;
+            lib_        = std::move(lib);                         // keeps the handle open: fns stay valid
+            version_    = version;
             loadedPath_ = path;
             available_  = true;
             status_     = "projectM " + version_;
             return true;
         }
-        if (rejection.empty()) rejection = why;
+        if (rejection.empty()) rejection = why;                   // `lib` closes here; `fns` is dropped
     }
     status_ = rejection.empty() ? std::string("projectM not found") : rejection;
     return false;
 }
 
-bool ProjectMApi::bind(DynLib& lib, std::string& why) {
+bool ProjectMApi::bind(const DynLib& lib, ProjectMFunctions& f, std::string& version, std::string& why) {
     bool ok = true;
     auto resolve = [&](auto& fn, const char* name) {
         if (!ok) return;
@@ -963,38 +979,37 @@ bool ProjectMApi::bind(DynLib& lib, std::string& why) {
     };
 
     // The version first, so an older library reports its version rather than a missing symbol.
-    resolve(getVersionComponents, "projectm_get_version_components");
+    resolve(f.getVersionComponents, "projectm_get_version_components");
     if (!ok) return false;
     int major = 0, minor = 0, patch = 0;
-    getVersionComponents(&major, &minor, &patch);
-    version_ = std::to_string(major) + "." + std::to_string(minor) + "." + std::to_string(patch);
+    f.getVersionComponents(&major, &minor, &patch);
+    version = std::to_string(major) + "." + std::to_string(minor) + "." + std::to_string(patch);
     if (!isSupportedProjectMVersion(major, minor)) {
-        why = "found projectM " + version_ + ", needs 4.2+";
+        why = "found projectM " + version + ", needs 4.2+";
         return false;
     }
 
-    resolve(create,                  "projectm_create_with_opengl_load_proc");
-    resolve(destroy,                 "projectm_destroy");
-    resolve(loadPresetFile,          "projectm_load_preset_file");
-    resolve(setWindowSize,           "projectm_set_window_size");
-    resolve(setPresetLocked,         "projectm_set_preset_locked");
-    resolve(setSoftCutDuration,      "projectm_set_soft_cut_duration");
-    resolve(setBeatSensitivity,      "projectm_set_beat_sensitivity");
-    resolve(setMeshSize,             "projectm_set_mesh_size");
-    resolve(setFrameTime,            "projectm_set_frame_time");
-    resolve(setFps,                  "projectm_set_fps");
-    resolve(setAspectCorrection,     "projectm_set_aspect_correction");
-    resolve(setTextureSearchPaths,   "projectm_set_texture_search_paths");
-    resolve(setSwitchFailedCallback, "projectm_set_preset_switch_failed_event_callback");
-    resolve(pcmAddFloat,             "projectm_pcm_add_float");
-    resolve(renderFrameFbo,          "projectm_opengl_render_frame_fbo");
-    resolve(burnTexture,             "projectm_opengl_burn_texture");
+    resolve(f.create,                  "projectm_create_with_opengl_load_proc");
+    resolve(f.destroy,                 "projectm_destroy");
+    resolve(f.loadPresetFile,          "projectm_load_preset_file");
+    resolve(f.setWindowSize,           "projectm_set_window_size");
+    resolve(f.setPresetLocked,         "projectm_set_preset_locked");
+    resolve(f.setSoftCutDuration,      "projectm_set_soft_cut_duration");
+    resolve(f.setBeatSensitivity,      "projectm_set_beat_sensitivity");
+    resolve(f.setMeshSize,             "projectm_set_mesh_size");
+    resolve(f.setFrameTime,            "projectm_set_frame_time");
+    resolve(f.setFps,                  "projectm_set_fps");
+    resolve(f.setAspectCorrection,     "projectm_set_aspect_correction");
+    resolve(f.setTextureSearchPaths,   "projectm_set_texture_search_paths");
+    resolve(f.setSwitchFailedCallback, "projectm_set_preset_switch_failed_event_callback");
+    resolve(f.pcmAddFloat,             "projectm_pcm_add_float");
+    resolve(f.renderFrameFbo,          "projectm_opengl_render_frame_fbo");
+    resolve(f.burnTexture,             "projectm_opengl_burn_texture");
     return ok;
 }
 
 } // namespace oss
 ```
-
 
 - [ ] **Step 6: Verify it passes**
 
