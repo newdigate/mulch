@@ -232,9 +232,11 @@ parentDir(preset))`, rescanned only when that folder changes.
    `projectm_load_preset_file(path, blend)`.
 4. **Audio.** Interleave the two `AudioRef` blocks into a reusable LRLR scratch buffer →
    `projectm_pcm_add_float(buf, frames, PROJECTM_STEREO)`.
-5. **Burn.** If `burn > 0.5` and `texture in` is valid →
-   `projectm_opengl_burn_texture(tex, 0, 0, w, h)`.
-6. **Render.** Inside a `GLStateGuard`: `projectm_opengl_render_frame_fbo(fbo_.id())`.
+5. **Burn.** If `burn > 0.5` and `texture in` is valid: viewport = canvas, straight-alpha
+   blending on, `projectm_opengl_burn_texture(tex, 0, 0, w, h)`, blending off again.
+6. **Render.** `projectm_opengl_render_frame_fbo(fbo_.id())`. Steps 5 and 6 share one
+   `GLStateGuard` scope that first resets BLEND / DEPTH_TEST / CULL_FACE / SCISSOR_TEST to GL's
+   defaults, because projectM renders from whatever state it is handed.
 7. **Publish** `TexRef{fbo_.texture(), w, h}` on output 0.
 
 **Timing.** The node accumulates `ctx.dt` and calls `projectm_set_frame_time` each frame, so
@@ -269,12 +271,27 @@ when either changes.
 **Accepted risk — in-process crashes.** A crash inside projectM (a bad preset, a GL driver
 fault) takes the app down. That is inherent to loading the library in-process.
 
-## Unknowns to settle during implementation
+## Unknowns — settled during implementation (first live run, 2026-09-21)
 
-- Whether `burn_texture` respects alpha. If it does, `burn` can later become an amount rather
-  than a gate.
-- Whether the burn needs a vertical flip (the API takes a negative height for that). A
-  `gl_smoke` check pins the orientation either way.
+- **Orientation: upright, no flip.** `CopyTexture`'s quad maps NDC y=+1 to v=1, i.e. the top row
+  of a bottom-up GL texture. The call stays `burnTexture(tex, 0, 0, w, h)`; `gl_smoke` pins it.
+- **Alpha: projectM does not decide — so the node does.** `ProjectM::BurnInTexture` →
+  `CopyTexture::Copy` binds a shader and draws; it sets **no blend state and no viewport**, so
+  both were inherited from whatever the previous node left. The first live run showed the burn
+  as a 6x29 px stamp in a corner because the caller's viewport was 33x44. The node now pins
+  the viewport to the canvas and burns with explicit **straight-alpha** blending
+  (`SRC_ALPHA, ONE_MINUS_SRC_ALPHA`; alpha channel `ONE, ONE_MINUS_SRC_ALPHA`): an opaque
+  texture replaces the canvas, a transparent one (a PNG logo) composites over it. `burn` stays
+  a gate in v1; an amount (constant-alpha blend) is now a small follow-up.
+- **The same inheritance applies to every projectM draw**, not just the burn: it sets nothing
+  of scissor, cull or depth. `GLStateGuard` protects our state from projectM; nothing protected
+  projectM from ours. The node therefore puts BLEND / DEPTH_TEST / CULL_FACE / SCISSOR_TEST
+  into GL's default (disabled) state inside each guard scope before calling projectM — the
+  state every standalone projectM host renders from — and the guard hands the caller's state
+  back afterwards. `gl_smoke` pins this with a hostile-incoming-state run.
+- **Measured** (Radeon Pro 560, 1280x720): first `evaluate` 81 ms (dlopen + create + preset
+  compile), steady state 4.2 ms/frame; no GL errors; projectM prints nothing to stderr; output
+  is deterministic run to run because the node drives projectM's clock from accumulated `dt`.
 
 ## Tests
 
@@ -329,8 +346,13 @@ fault) takes the app down. That is inherent to loading the library in-process.
   left on units 1..5 and `READ_FRAMEBUFFER` is unchanged. The check fails the test if that
   preset did not load (it would be vacuous), and was proven to fail when the guard's sampler
   clearing or read-framebuffer restore is removed.
-- **Burn:** a red Colour node on `texture in` with the gate high → red-dominant output; a
-  half-red / half-green fixture pins the orientation.
+- **Burn:** a texture whose top half is red and bottom half green, gate high → red above,
+  green below (pins visibility, full-canvas scaling and orientation). A second texture whose
+  bottom half is green with **alpha 0** must leave the lower canvas untouched (pins the
+  straight-alpha blend).
+- **Hostile incoming state:** with scissor (1x1 box), cull, depth test and a draw-nothing blend
+  func enabled before `evaluate`, the output is still widely lit and the caller gets exactly
+  that state back.
 - **Status:** after **next**, the status line shows `(2/3)`.
 
 **CI gap.** CI runners will not have projectM 4.2, so the render / burn / playlist checks run
@@ -365,5 +387,9 @@ locally only. Building projectM master in CI is possible later and is out of sco
   (extra context switch per frame, no burn, relies on a hidden backbuffer being readable).
 - **Touch waveforms** (`projectm_touch*`) as `x` / `y` / trigger ports.
 - **projectM's own playlist library** and beat-driven hard cuts (`hard_cut_*` parameters).
-- **Burn rectangle / amount** ports, once the alpha behaviour is known.
+- **Burn amount** (constant-alpha blend) — straightforward now that the node owns the blend
+  state. **Burn rectangle** ports need care: in projectM 4.2 `CopyTexture::Copy` writes the
+  translation into `translationMatrix[3][0..1]` but the vertex shader multiplies row-vector
+  style, so a non-zero `left`/`top` lands in `gl_Position.w` and perspective-skews the image
+  instead of moving it. The node passes `0, 0`, so it is unaffected today.
 - **Building projectM in CI** so the library-dependent `gl_smoke` checks run there.

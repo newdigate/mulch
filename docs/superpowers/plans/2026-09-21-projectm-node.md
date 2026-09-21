@@ -2079,6 +2079,37 @@ EOF
 
 ---
 
+#### Task 9 — what the first live run found (applied in the task's commits)
+
+- `kTestPreset` parsed and rendered; GL-state check (a), non-black (b) and the `(2/3)` status (c)
+  passed unchanged. Only the burn failed.
+- **Node bug:** projectM's burn sets no viewport, so it was scaled by the caller's (33x44 in the
+  test, arbitrary in the app). The node now sets `glViewport(0, 0, w, h)` before the burn. The burn
+  is **upright**; Step 4's flip was not needed.
+- **Same class, closed in a follow-up:** projectM sets no blend state for the burn and nothing of
+  scissor / cull / depth for any draw, so its output depended on what the previous node left. The
+  node now calls `enterForeignDefaults()` (disable BLEND / DEPTH_TEST / CULL_FACE / SCISSOR_TEST)
+  inside each guard scope and burns with explicit straight-alpha blending. New checks: (d2) a
+  half-transparent source must not overwrite the canvas; (f) a hostile incoming state must neither
+  corrupt the output nor be changed for the caller.
+- **A lesson about this node's tests:** check (f) as first written PASSED against the unfixed node
+  ("100% lit"). The node's FBO is never cleared between frames (the preset covers it every frame), so
+  when the hostile scissor clipped the render away entirely, the previous check's picture was still
+  in the texture. (f) now zeroes the canvas first; the unfixed node then reads "0.0% lit". Any future
+  "did it render" check on this node must clear the texture first.
+- `fDecay=0.98` needs ~140 frames to clear a burn below the test's threshold, so (d2) resets the
+  canvas with a hard-cut preset change (`c.milk`) and asserts the canvas is clean before burning.
+- projectM source facts behind `enterForeignDefaults()`: it never touches depth / cull / scissor
+  anywhere (zero hits in the tree) and manages blend per stage during a frame render
+  (`PerPixelMesh.cpp:304`, `FinalComposite.cpp:105`), but `CopyTexture::Copy` — the burn, and the
+  final blit — sets no blend state.
+- Step 5 proof held: without the guard's sampler loop, samplers are left on units 1..4 and check
+  (e) fails; without the read-framebuffer restore it fails too.
+- The SKIP path was demonstrated with `HOME=/nonexistent-home ./build/gl_smoke` (exit 0).
+- Measured: first `evaluate` 81 ms, steady state 4.2 ms/frame at 1280x720; deterministic across runs.
+
+---
+
 ### Task 10: Register the node in the app
 
 **Files:**
