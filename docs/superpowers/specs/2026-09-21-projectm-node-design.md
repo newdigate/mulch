@@ -66,11 +66,12 @@ MIT, Apache, GPL or proprietary terms, so it does not constrain that choice.
 
 Four small units plus two supporting changes.
 
-### `core/DynLib.h` (GL-free, header-only)
+### `core/DynLib.{h,cpp}` (GL-free)
 
 RAII wrapper over `dlopen`/`dlsym` (`LoadLibrary`/`GetProcAddress` on Windows).
 `open(path)`, `isOpen()`, `error()`, `symbol<T>(name)` (null when missing); move-only.
-Reusable for any future optional library.
+Reusable for any future optional library. It has a `.cpp` so the platform headers stay out of
+every header: `<windows.h>` `#define`s `near`, which `tests/gl_smoke.cpp` uses as a helper name.
 
 ### `gfx/ProjectMApi.{h,cpp}`
 
@@ -103,6 +104,10 @@ node uses. Contains no GL headers (GL handles cross as `uint32_t`).
   `seed`, so it replays identically after a loop or seek. In v1 the node passes a **fixed
   constant seed**, so the shuffled order is also the same in every session (node ids are
   remapped on load, so they are not a stable seed); a `seed` port is deferred.
+- `PresetSelector` — the preset-selection state machine described under **Preset selection**
+  (incoming change / buttons / primed, edge-triggered sync), with an injectable directory
+  lister. Keeping it here rather than in the node means the logic is unit-tested in
+  `core_tests`, which CI runs; the node only calls `update()` once per frame.
 
 ### `modules/ProjectMNode.{h,cpp}`
 
@@ -164,6 +169,9 @@ parentDir(preset))`, rescanned only when that folder changes.
 - Sync is **edge-triggered**: the node remembers the last `syncedPresetStep` and acts only
   when it changes (a bar boundary, a loop seam, or a seek). So a preset picked by hand or by
   button holds until the next boundary instead of being snapped back on the next frame.
+- Sync is also **primed**: the first synced frame (turning `sync` on, pressing play, or loading
+  a project) only records the current step and switches nothing, so a saved `preset` survives
+  until the next boundary.
 - **random** (the button) uses a node-local RNG and is not reproducible; only the bar-synced
   shuffle is.
 - projectM's own automatic switching stays off (`projectm_set_preset_locked(true)`); the node
@@ -207,7 +215,8 @@ when either changes.
 | Library missing, older than 4.2, or a symbol missing | Inert; black texture; status from `ProjectMApi`; not offered in the Add menu. |
 | `projectm_create…` returns NULL | Same inert state; status "projectM failed to initialise". |
 | A preset fails to load (`preset_switch_failed` callback, fired on the graph thread during our call) | The previous preset keeps running; status `failed: <name>: <message>`. The failed path is remembered so a synced step does not retry it every frame; the next bar boundary moves on normally. |
-| `preset` empty, file missing, or folder has no `.milk` | projectM's built-in idle preset plays; buttons and sync are no-ops; status "no preset". |
+| `preset` empty | The node loads `idle://` (projectM's built-in idle preset); buttons and sync are no-ops; status "no preset". |
+| `preset` file missing or unreadable | Reported through the `preset_switch_failed` callback, as above. |
 | `texture in` unconnected | Burn skipped. |
 | No audio connected | Nothing is fed; presets animate without reacting. |
 
@@ -228,7 +237,11 @@ fault) takes the app down. That is inherent to loading the library in-process.
 - **`test_dynlib.cpp`** — a nonexistent path fails cleanly (error text, no exception); opens
   the system C library, resolves `cos` and calls it; a missing symbol returns null; move
   semantics.
-- **`test_preset_playlist.cpp`** — lists only `.milk` (case-insensitive), sorted, subfolders
+- **`test_preset_playlist.cpp`** — `PresetSelector`: an incoming change loads once; next / prev
+  wrap and the written-back path does not reload; a step holds against an unchanged edge value;
+  no folder → no-ops; random never repeats the current preset; sync primes, switches on a
+  boundary to an absolute position, holds a hand-picked preset within a step, follows a seek,
+  ignores a stopped transport and re-primes. Helpers: lists only `.milk` (case-insensitive), sorted, subfolders
   ignored; `step` wraps both ways; empty list is safe; `syncedPresetStep` advances every N
   bars and gives the same answer after seeking backwards; `syncedPresetIndex` is
   `step % count` sequentially, and in shuffle mode is deterministic per seed and never out of
@@ -244,6 +257,9 @@ fault) takes the app down. That is inherent to loading the library in-process.
 - The node builds, `initGL()` succeeds, and `evaluate` publishes a valid black texture of the
   right size with a non-empty status (this is the library-absent path, which is what CI sees).
 - `preset` is asset-backed with type `Preset` (extends the existing asset-backed check).
+- **Playlist write-back** (needs no library): with three presets written, an incoming `a.milk`
+  is written back to the field, **next** moves `inputDefault(preset)` to `b.milk`, and the step
+  holds against an unchanged incoming value.
 - `GLStateGuard` restores state deliberately changed inside its scope.
 
 ### `gl_smoke` — only when the library is found (prints a skip notice otherwise)
@@ -255,8 +271,7 @@ fault) takes the app down. That is inherent to loading the library in-process.
   `evaluate`.
 - **Burn:** a red Colour node on `texture in` with the gate high → red-dominant output; a
   half-red / half-green fixture pins the orientation.
-- **Playlist:** three presets written; pressing **next** moves `inputDefault(preset)` to the
-  second file and the status shows `2/3`.
+- **Status:** after **next**, the status line shows `(2/3)`.
 
 **CI gap.** CI runners will not have projectM 4.2, so the render / burn / playlist checks run
 locally only. Building projectM master in CI is possible later and is out of scope here.
