@@ -2297,14 +2297,17 @@ In `CLAUDE.md`, directly after the **HSV Adjust** bullet (the one beginning `- *
 Append to the end of the **Preferences** bullet (after the sentence about the `projectsDir` / `assetLibraryDir` location prefs):
 
 ```markdown
-  The same tab holds the projectM node's `projectMLibraryPath` (a file) and `projectMTexturesDir`,
-  plus the loader's status line.
+  The same tab holds the projectM node's `projectMLibraryPath` (a file, picked with no extension
+  filter because the Linux runtime file is `libprojectM-4.so.4`) and `projectMTexturesDir`, plus the
+  loader's status line and hints (restart needed; preference path tried but another install loaded).
+  `parsePreferences` tolerates CRLF line endings (a trailing `\r` used to survive on every
+  rest-of-line value).
 ```
 
 In the **Assets / media library** bullet, change `(Audio/Video/Midi/Mesh/Image, the five tabs; \`Image\` is appended = 4, so the codec's type int stays backward-compatible)` to:
 
 ```markdown
-(Audio/Video/Midi/Mesh/Image/Preset, the six tabs; new types are appended — `Image` = 4, `Preset` = 5 — so the codec's type int stays backward-compatible)
+(Audio/Video/Midi/Mesh/Image/Preset, the six tabs; new types are appended — `Image` = 4, `Preset` = 5 — so the codec's type int stays backward-compatible; an unknown FUTURE type int is carried through a load/save untouched rather than clamped onto a known type — it shows in no tab — which is safe because nothing indexes an array by an asset's own type)
 ```
 
 - [ ] **Step 3: README — optional projectM section**
