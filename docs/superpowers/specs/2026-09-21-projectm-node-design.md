@@ -177,8 +177,18 @@ parentDir(preset))`, rescanned only when that folder changes.
 - Sync is also **primed**: the first synced frame (turning `sync` on, pressing play, or loading
   a project) only records the current step and switches nothing, so a saved `preset` survives
   until the next boundary.
+- **A manual action outranks sync in the same frame.** If a pick or a button lands on the frame
+  a bar boundary falls on, the manual choice wins and the boundary is consumed, so a click is
+  never silently swallowed.
+- Sync **re-primes instead of switching** when `bars` changes: that moves the step number
+  without a real boundary, and treating it as one would load a preset per slider tick
+  (measured: 4 loads in a one-second drag). A pick in another folder needs no rule of its own:
+  the folder can only change through a manual pick, which the rule above already covers.
+- While `sync` is on, prev / next / random hold only until the next boundary, when absolute
+  positioning reclaims the selection.
 - **random** (the button) uses a node-local RNG and is not reproducible; only the bar-synced
-  shuffle is.
+  shuffle is. The shuffle is a hash, not a permutation, so consecutive steps can land on the
+  same preset (about 1 in `count`); that is the price of replaying identically after a seek.
 - projectM's own automatic switching stays off (`projectm_set_preset_locked(true)`); the node
   decides every change.
 

@@ -730,6 +730,27 @@ EOF
 
 ---
 
+#### Task 3 — post-review amendments (applied in a follow-up commit)
+
+The code-quality review measured problems in the code above; the committed header differs from the
+listing in these ways (the tests gained seven cases and the listing test cleans up before asserting):
+
+- `PresetSelector::index()` is **cached** (`index_`, refreshed in `select()` and on a folder rescan).
+  The uncached scan cost ~1 ms/frame with a 4,000-preset folder, and the node calls it twice a frame.
+- `indexOfPreset` compares `std::string_view` base names — no allocation per element.
+- `listPresetsInDir` lowercases each name once (decorate-sort-undecorate) and filters with
+  `path().extension()`.
+- `syncedPresetStep` returns 0 for a non-finite / out-of-range position (the cast was undefined).
+- Sync **re-primes instead of switching** when `everyNBars` changes. (A pick in another folder is
+  covered by the manual-action rule below: the folder can only change through a manual pick.)
+- A pick or a button in a frame **outranks** a sync boundary in that frame; the boundary is consumed.
+- Button values outside 0..2 are ignored.
+
+Declined: a public `rescan()`, a button enum, case-insensitive name matching (`a.milk` and `A.milk`
+are different files on Linux).
+
+---
+
 ### Task 4: `gfx/ProjectMApi` — symbol table + version gate
 
 **Files:**
