@@ -370,6 +370,17 @@ target_compile_definitions(core_tests PRIVATE
   OSS_PM_FAKE_41="$<TARGET_FILE:pm_fake_41>"
   OSS_PM_FAKE_42="$<TARGET_FILE:pm_fake_42>")
 
+# Compile-only guard: static_asserts ProjectMApi's hand-written signatures against the real
+# projectM headers. Built only where they are installed; never linked or shipped.
+find_path(PROJECTM_INCLUDE_DIR projectM-4/core.h
+  HINTS "$ENV{HOME}/.local/include" /usr/local/include /opt/homebrew/include)
+if(PROJECTM_INCLUDE_DIR)
+  message(STATUS "projectM headers: ${PROJECTM_INCLUDE_DIR} (signature check enabled)")
+  add_library(projectm_sigcheck OBJECT tests/projectm_sigcheck.cpp)
+  target_include_directories(projectm_sigcheck PRIVATE src ${PROJECTM_INCLUDE_DIR})
+  add_dependencies(core_tests projectm_sigcheck)
+endif()
+
 # Headless GL render smoke test: renders the graph offscreen and reads back pixels.
 # Requires a display/WindowServer (works locally on macOS; may be skipped in headless CI).
 add_executable(gl_smoke
