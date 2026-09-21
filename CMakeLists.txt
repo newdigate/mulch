@@ -238,6 +238,7 @@ set(APP_SOURCES
   src/gfx/VideoEncoder.cpp
   src/gfx/TextGeometry.cpp
   src/gfx/ImageLoader.cpp
+  src/gfx/ProjectMApi.cpp
   src/modules/AudioInputNode.cpp
   src/modules/AudioPlayerNode.cpp
   src/modules/RecorderNode.cpp
@@ -333,6 +334,8 @@ add_executable(core_tests
   tests/test_spirograph.cpp
   tests/test_dynlib.cpp
   tests/test_preset_playlist.cpp
+  tests/test_projectm_api.cpp
+  src/gfx/ProjectMApi.cpp
   src/core/DynLib.cpp
   src/core/Node.cpp
   src/core/Graph.cpp
@@ -378,6 +381,7 @@ add_executable(gl_smoke
   src/gfx/VideoEncoder.cpp
   src/gfx/TextGeometry.cpp
   src/gfx/ImageLoader.cpp
+  src/gfx/ProjectMApi.cpp
   src/modules/MeshLoaderNode.cpp
   src/modules/RecorderNode.cpp
   src/modules/ShadedRenderNode.cpp
