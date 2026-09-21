@@ -137,8 +137,22 @@ The node (see **Ports** and **Per-frame flow**). Registered as **projectM** in t
 - `AssetType::Preset` appended as value **5** (`kAssetTypeCount` → 6), so the asset codec's
   type integer stays backward-compatible. The Assets window gains a **Presets** tab; its
   Browse dialog filters on `.milk`.
+- **Unknown future asset types are preserved, not clamped.** The codec used to clamp an
+  out-of-range type int onto the last known type, so an asset of a type this build does not
+  know was silently retyped and the next save made that permanent (it is what an older build
+  does to a Preset today: it becomes an Image). Now the int is carried through a load and save
+  untouched and the asset simply shows in no tab. Safe because nothing indexes an array by an
+  asset's own type. The file header version is deliberately not bumped: rejecting a whole
+  library over one unknown asset would be worse.
 - `Preferences` gains `projectMLibraryPath` and `projectMTexturesDir`, both edited in the
-  **Locations** tab and persisted in `preferences.oss`.
+  **Locations** tab and persisted in `preferences.oss`. The library picker uses **no extension
+  filter**: the Linux runtime file is `libprojectM-4.so.4` (extension `.4`), which a `so`
+  filter would hide. Its Browse / Clear buttons sit before the path and the path and status
+  wrap, so a long path cannot push the buttons off the window. The "restart to apply" hint
+  compares the preference with `ProjectMApi::loadedPrefPath()` (the preference value of the
+  load that succeeded), which covers changed, cleared and newly-set alike.
+- `parsePreferences` tolerates **CRLF** line endings. A trailing `\r` used to survive on every
+  rest-of-line value; on the library path that is a `dlopen` failure whose message looks right.
 
 ## Availability
 

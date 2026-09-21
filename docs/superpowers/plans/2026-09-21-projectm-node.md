@@ -1292,6 +1292,22 @@ EOF
 
 ---
 
+#### Tasks 5 and 6 — post-review amendments (applied in follow-up commits)
+
+- **Assets:** an out-of-range (future) type int is preserved verbatim instead of being clamped onto
+  the last known type (negative still clamps to 0); a test pins the load/save round trip. The stale
+  comments above `enum class AssetType` and on `AssetsPanel` were corrected. `oss-assetlib 1` is not
+  bumped.
+- **Preferences:** the library picker has no extension filter (`libprojectM-4.so.4` has extension
+  `.4`); Browse / Clear precede the path, and the path and status wrap; `parsePreferences` strips a
+  trailing `\r` (CRLF files); the restart hint uses the new `ProjectMApi::loadedPrefPath()`
+  (`loadFrom(candidates, prefPath = "")` records the preference of the load that succeeded).
+
+Declined: renaming `addImageFolderInput` (the node uses a file input, so there is no second caller),
+passing the status into the panel as a parameter.
+
+---
+
 ### Task 7: `Framebuffer::id()` + `gfx/GLStateGuard.h`
 
 **Files:**
