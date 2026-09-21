@@ -1723,11 +1723,45 @@ int main() {
             readAtUV(t, 0.2f, 0.85f, r1, g1, b1, a1);   // upper area, clear of the border and the centre wave
             readAtUV(t, 0.2f, 0.15f, r2, g2, b2, a2);   // lower area
             std::fprintf(stderr, "gl_smoke projectM burn: upper=(%d,%d,%d) lower=(%d,%d,%d)\n", r1, g1, b1, r2, g2, b2);
-            glDeleteTextures(1, &src);
             bool upperRed = r1 > g1 + 40, lowerGreen = g2 > r2 + 40;
             bool upperGreen = g1 > r1 + 40, lowerRed = r2 > g2 + 40;
             if (upperGreen && lowerRed) { glfwTerminate(); return fail("projectM live: burn is vertically flipped (plan Task 9 Step 4)"); }
             if (!(upperRed && lowerGreen)) { glfwTerminate(); return fail("projectM live: burned texture not visible in the output"); }
+
+            // (d2) burn respects alpha: a transparent region must NOT overwrite the canvas.
+            // Top half opaque red, bottom half GREEN WITH ALPHA 0. With the node's straight-alpha
+            // blend the lower area keeps the preset's own pixels; an unblended copy would write green.
+            // (d)'s stamp has to be gone first or this would prove nothing. fDecay=0.98 is far too
+            // slow: measured, the lower sample is still (0,142,0) after 60 burn-off frames and
+            // (0,46,0) after 120 -- green-dominant throughout, and only creeping up on the
+            // threshold. So hard-cut to a third preset file instead: a freshly loaded preset
+            // starts on a clean canvas, in 5 frames.
+            ins[ProjectMNode::kPreset] = Value(dir + "/c.milk");
+            ins[ProjectMNode::kBurn]   = Value(0.0f);
+            for (int i = 0; i < 5; ++i) pm.evaluate(ctx);
+            t = std::get<TexRef>(outs[0]);
+            int r3, g3, b3, a3;
+            readAtUV(t, 0.2f, 0.15f, r3, g3, b3, a3);
+            std::fprintf(stderr, "gl_smoke projectM pre-alpha-burn lower=(%d,%d,%d)\n", r3, g3, b3);
+            if (g3 > r3 + 40) { glfwTerminate(); return fail("projectM live: canvas still green before the alpha burn, so it would prove nothing"); }
+            for (int y = 0; y < S; ++y) for (int x = 0; x < S; ++x) {
+                unsigned char* p = &img[((size_t)y * S + x) * 4];
+                bool top = (y >= S / 2);
+                p[0] = top ? 255 : 0; p[1] = top ? 0 : 255; p[2] = 0; p[3] = top ? 255 : 0;
+            }
+            glBindTexture(GL_TEXTURE_2D, src);
+            glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+            glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, S, S, GL_RGBA, GL_UNSIGNED_BYTE, img.data());
+            ins[ProjectMNode::kBurn] = Value(1.0f);
+            for (int i = 0; i < 5; ++i) pm.evaluate(ctx);
+            t = std::get<TexRef>(outs[0]);
+            int r4, g4, b4, a4, r5, g5, b5, a5;
+            readAtUV(t, 0.2f, 0.85f, r4, g4, b4, a4);
+            readAtUV(t, 0.2f, 0.15f, r5, g5, b5, a5);
+            std::fprintf(stderr, "gl_smoke projectM alpha burn: upper=(%d,%d,%d) lower=(%d,%d,%d)\n", r4, g4, b4, r5, g5, b5);
+            glDeleteTextures(1, &src);
+            if (!(r4 > g4 + 40)) { glfwTerminate(); return fail("projectM live: the opaque half of the alpha burn did not land"); }
+            if (g5 > r5 + 40)    { glfwTerminate(); return fail("projectM live: burn ignored alpha (a transparent region overwrote the canvas)"); }
 
             // (e) A MULTI-SAMPLER preset must not leak sampler objects or the read framebuffer.
             // Audited against projectM 4.2: it binds a sampler per texture unit and unbinds only
@@ -1756,7 +1790,43 @@ int main() {
             if (leaked)      { glfwTerminate(); return fail("projectM live: sampler objects leaked onto texture units"); }
             if (readFb != 0) { glfwTerminate(); return fail("projectM live: READ_FRAMEBUFFER binding leaked"); }
 
-            std::fprintf(stderr, "gl_smoke OK: projectM live (renders, GL state + samplers contained, status, burn upright)\n");
+            // (f) projectM must render correctly whatever GL state the previous node left, and hand it back.
+            // It never touches scissor/cull/depth anywhere in its source, and sets no blend state for a
+            // plain texture copy, so a badly-behaved node upstream could clip or erase its whole output.
+            ins[ProjectMNode::kPreset] = Value(dir + "/a.milk");
+            ins[ProjectMNode::kBurn]   = Value(0.0f);
+            // Zero the node's canvas first. Nothing clears it between frames -- the preset's output
+            // covers it every frame -- so a render that got scissored away entirely would leave (e)'s
+            // picture sitting there and this check would pass without projectM drawing a thing.
+            // (Measured: without this the hostile run reports 100% lit; with it, 0%.)
+            t = std::get<TexRef>(outs[0]);
+            px.assign((size_t)t.w * t.h * 4, 0);
+            glBindTexture(GL_TEXTURE_2D, t.id);
+            glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, t.w, t.h, GL_RGBA, GL_UNSIGNED_BYTE, px.data());
+            glEnable(GL_SCISSOR_TEST); glScissor(0, 0, 1, 1);      // would clip everything but one pixel
+            glEnable(GL_CULL_FACE);
+            glEnable(GL_DEPTH_TEST);
+            glEnable(GL_BLEND); glBlendFunc(GL_ZERO, GL_ONE);      // would draw nothing at all
+            for (int i = 0; i < 10; ++i) pm.evaluate(ctx);
+            bool handedBack = glIsEnabled(GL_SCISSOR_TEST) && glIsEnabled(GL_CULL_FACE) &&
+                              glIsEnabled(GL_DEPTH_TEST) && glIsEnabled(GL_BLEND);
+            GLint srcRgb = 0, dstRgb = 0;
+            glGetIntegerv(GL_BLEND_SRC_RGB, &srcRgb); glGetIntegerv(GL_BLEND_DST_RGB, &dstRgb);
+            glDisable(GL_SCISSOR_TEST); glDisable(GL_CULL_FACE); glDisable(GL_DEPTH_TEST); glDisable(GL_BLEND);
+            glBlendFunc(GL_ONE, GL_ZERO);
+            if (!handedBack || srcRgb != GL_ZERO || dstRgb != GL_ONE) { glfwTerminate(); return fail("projectM live: did not hand the caller's GL state back"); }
+            t = std::get<TexRef>(outs[0]);
+            px.assign((size_t)t.w * t.h * 4, 0);
+            glBindTexture(GL_TEXTURE_2D, t.id);
+            glGetTexImage(GL_TEXTURE_2D, 0, GL_RGBA, GL_UNSIGNED_BYTE, px.data());
+            size_t litPixels = 0;
+            for (size_t i = 0; i + 3 < px.size(); i += 4)
+                if (px[i] + px[i + 1] + px[i + 2] > 60) ++litPixels;
+            std::fprintf(stderr, "gl_smoke projectM hostile state: %.1f%% of the canvas lit\n",
+                         100.0 * (double)litPixels / ((double)t.w * (double)t.h));
+            if (litPixels * 100 <= (size_t)t.w * (size_t)t.h) { glfwTerminate(); return fail("projectM live: output was clipped/culled/blended away by the caller's GL state"); }
+
+            std::fprintf(stderr, "gl_smoke OK: projectM live (renders, GL state + samplers contained, status, burn upright + alpha, survives hostile caller state)\n");
         }
         std::error_code ec;                                      // the temp preset folders this file wrote
         std::filesystem::remove_all(std::filesystem::temp_directory_path() / "oss_projectm_smoke", ec);

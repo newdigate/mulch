@@ -14,6 +14,18 @@ namespace {
 void* glLoadProc(const char* name, void* /*userData*/) {
     return reinterpret_cast<void*>(glfwGetProcAddress(name));
 }
+
+// projectM renders from whatever GL state it is handed: it sets no viewport for a burn and no blend
+// state for a copy, and nothing of scissor/cull/depth (its whole source tree only ever touches
+// GL_BLEND and GL_LINE_SMOOTH). In this app "whatever it is handed" is what the previous node left,
+// so put the enables GLStateGuard saves into GL's defaults -- the state every standalone projectM
+// host renders from. Call INSIDE a GLStateGuard scope, which restores them.
+void enterForeignDefaults() {
+    glDisable(GL_BLEND);
+    glDisable(GL_DEPTH_TEST);
+    glDisable(GL_CULL_FACE);
+    glDisable(GL_SCISSOR_TEST);
+}
 } // namespace
 
 ProjectMNode::ProjectMNode() : Node("projectM") {
@@ -59,6 +71,7 @@ void ProjectMNode::ensureInstance(int w, int h) {
     ProjectMApi& api = ProjectMApi::instance();
     if (pm_ || createFailed_ || !api.available()) return;
     GLStateGuard guard;
+    enterForeignDefaults();
     pm_ = api.create(&glLoadProc, nullptr);
     if (!pm_) { createFailed_ = true; return; }
     api.setWindowSize(pm_, (std::size_t)w, (std::size_t)h);
@@ -84,6 +97,7 @@ void ProjectMNode::pushParams(EvalContext& ctx) {
         lastMesh_ = cols;
         int rows = std::max(2, (int)std::lround(cols * 0.75));
         GLStateGuard guard;                         // a mesh resize reallocates GL buffers
+        enterForeignDefaults();
         api.setMeshSize(pm_, (std::size_t)cols, (std::size_t)rows);
     }
 }
@@ -134,6 +148,7 @@ void ProjectMNode::evaluate(EvalContext& ctx) {
         loadedPath_ = sel_.current();
         failMsg_.clear();
         GLStateGuard guard;
+        enterForeignDefaults();
         api.loadPresetFile(pm_, loadedPath_.empty() ? "idle://" : loadedPath_.c_str(), ctx.in<bool>(kBlend));
     }
 
@@ -150,15 +165,20 @@ void ProjectMNode::evaluate(EvalContext& ctx) {
 
     {
         GLStateGuard guard;
+        enterForeignDefaults();
         TexRef tin = ctx.in<TexRef>(kTexIn);
         if (ctx.in<float>(kBurn) > 0.5f && tin.id != 0) {
-            // The burn draws a full-NDC quad into the preset's framebuffer and never sets a
-            // viewport of its own (ProjectM::BurnInTexture -> CopyTexture::Draw), so it inherits
-            // whatever the node before us left and would land in a corner of the canvas. Match the
-            // projectM window size; the guard puts the caller's viewport back. No flip: projectM's
-            // copy mesh maps v=1 to NDC +y, which is a GL bottom-up texture's top row.
+            // The burn draws a full-NDC quad into the preset's framebuffer and sets neither a
+            // viewport nor a blend state of its own (ProjectM::BurnInTexture -> CopyTexture::Copy),
+            // so it inherits whatever the node before us left and would land in a corner of the
+            // canvas. Pin both: the full canvas, and STRAIGHT-alpha blending, so an opaque texture
+            // replaces the canvas and a transparent one composites over it. No flip is needed --
+            // projectM's copy mesh maps v=1 to NDC +y, which is a GL bottom-up texture's top row.
             glViewport(0, 0, w, h);
+            glEnable(GL_BLEND);
+            glBlendFuncSeparate(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA, GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
             api.burnTexture(pm_, tin.id, 0, 0, w, h);
+            glDisable(GL_BLEND);
         }
         api.setFrameTime(pm_, time_);                // the app's clock, 0.0 on the first frame
         api.renderFrameFbo(pm_, fbo_.id());
