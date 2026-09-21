@@ -2110,6 +2110,19 @@ EOF
 
 ---
 
+#### Tasks 8 and 9 — joint quality review (live, 2,167 real presets)
+
+0 crashes, 0 GL errors, no leak, containment holds mid-blend and across two nodes, resolution
+changes and destroy-mid-transition are clean, and failed loads behave as specified. Follow-up
+commit: a `dt` guard (a NaN latched the node black), a bounded status line via GL-free
+`presetDisplayName` / `shortenForStatus` in `core/PresetPlaylist.h`, a "preset not found" path so a
+half-typed path is never handed to projectM, and stronger smoke checks (non-default caller state
+for restore-vs-reset; sentinel samplers so containment stays pinned whatever projectM binds). The
+measured cost of a preset change is recorded in the spec under **Known limitations**. Declined:
+clearing the `createFailed_` latch (the library is never unloaded, so a retry would fail the same way).
+
+---
+
 ### Task 10: Register the node in the app
 
 **Files:**
@@ -2261,9 +2274,16 @@ In `CLAUDE.md`, directly after the **HSV Adjust** bullet (the one beginning `- *
   change loads, steps write the path back through `inputDefault()`, and `sync` is edge-triggered
   and primed (stateless `floor(bars/N)`; sequential = absolute position, shuffle = a hash with a
   fixed seed). `texture in` is stamped into projectM's canvas while the `burn` gate is > 0.5
-  (`burn_texture`). projectM renders straight into the node's FBO inside a `gfx/GLStateGuard`
-  (RAII save/restore of the state it disturbs) and runs on the app's clock (`set_frame_time` from
-  accumulated `dt`). `PresetPlaylist`, `DynLib` and `ProjectMApi` are unit-tested — the last through
+  (`burn_texture`, with the viewport and STRAIGHT-alpha blending pinned by the node, because
+  projectM sets neither). projectM renders straight into the node's FBO inside a `gfx/GLStateGuard`
+  (RAII save/restore of the state it disturbs, which also CLEARS the sampler objects projectM
+  leaves on texture units 1..N) after `enterForeignDefaults()` puts blend/depth/cull/scissor into
+  GL's defaults — the guard protects us from projectM, that call protects projectM from whatever
+  the previous node left. It runs on the app's clock (`set_frame_time` from accumulated `dt`), so
+  output is deterministic. **A preset change is synchronous on the graph thread** (projectM 4.2 has
+  no async load): Milkdrop-2 presets cost p50 176 ms / p95 340 ms / max 547 ms, so every pick,
+  button press and `sync` boundary is a visible stall (Milkdrop-1 presets ~8 ms). The node's FBO is
+  never cleared between frames, so any "did it render" test must zero the texture first. `PresetPlaylist`, `DynLib` and `ProjectMApi` are unit-tested — the last through
   two fake projectM modules (`tests/pm_fake.c`, built as 4.1 and 4.2) — and
   `tests/projectm_sigcheck.cpp` is a compile-only object that `static_assert`s the 17 hand-written
   signatures against the real headers wherever they are installed (**add a `SIGCHECK` line and a
@@ -2321,6 +2341,11 @@ Presets are not included. Add `.milk` files in **View → Assets → Presets** a
 node; **prev / next / random** and the bar-synced `sync` step through the other presets in the same
 folder. Milkdrop texture packs can be pointed to with **projectM textures** in the same
 Preferences tab.
+
+Changing preset is not free: projectM compiles each preset when it is loaded, on the same thread
+that draws the app. Milkdrop-2 presets typically take 0.1-0.5 s, so a preset change (by hand, by
+button, or on a `sync` bar boundary) briefly stalls the picture; older Milkdrop-1 presets load in a
+few milliseconds. A smooth `blend` also renders two presets for its duration.
 
 projectM is LGPL-2.1. Because it is loaded at runtime from your own installation and never
 distributed with this app, that license places no conditions on this project's.

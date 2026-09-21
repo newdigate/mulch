@@ -269,7 +269,34 @@ when either changes.
 | No audio connected | Nothing is fed; presets animate without reacting. |
 
 **Accepted risk — in-process crashes.** A crash inside projectM (a bad preset, a GL driver
-fault) takes the app down. That is inherent to loading the library in-process.
+fault) takes the app down. That is inherent to loading the library in-process. It did not
+materialise in testing: **0 crashes across 2,167 real presets** (~10,800 frames) and 1,200
+rapid preset switches, with 0 GL errors and no leak (RSS flattens at ~63 MB).
+
+| Situation (added after the live review) | Behaviour |
+|---|---|
+| `preset` names something that is not a file (a half-typed path, a moved preset) | Not handed to projectM: status "preset not found: `<name>`", the previous preset keeps playing. Typing a path used to cost a projectM load attempt per keystroke (hitches up to 211 ms). |
+| `dt` is NaN or negative | Ignored for projectM's clock. A NaN used to latch the node black permanently; a negative value makes projectM fall back to the wall clock, breaking determinism. |
+| Very long preset names / compile errors | The status shows at most 40 characters of the name and 80 of an error, newlines flattened, cut marked with ASCII `...` (the editor font has no ellipsis glyph). |
+
+## Known limitations (measured on the development machine: i7-7820HQ, Radeon Pro 560, 1280x720)
+
+- **A preset change blocks the graph thread.** projectM 4.2 has no asynchronous load, and
+  compiling a Milkdrop-2 preset (HLSL to GLSL, then the driver) is slow: **p50 176 ms, p95
+  340 ms, max 547 ms**; 30 % of 2,167 real presets exceed 100 ms. Milkdrop-1 presets are cheap
+  (p50 8 ms). Every change — a pick, a button, a `sync` boundary — stalls the whole app for
+  that long: the editor, every other node, and on this branch the audio too (it is evaluated
+  on the same thread; a 373 ms stall outlasts the default 150 ms output ring, so it is
+  audible). The audio worker thread on `main` removes the audio half of this once merged.
+  With `sync` on, expect one such stall per `bars` boundary; rapid stepping (next held for 30
+  frames) froze the UI for ~2.4 s. There is no queueing and no crash, just the stall.
+- **A smooth transition renders two presets:** p50 4.7 → 7.0 ms, p90 5.2 → 13.4 ms per frame.
+- **Some presets are too heavy for 60 fps on their own** (steady-state p99 46 ms, max 103 ms
+  in one pack at 1280x720). Typical steady state is 4-6 ms.
+- **About 0.5 % of real presets fail to compile** (11 / 2,167). Handled as designed: the
+  callback is synchronous, the previous preset keeps rendering, nothing is retried.
+- Scanning a 1,227-file preset folder takes 4-6 ms, so the first selection in a big pack is
+  not a concern; an LFO driving `mesh` every frame costs nothing measurable.
 
 ## Unknowns — settled during implementation (first live run, 2026-09-21)
 
