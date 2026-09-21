@@ -224,6 +224,7 @@ set(APP_SOURCES
   src/core/Oscilloscope.cpp
   src/core/PitchGraph.cpp
   src/core/VertexTrail.cpp
+  src/core/DynLib.cpp
   src/audio/FFT.cpp
   src/audio/SignalGenerator.cpp
   src/audio/AcidVoice.cpp
@@ -271,7 +272,7 @@ target_include_directories(shader_streamer PRIVATE src ${libsoundio_SOURCE_DIR} 
 target_compile_definitions(shader_streamer PRIVATE GLFW_INCLUDE_NONE TINYGLTF_ENABLE_DRACO
   OSS_DEFAULT_FONT="${OSS_DEFAULT_FONT}")
 target_link_libraries(shader_streamer PRIVATE ui_thirdparty glad_gl41 glm::glm libsoundio_static rtmidi
-  tinyobjloader meshoptimizer draco::draco PkgConfig::FFMPEG nfd)
+  tinyobjloader meshoptimizer draco::draco PkgConfig::FFMPEG nfd ${CMAKE_DL_LIBS})
 
 # --- Tests (GL-free core only) ---
 enable_testing()
@@ -330,6 +331,8 @@ add_executable(core_tests
   tests/test_image_sequence.cpp
   tests/test_panel_slot.cpp
   tests/test_spirograph.cpp
+  tests/test_dynlib.cpp
+  src/core/DynLib.cpp
   src/core/Node.cpp
   src/core/Graph.cpp
   src/core/AutomationStore.cpp
@@ -348,7 +351,7 @@ add_executable(core_tests
   src/audio/AcidVoice.cpp
 )
 target_include_directories(core_tests PRIVATE src ${stb_SOURCE_DIR})
-target_link_libraries(core_tests PRIVATE glm::glm doctest::doctest)
+target_link_libraries(core_tests PRIVATE glm::glm doctest::doctest ${CMAKE_DL_LIBS})
 add_test(NAME core_tests COMMAND core_tests)
 
 # Headless GL render smoke test: renders the graph offscreen and reads back pixels.
@@ -364,6 +367,7 @@ add_executable(gl_smoke
   src/core/MidiFile.cpp
   src/core/PitchGraph.cpp
   src/core/VertexTrail.cpp
+  src/core/DynLib.cpp
   src/gfx/GLUtil.cpp
   src/gfx/Framebuffer.cpp
   src/gfx/FullscreenPass.cpp
@@ -390,7 +394,7 @@ target_include_directories(gl_smoke PRIVATE src ${tinygltf_SOURCE_DIR}
   ${stb_SOURCE_DIR} ${earcut_SOURCE_DIR}/include ${CMAKE_BINARY_DIR})
 target_compile_definitions(gl_smoke PRIVATE GLFW_INCLUDE_NONE TINYGLTF_ENABLE_DRACO
   OSS_DEFAULT_FONT="${OSS_DEFAULT_FONT}")
-target_link_libraries(gl_smoke PRIVATE glad_gl41 glfw glm::glm OpenGL::GL tinyobjloader meshoptimizer draco::draco PkgConfig::FFMPEG)
+target_link_libraries(gl_smoke PRIVATE glad_gl41 glfw glm::glm OpenGL::GL tinyobjloader meshoptimizer draco::draco PkgConfig::FFMPEG ${CMAKE_DL_LIBS})
 add_test(NAME gl_smoke COMMAND gl_smoke WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
 
 # Copy shaders next to the executable so the app can be run from the build dir too
