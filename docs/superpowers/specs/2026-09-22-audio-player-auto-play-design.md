@@ -1,7 +1,7 @@
 # Audio Player — Auto Play — Design
 
 **Date:** 2026-09-22
-**Status:** Approved (brainstorm)
+**Status:** Implemented
 
 ## Goal
 
@@ -135,8 +135,22 @@ A `gl_smoke` scenario:
 6. `auto play` **off** with the transport stopped and `play` on → audible, proving the override is
    conditional and that existing behaviour is untouched.
 
-Each assertion should be mutation-checked: an implementation that ignores `auto play`, or that
-rewinds on a forward move, or that rewinds in `sync` mode, must fail at least one of them.
+Each assertion should be mutation-checked.
+
+**Measured outcome.** Three mutations are caught: ignoring `auto play` entirely (fails 1), dropping
+the rewind (fails 5), and rewinding on a forward move instead of a backwards one (fails 3, because
+the clip is dragged back to 0 on every playing frame and never sounds).
+
+**Two survive, and this spec was wrong to imply otherwise.** It originally claimed an
+implementation that "rewinds in `sync` mode" would fail one of these — it does not, for two
+reasons. The scenario never enables `sync`, and more fundamentally the guard is barely observable
+even if it did: in sync mode the rewind's `playhead_ = 0` is overwritten by `barSyncPlayhead` two
+lines later, so the only trace is one extra silenced block, which a bar-window wrap usually sets
+anyway. The `!syncActive` guard is defensive clarity, not load-bearing behaviour. The second
+survivor is the `ctx.transport != nullptr` fallback, which is unreachable from a `Graph` (it always
+passes its own transport) and so cannot be reached from this test at all.
+
+Both are recorded here rather than papered over with a test that would not really exercise them.
 
 ## Out of scope (YAGNI)
 

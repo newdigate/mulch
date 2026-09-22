@@ -520,6 +520,15 @@ shaders by CWD-relative path, each package launches the app with `shaders/` as t
   toggle instead **bar-locks** the clip to the transport, time-warping it to span exactly
   `length` bars (aligned to bar 1, repeating every `length` bars) via the GL-free
   `audio/BarSync.h` `barSyncPlayhead`; `rate`/`loop` are ignored while synced.
+  An `auto play` toggle (the LAST port — `ProjectFile` keys control defaults by port index, so a
+  new one must be appended) hands playback to the transport and **overrides** `play`: the effective
+  flag becomes `transport->playing`, and the node rewinds the clip to 0 whenever the transport's
+  position moves BACKWARDS, which is what Stop (it zeroes `seconds`) and a transport loop wrap look
+  like. A forward scrub is deliberately not followed — that is `sync`'s job. The rewind reuses the
+  existing `wrapped` seam so a Stop is a clean cut, not a click, and is skipped while synced, where
+  the playhead is derived from the bar position every frame. The previous-position tracker updates
+  on every evaluate that has a transport, NOT only while auto play is on, or switching auto play (or
+  sync) on mid-song would compare against a stale position and rewind immediately.
 
 ## Adding a node
 
