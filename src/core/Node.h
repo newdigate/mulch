@@ -13,6 +13,8 @@ class Graph;
 struct Preferences;
 
 // Per-frame, fully-resolved evaluation context handed to a node.
+// APPEND new fields at the END: ~50 positional brace-inits (almost all in tests/) rely on
+// partial initialisation, and inserting a field of a compatible type silently shifts them.
 struct EvalContext {
     const std::vector<Value>& inputs;   // one resolved value per input port
     std::vector<Value>&       outputs;  // node writes one value per output port
@@ -20,7 +22,9 @@ struct EvalContext {
     const Transport*          transport = nullptr;  // global clock (set by Graph::evaluate)
     const Preferences*        prefs     = nullptr;   // app settings (set by Graph::evaluate)
     bool                      offline   = false;    // an offline render drives the graph (set by Graph::evaluate):
-                                                    // real-time sinks (Audio Out, MIDI Out, Recorder) must stay quiet
+                                                    // dt is a fixed 1/fps and the transport is externally clocked, so
+                                                    // anything that talks to a real-time device or times a side effect
+                                                    // off the wall clock (Audio Out, MIDI Out, Recorder) must stay quiet
 
     template <class T> const T& in(std::size_t i) const { return std::get<T>(inputs[i]); }
     template <class T> void out(std::size_t i, T v) { outputs[i] = Value(std::move(v)); }
