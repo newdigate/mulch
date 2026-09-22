@@ -2547,38 +2547,47 @@ int main() {
     // --- Scenario: the loader gate yields without losing frames; the load timeout fails naming
     //     the node; cancel mid-render keeps a partial, playable file ---
     // The gate + timeout in step() are currently untested code: nothing else in this file drives
-    // a node that reports loading(). anyNodeLoading() walks graph.nodes() in order and calls
-    // loading() on each until one returns true, so with Colour Node and Output Node (both false)
-    // ahead of the Slow Loader below, one gate check costs the Slow Loader EXACTLY one poll --
-    // not one poll per node.
+    // a node that reports loading().
     {
+        // busy flips the gate directly rather than counting down polls, so the scenario makes no
+        // assumption about how many times loading() gets called per step() -- a detail of both
+        // anyNodeLoading()'s short-circuit and step()'s loop structure that the test has no
+        // business depending on. evals counts evaluate() calls, which must stay zero for as long
+        // as the gate holds: a step that evaluates the graph while reporting no captured frame
+        // would still pass a framesDone-only check, so this is what actually pins the yield down
+        // as a REAL yield (no graph work at all), not just "no frame captured".
         struct SlowLoader : Node {
-            mutable int polls = 0;
-            int holdPolls;
-            explicit SlowLoader(int hold) : Node("Slow Loader"), holdPolls(hold) {}
-            void evaluate(EvalContext&) override {}
-            bool loading() const override { return ++polls <= holdPolls; }   // "loading" for the first N polls
+            bool busy = true;
+            SlowLoader() : Node("Slow Loader") {}
+            void evaluate(EvalContext&) override { ++evals; }
+            bool loading() const override { return busy; }
+            int evals = 0;
         };
-        auto build = [](Graph& g, int hold, int& slowId) {
+        auto build = [](Graph& g, bool busy, int& slowId) {
             auto col = std::make_unique<ColourNode>(); col->initGL();
             auto out = std::make_unique<OutputNode>(); out->initGL();
             int cId = g.addNode(std::move(col)); int oId = g.addNode(std::move(out));
-            slowId = g.addNode(std::make_unique<SlowLoader>(hold));
+            auto slow = std::make_unique<SlowLoader>();
+            slow->busy = busy;
+            slowId = g.addNode(std::move(slow));
             g.connect(cId, 0, oId, 0);
             g.transport().bpm = 120.0;
         };
         RenderSettings s; s.startBar = 0.0; s.endBar = 1.0; s.prerollBars = 0.0; s.fps = 30;
         s.width = 160; s.height = 120;
 
-        // (a) Gate: 5 polls of "loading" -> 5 yielding steps that render nothing. Each one is a
-        //     REAL yield, not a busy spin: called with budget 0, it still returns immediately
-        //     without touching a frame, which is what lets a CLI loop sleep on waitingForLoad
-        //     instead of burning CPU until the timeout. The 6th poll clears the gate; that step
-        //     renders exactly one frame and waitingForLoad drops before the job otherwise
-        //     finishes, proving the flag tracks the wait, not just the job's outcome. The render
-        //     then completes normally: 1 bar at 120 bpm = 2 s at 30 fps = 60 frames.
+        // (a) Gate: 5 yielding steps that touch nothing at all -- no captured frame AND no
+        //     evaluate() call on any node, including the Slow Loader itself -- each one a REAL
+        //     yield, not a busy spin: called with budget 0, it still returns immediately, which is
+        //     what lets a CLI loop sleep on waitingForLoad instead of burning CPU until the
+        //     timeout. Clearing the gate then renders exactly one frame and waitingForLoad drops
+        //     before the job otherwise finishes, proving the flag tracks the wait, not just the
+        //     job's outcome. The render then completes normally: 1 bar at 120 bpm = 2 s at 30 fps
+        //     = 60 frames.
         {
-            Graph g; int slowId = 0; build(g, 5, slowId);
+            Graph g; int slowId = 0; build(g, true, slowId);
+            auto* slow = dynamic_cast<SlowLoader*>(g.findNode(slowId));
+            if (!slow) { glfwTerminate(); return fail("offline gate: Slow Loader node missing"); }
             const std::string waitStatus = "waiting for Slow Loader #" + std::to_string(slowId);
             s.outPath = "build/_offline_gate.mp4"; std::remove(s.outPath.c_str());
             OfflineRenderer r; std::string err;
@@ -2589,6 +2598,8 @@ int main() {
                 if (!r.progress().waitingForLoad) { glfwTerminate(); return fail("offline gate: waitingForLoad should be true while gated"); }
                 if (r.progress().status != waitStatus) { glfwTerminate(); return fail(("offline gate: status: " + r.progress().status).c_str()); }
             }
+            if (slow->evals != 0) { glfwTerminate(); return fail("offline gate: a gated step must not evaluate the graph at all"); }
+            slow->busy = false;   // clear the gate
             if (!r.step(0.0)) { glfwTerminate(); return fail("offline gate: step should stay active once the gate clears"); }
             if (r.progress().framesDone != 1) { glfwTerminate(); return fail("offline gate: the first ungated step should render exactly one frame"); }
             if (r.progress().waitingForLoad) { glfwTerminate(); return fail("offline gate: waitingForLoad should clear as soon as rendering resumes"); }
@@ -2607,7 +2618,7 @@ int main() {
         //     the behaviour a plain `while (r.step()) {}` CLI loop depends on to ever give up --
         //     the graphical path is vsync-limited so a stuck gate does not show there.
         {
-            Graph g; int slowId = 0; build(g, 1 << 30, slowId);
+            Graph g; int slowId = 0; build(g, true, slowId);   // busy forever
             const std::string timeoutStatus = "timed out waiting for Slow Loader #" + std::to_string(slowId) + " to load";
             s.outPath = "build/_offline_timeout.mp4"; std::remove(s.outPath.c_str());
             OfflineRenderer r; std::string err;
@@ -2631,17 +2642,19 @@ int main() {
         // step(0.0) renders exactly one frame per call (asserted below) -- but the encoder is
         // opened with max_b_frames = 1, and a container holding EXACTLY one B-delayed frame hits
         // a real edit-list quirk: ffmpeg's own mov demuxer computes an edit list that drops that
-        // single sample as being before the presentation start, so the "partial file" decodes to
+        // single sample as being before the presentation start, so a one-frame file decodes to
         // ZERO frames (confirmed independently with plain ffmpeg -i ... -f null -, not just this
-        // repo's VideoDecoder -- verbose output: "drop a frame at curr_cts: 0 @ 0"). That is a
-        // pre-existing VideoEncoder/mp4-muxing property, out of scope for this test-only task, so
-        // rather than pin down a decode failure that has nothing to do with OfflineRenderer, this
-        // cancels one frame later -- after two captured frames, confirmed decodable -- which still
-        // exercises a real mid-render cancel while keeping the "playable partial file" claim true.
+        // repo's VideoDecoder -- verbose output: "drop a frame at curr_cts: 0 @ 0"; also confirmed
+        // this is not exclusive to one frame -- 4 in / 3 out, 10 in / 9 out -- while 2, 3, 5, 6 and
+        // 60 round-trip exactly). That is a pre-existing VideoEncoder/mp4-muxing property, out of
+        // scope for this test-only task, so rather than pin down a decode failure that has nothing
+        // to do with OfflineRenderer, this cancels one frame later -- after two captured frames,
+        // confirmed decodable -- which still exercises a real mid-render cancel while keeping the
+        // "playable partial file" claim true.
         {
-            Graph g; int slowId = 0; build(g, 0, slowId);
+            Graph g; int slowId = 0; build(g, false, slowId);   // never loading
             g.transport().seconds = 3.0;
-            s.outPath = "build/_offline_cancel2.mp4"; std::remove(s.outPath.c_str());
+            s.outPath = "build/_offline_cancel_partial.mp4"; std::remove(s.outPath.c_str());
             OfflineRenderer r; std::string err;
             if (!r.start(g, s, err)) { glfwTerminate(); return fail(("offline cancel: start: " + err).c_str()); }
             r.step(0.0);                                                   // exactly one frame
@@ -2655,7 +2668,9 @@ int main() {
             if (!dec.open(s.outPath, derr)) { glfwTerminate(); return fail("offline cancel: partial file should open"); }
             VideoFrame vf; std::vector<float> au; double aS = 0; bool aV = false; int frames = 0;
             while (dec.decodeFrame(vf, au, aS, aV)) { ++frames; au.clear(); }
-            if (frames < 1 || frames >= 60) { glfwTerminate(); return fail("offline cancel: partial file frame count"); }
+            // Two encoded frames decode to either 1 or 2 depending on the edit-list quirk above --
+            // never 0, and structurally never anywhere near 60 after two zero-budget steps.
+            if (frames < 1 || frames > 2) { glfwTerminate(); return fail("offline cancel: partial file frame count"); }
             if (g.transport().seconds != 3.0 || g.transport().playing || g.transport().externalClock) { glfwTerminate(); return fail("offline cancel: transport not restored"); }
         }
         std::fprintf(stderr, "gl_smoke OK: offline loader gate yields without losing frames, times out by name, and cancel keeps a partial file\n");
