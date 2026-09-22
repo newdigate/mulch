@@ -75,7 +75,10 @@ public:
     // Limit: because loading() is checked BEFORE evaluate(), the frame on which a node first
     // discovers it needs new media is still captured with the old content (e.g. the sequencer
     // publishes its current texture and only then launches the fetch). The gate prevents the
-    // 2nd..Nth stale frames, not the 1st.
+    // 2nd..Nth stale frames, not the 1st. That first frame is not just cosmetic: the offline
+    // renderer LATCHES the audio track at the first captured frame, so a render that captured
+    // frame 0 before any load had started would come out video only -- which is why it always
+    // burns at least one pre-roll frame before the gate can mean anything.
     virtual bool loading() const { return false; }
 
     // Optional button bank, rendered by the node editor as a row of buttons under the

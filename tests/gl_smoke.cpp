@@ -2423,6 +2423,7 @@ int main() {
         std::remove(s.outPath.c_str());
         OfflineRenderer r; std::string err;
         if (!r.start(g, s, err)) { glfwTerminate(); return fail(("offline vanish: start: " + err).c_str()); }
+        if (!r.step(0.0) || r.progress().prerollDone != 1) { glfwTerminate(); return fail("offline vanish: expected the forced pre-roll frame first"); }
         if (!r.step(0.0) || r.progress().framesDone != 1) { glfwTerminate(); return fail("offline vanish: expected one captured frame before the graph is cleared"); }
 
         g.clear();                                   // the nodes capture() was reading are now gone
@@ -2600,8 +2601,13 @@ int main() {
             }
             if (slow->evals != 0) { glfwTerminate(); return fail("offline gate: a gated step must not evaluate the graph at all"); }
             slow->busy = false;   // clear the gate
+            // The settings ask for no pre-roll, but start() always burns one frame (an async load
+            // only STARTS on a node's first evaluate, so the gate means nothing before one has
+            // run) -- so the first ungated step renders THAT frame, and the next captures frame 0.
             if (!r.step(0.0)) { glfwTerminate(); return fail("offline gate: step should stay active once the gate clears"); }
-            if (r.progress().framesDone != 1) { glfwTerminate(); return fail("offline gate: the first ungated step should render exactly one frame"); }
+            if (r.progress().prerollDone != 1 || r.progress().framesDone != 0) { glfwTerminate(); return fail("offline gate: the first ungated step should render the forced pre-roll frame"); }
+            if (!r.step(0.0)) { glfwTerminate(); return fail("offline gate: step should stay active after the pre-roll frame"); }
+            if (r.progress().framesDone != 1) { glfwTerminate(); return fail("offline gate: the first ungated step after the pre-roll should capture exactly one frame"); }
             if (r.progress().waitingForLoad) { glfwTerminate(); return fail("offline gate: waitingForLoad should clear as soon as rendering resumes"); }
             int steps = 0;
             while (r.step(0.02)) { if (++steps > 100000) { glfwTerminate(); return fail("offline gate: never finished"); } }
@@ -2657,6 +2663,8 @@ int main() {
             s.outPath = "build/_offline_cancel_partial.mp4"; std::remove(s.outPath.c_str());
             OfflineRenderer r; std::string err;
             if (!r.start(g, s, err)) { glfwTerminate(); return fail(("offline cancel: start: " + err).c_str()); }
+            r.step(0.0);                                                   // the forced pre-roll frame
+            if (r.progress().prerollDone != 1 || r.progress().framesDone != 0) { glfwTerminate(); return fail("offline cancel: the first step(0) should render the forced pre-roll frame"); }
             r.step(0.0);                                                   // exactly one frame
             if (r.progress().framesDone != 1) { glfwTerminate(); return fail("offline cancel: step(0) should render exactly one frame"); }
             r.step(0.0);                                                   // exactly one more frame
@@ -2674,6 +2682,91 @@ int main() {
             if (g.transport().seconds != 3.0 || g.transport().playing || g.transport().externalClock) { glfwTerminate(); return fail("offline cancel: transport not restored"); }
         }
         std::fprintf(stderr, "gl_smoke OK: offline loader gate yields without losing frames, times out by name, and cancel keeps a partial file\n");
+    }
+
+    // --- Scenario: a load that only STARTS on the first evaluate() still gates a render asked
+    //     for with no pre-roll, and its audio reaches the file ---
+    // The gate scenario above sets busy BEFORE start(), which is not how a real AsyncLoader-backed
+    // node behaves: AudioPlayerNode calls loader_.request() inside evaluate(), so loading() is
+    // false until a frame has run. step() checks the gate BEFORE evaluating, so with a pre-roll of
+    // 0 the gate was a no-op on frame 0 -- and frame 0 is the frame openEncoder() LATCHES the
+    // audio track from. The whole render came out video only (exit 0, wrong file, reproduced with
+    // `--preroll 0` on an Audio File -> Audio Out project) while the gate sat waiting for a load
+    // whose result could no longer be used. start() burns one pre-roll frame however few bars are
+    // asked for, so the gate always has a started load to see.
+    {
+        struct LateLoader : Node {
+            LateLoader() : Node("Late Loader") {
+                addOutput("left",  PortType::Audio);
+                addOutput("right", PortType::Audio);
+                buf_.resize(1600);                       // exactly 48000/30: nothing to pad or trim
+                for (std::size_t i = 0; i < buf_.size(); ++i)
+                    buf_[i] = 0.5f * (float)std::sin(6.283185307179586 * 440.0 * (double)i / 48000.0);
+            }
+            void evaluate(EvalContext& ctx) override {
+                started = true;                          // the decode kicks off HERE, not before
+                AudioRef a = busy ? AudioRef{} : AudioRef{buf_.data(), buf_.size(), 48000};
+                ctx.out<AudioRef>(0, a);
+                ctx.out<AudioRef>(1, a);
+            }
+            bool loading() const override { return started && busy; }
+            bool started = false, busy = true;
+            std::vector<float> buf_;
+        };
+
+        Graph g;
+        auto col  = std::make_unique<ColourNode>(); col->initGL();
+        auto out  = std::make_unique<OutputNode>(); out->initGL();
+        auto late = std::make_unique<LateLoader>();
+        auto ao   = std::make_unique<AudioOutputNode>();
+        int cId = g.addNode(std::move(col));  int oId = g.addNode(std::move(out));
+        int lId = g.addNode(std::move(late)); int aId = g.addNode(std::move(ao));
+        if (!g.connect(cId, 0, oId, 0) || !g.connect(lId, 0, aId, 0) || !g.connect(lId, 1, aId, 1))
+            { glfwTerminate(); return fail("offline late load: connect"); }
+        g.transport().bpm = 120.0;
+
+        RenderSettings s; s.startBar = 0.0; s.endBar = 0.25; s.prerollBars = 0.0; s.fps = 30;
+        s.width = 64; s.height = 64; s.outPath = "build/_offline_late_load.mp4";   // 0.25 bar = 15 frames
+        std::remove(s.outPath.c_str());
+        OfflineRenderer r; std::string err;
+        if (!r.start(g, s, err)) { glfwTerminate(); return fail(("offline late load: start: " + err).c_str()); }
+        if (r.progress().prerollTotal != 1) { glfwTerminate(); return fail("offline late load: a 0-bar pre-roll must still burn exactly one frame"); }
+        auto* lp = dynamic_cast<LateLoader*>(g.findNode(lId));
+        if (!lp) { glfwTerminate(); return fail("offline late load: Late Loader node missing"); }
+        if (lp->started) { glfwTerminate(); return fail("offline late load: nothing should have evaluated yet"); }
+
+        if (!r.step(0.0)) { glfwTerminate(); return fail("offline late load: step should stay active after the pre-roll frame"); }
+        if (!lp->started) { glfwTerminate(); return fail("offline late load: the burned pre-roll frame should have started the load"); }
+        if (r.progress().framesDone != 0) { glfwTerminate(); return fail("offline late load: a frame was captured before the loader had even started"); }
+        for (int i = 0; i < 3; ++i) {
+            if (!r.step(0.0)) { glfwTerminate(); return fail("offline late load: step should stay active while the load is in flight"); }
+            if (!r.progress().waitingForLoad) { glfwTerminate(); return fail("offline late load: the gate must engage once the load has started"); }
+            if (r.progress().framesDone != 0) { glfwTerminate(); return fail("offline late load: a frame was captured while the load was in flight"); }
+        }
+        lp->busy = false;                                  // the decode lands
+        int steps = 0;
+        while (r.step(0.02)) { if (++steps > 100000) { glfwTerminate(); return fail("offline late load: never finished"); } }
+        const OfflineRenderer::Progress& p = r.progress();
+        if (p.phase != OfflineRenderer::Phase::Done) { glfwTerminate(); return fail(("offline late load: " + p.status).c_str()); }
+        if (p.framesDone != 15) { glfwTerminate(); return fail("offline late load: expected 15 captured frames"); }
+        // The point of the whole scenario: the track is there, and the render is not degraded.
+        if (!p.audio) { glfwTerminate(); return fail("offline late load: the audio track was latched before the load finished -- the file is video only"); }
+        if (p.status.find("video only") != std::string::npos) { glfwTerminate(); return fail(("offline late load: " + p.status).c_str()); }
+        if (p.blackFrames != 0 || p.resizedAudioFrames != 0) { glfwTerminate(); return fail("offline late load: unexpected black frames or resized audio blocks"); }
+
+        VideoDecoder dec; std::string derr;
+        if (!dec.open(s.outPath, derr)) { glfwTerminate(); return fail(("offline late load: open output: " + derr).c_str()); }
+        if (!dec.hasAudio() || dec.audioChannels() != 2) { glfwTerminate(); return fail("offline late load: the file should carry a 2-channel audio track"); }
+        VideoFrame vf; std::vector<float> au; double aS = 0; bool aV = false;
+        int frames = 0; bool nz = false;
+        while (dec.decodeFrame(vf, au, aS, aV)) {
+            ++frames;
+            for (float v : au) if (v > 0.01f || v < -0.01f) { nz = true; break; }
+            au.clear();
+        }
+        if (frames != 15) { glfwTerminate(); return fail("offline late load: the file should hold exactly 15 frames"); }
+        if (!nz) { glfwTerminate(); return fail("offline late load: the encoded audio is silent"); }
+        std::fprintf(stderr, "gl_smoke OK: a load that starts on the first evaluate still gates a pre-roll-free render and its audio reaches the file\n");
     }
 
 #ifndef _WIN32

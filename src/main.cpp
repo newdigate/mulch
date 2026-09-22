@@ -5,6 +5,7 @@
 #include <backends/imgui_impl_opengl3.h>
 #include <cstdio>
 #include <cstring>
+#include <filesystem>
 #include <string>
 #include <vector>
 #include <glm/vec2.hpp>
@@ -154,6 +155,27 @@ static int runRender(const std::vector<std::string>& args) {
     if (!gladLoadGL((GLADloadfunc)glfwGetProcAddress)) {
         std::fprintf(stderr, "gladLoadGL failed\n");
         glfwDestroyWindow(win); glfwTerminate(); return 1;
+    }
+
+    // ShaderNode loads its fragment shader by a CWD-RELATIVE path, so run from a directory with
+    // no shaders/ every shader node links a corrupt program, draws nothing, and still publishes
+    // a valid texture id -- the render writes undefined framebuffer memory to a perfectly
+    // well-formed mp4 and exits 0. Nothing downstream can catch that: the black-frame counter
+    // only sees a MISSING texture, and the outcome line has nothing to report. Running from
+    // somewhere else is the entire point of a headless mode and the exit code is the only signal
+    // a batch pipeline gets, so refuse up front. (The thorough fix is an executable-relative
+    // fallback in readFile(), a wider change that belongs in its own commit.)
+    {
+        std::error_code ec;
+        if (!std::filesystem::exists("shaders/colour.frag", ec)) {
+            const std::string cwd = std::filesystem::current_path(ec).string();
+            std::fprintf(stderr,
+                         "--render: no shaders/ directory here (looked for shaders/colour.frag in %s).\n"
+                         "Shaders are loaded relative to the working directory: cd to the repo root, or\n"
+                         "to the folder holding the installed binary's shaders/, and run --render from there.\n",
+                         cwd.empty() ? "the working directory" : cwd.c_str());
+            glfwDestroyWindow(win); glfwTerminate(); return 1;
+        }
     }
 
     IMGUI_CHECKVERSION();                     // the Application's panels need a context even unused

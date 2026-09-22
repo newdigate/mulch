@@ -161,7 +161,10 @@ starts, the file is video-only and the outcome line says so.
   **Use loop range** copies the loop fields.
 - **Pre-roll (bars)** — bars evaluated before the start bar but *not* captured (default 1), so
   envelopes, notes that begin before the range, and file loaders have settled by the first captured
-  frame. A render that starts at bar 0 pre-rolls sitting at bar 0.
+  frame. A render that starts at bar 0 pre-rolls sitting at bar 0. Even a pre-roll of 0 evaluates
+  one frame first: a file loader only *starts* loading when it is first evaluated, so without that
+  frame the wait below would have nothing to wait for and the first frame — the one the audio track
+  is taken from — would be captured with every loader still empty.
 - **Frame rate** — 24, 25, 30, 50 or 60: the rates that divide 48 kHz exactly.
 - **Width / Height** — seeded from the Preferences texture size (**Use live size** re-copies it),
   16 to 8192 per axis and **even** (the H.264 encode needs even dimensions). For the length of the
@@ -187,6 +190,11 @@ shader_streamer --render <project.oss> <out.mp4> [--start B] [--end B] [--fps N]
 Finish defaults to the project's Automation song length, the size to the Preferences texture size,
 the frame rate to 60, and the pre-roll to 1 bar. It exits 0 when the file was written and 1 with the
 reason on stderr otherwise, so it can be scripted.
+
+**Run it from the directory that holds `shaders/`** (the repo root, or the folder beside the
+installed binary). Shaders are loaded by a path relative to the working directory, so run from
+anywhere else and every shader node would render undefined memory into a perfectly valid file;
+`--render` checks for `shaders/` up front and refuses with exit 1 rather than writing that file.
 
 Four things to know:
 

@@ -106,14 +106,22 @@ bool OfflineRenderer::start(Graph& g, const RenderSettings& s, std::string& err)
     t.looping       = false;         // linear start -> finish
     renderClock_    = t;             // pin the WHOLE armed clock; evaluateFrame re-asserts it verbatim
     secondsPerBar_  = secondsPerBar;   // computed above, before any of this ran
-    prerollFrames_  = preroll;
+    // ALWAYS burn at least one pre-roll frame, whatever the user asked for. A node's async load
+    // only STARTS on its first evaluate() (AudioPlayerNode's loader_.request, the Mesh Loader,
+    // the Image Sequencer), so loading() is false before any frame has run and step()'s gate --
+    // which is checked BEFORE evaluateFrame -- cannot mean anything until one has. With a
+    // pre-roll of 0, frame 0 would be evaluated and CAPTURED while the loaders were still
+    // starting, and openEncoder() latches the audio track from that frame: an Audio File feeding
+    // Audio Out has an empty lastBlock() there, so the whole render comes out video only (exit 0,
+    // wrong file) and the gate then waits for a load whose result can no longer be used.
+    prerollFrames_  = std::max<long long>(1, preroll);
     totalFrames_    = total;
     k_              = -prerollFrames_;
     enc_.reset();
     audioRate_ = 0;
 
     progress_ = Progress{};
-    progress_.phase        = prerollFrames_ > 0 ? Phase::Preroll : Phase::Rendering;
+    progress_.phase        = Phase::Preroll;      // prerollFrames_ >= 1 always (see above)
     progress_.prerollTotal = prerollFrames_;
     progress_.framesTotal  = totalFrames_;
     progress_.fps          = s.fps;

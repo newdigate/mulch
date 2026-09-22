@@ -404,7 +404,11 @@ shaders by CWD-relative path, each package launches the app with `shaders/` as t
   drift) and evaluates with a fixed `dt = 1/fps`. The listed rates (24/25/30/50/60) all divide
   48 kHz, so every frame carries exactly `sampleRate/fps` samples — the encoded block is
   padded/trimmed to that count regardless, and resized frames are counted in the outcome line. A
-  **pre-roll** (frames `-P..-1`, position clamped at 0) is evaluated but not captured. Between
+  **pre-roll** (frames `-P..-1`, position clamped at 0) is evaluated but not captured, and is
+  **always at least one frame** however few bars are asked for: an async load only STARTS on a
+  node's first `evaluate()`, so the gate below (checked *before* evaluating) is meaningless until
+  one frame has run — a pre-roll of 0 used to capture frame 0 with every loader still starting,
+  latching the audio track from it and writing a video-only file at exit 0. Between
   frames it waits while any node reports the `Node::loading()` hook (Audio Player / Drum Machine /
   Mesh Loader via `AsyncLoader::pending()` — in flight AND not yet consumed, so a finished-but-
   unpolled future can't deadlock the gate; Image Sequencer via `futurePending` on its prefetch),

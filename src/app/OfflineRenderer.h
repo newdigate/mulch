@@ -23,6 +23,10 @@ class Graph;
 // Audio Out node's stereo block (padded/trimmed to exactly sampleRate/fps frames, so audio can
 // never drift from video). Between frames it waits while any node reports loading().
 //
+// The pre-roll is always AT LEAST ONE FRAME, however few bars the settings ask for: an async
+// load only starts on a node's first evaluate(), so the loader gate is meaningless until a frame
+// has run (see start()).
+//
 // The audio track is LATCHED at the first captured frame, the Recorder's rule: if Audio Out has
 // nothing connected then, the file is video only for the whole render (the outcome line says so)
 // and audio connected later is ignored. The latch covers the sample rate too.
