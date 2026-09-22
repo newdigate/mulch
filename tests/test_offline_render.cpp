@@ -85,3 +85,92 @@ TEST_CASE("audioSamplesPerFrame: exact at 48 kHz for every listed rate") {
     CHECK_FALSE(isRenderFrameRate(29));
     CHECK_FALSE(isRenderFrameRate(0));
 }
+
+static RenderSettings validSettings() {
+    RenderSettings s; s.startBar = 0.0; s.endBar = 4.0; s.prerollBars = 1.0;
+    s.fps = 60; s.width = 1280; s.height = 720; s.outPath = "out.mp4";
+    return s;
+}
+
+TEST_CASE("validateRenderSettings: a good set passes and each fault has its own message") {
+    std::string err;
+    CHECK(validateRenderSettings(validSettings(), true, err));
+    CHECK(err.empty());
+
+    RenderSettings s = validSettings();
+    CHECK_FALSE(validateRenderSettings(s, false, err));
+    CHECK(err == "add an Output node");
+
+    s = validSettings(); s.endBar = s.startBar;
+    CHECK_FALSE(validateRenderSettings(s, true, err));
+    CHECK(err == "finish bar must be after start bar");
+
+    s = validSettings(); s.startBar = -1.0; s.endBar = 2.0;
+    CHECK_FALSE(validateRenderSettings(s, true, err));
+    CHECK(err == "start bar must be 0 or later");
+
+    s = validSettings(); s.prerollBars = -0.5;
+    CHECK_FALSE(validateRenderSettings(s, true, err));
+    CHECK(err == "pre-roll must be 0 or more bars");
+
+    s = validSettings(); s.fps = 29;
+    CHECK_FALSE(validateRenderSettings(s, true, err));
+    CHECK(err == "frame rate must be 24, 25, 30, 50 or 60");
+
+    s = validSettings(); s.width = 8;
+    CHECK_FALSE(validateRenderSettings(s, true, err));
+    CHECK(err == "width and height must be between 16 and 8192");
+
+    s = validSettings(); s.height = 9000;
+    CHECK_FALSE(validateRenderSettings(s, true, err));
+    CHECK(err == "width and height must be between 16 and 8192");
+
+    s = validSettings(); s.width = 641;
+    CHECK_FALSE(validateRenderSettings(s, true, err));
+    CHECK(err == "width and height must be even");
+
+    s = validSettings(); s.outPath.clear();
+    CHECK_FALSE(validateRenderSettings(s, true, err));
+    CHECK(err == "choose an output file");
+}
+
+TEST_CASE("parseRenderArgs: full option set") {
+    RenderCliArgs a; std::string err;
+    REQUIRE(parseRenderArgs({"song.oss", "out.mp4", "--start", "2", "--end", "10.5",
+                             "--fps", "30", "--size", "1920x1080", "--preroll", "0.25"}, a, err));
+    CHECK(a.projectPath == "song.oss");
+    CHECK(a.settings.outPath == "out.mp4");
+    CHECK(a.settings.startBar == doctest::Approx(2.0));
+    CHECK(a.settings.endBar == doctest::Approx(10.5));
+    CHECK(a.settings.fps == 30);
+    CHECK(a.settings.width == 1920);
+    CHECK(a.settings.height == 1080);
+    CHECK(a.settings.prerollBars == doctest::Approx(0.25));
+}
+
+TEST_CASE("parseRenderArgs: defaults leave the sentinels for the driver to fill") {
+    RenderCliArgs a; std::string err;
+    REQUIRE(parseRenderArgs({"song.oss", "out.mp4"}, a, err));
+    CHECK(a.settings.startBar == doctest::Approx(0.0));
+    CHECK(a.settings.endBar == doctest::Approx(-1.0));     // -> the project's song length
+    CHECK(a.settings.width == 0);                          // -> the Preferences texture size
+    CHECK(a.settings.height == 0);
+    CHECK(a.settings.fps == 60);
+    CHECK(a.settings.prerollBars == doctest::Approx(1.0));
+}
+
+TEST_CASE("parseRenderArgs: bad input is rejected with a message") {
+    RenderCliArgs a; std::string err;
+    CHECK_FALSE(parseRenderArgs({"song.oss"}, a, err));                       // missing output
+    CHECK(err.rfind("usage:", 0) == 0);
+    CHECK_FALSE(parseRenderArgs({"song.oss", "out.mp4", "--size", "12x"}, a, err));
+    CHECK(err == "--size expects WxH, got 12x");
+    CHECK_FALSE(parseRenderArgs({"song.oss", "out.mp4", "--size", "abc"}, a, err));
+    CHECK(err == "--size expects WxH, got abc");
+    CHECK_FALSE(parseRenderArgs({"song.oss", "out.mp4", "--fps", "sixty"}, a, err));
+    CHECK(err == "bad value for --fps: sixty");
+    CHECK_FALSE(parseRenderArgs({"song.oss", "out.mp4", "--end"}, a, err));
+    CHECK(err == "--end needs a value");
+    CHECK_FALSE(parseRenderArgs({"song.oss", "out.mp4", "--bogus", "1"}, a, err));
+    CHECK(err == "unknown option --bogus");
+}

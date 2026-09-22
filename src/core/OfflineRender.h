@@ -1,5 +1,6 @@
 #pragma once
 #include <cmath>
+#include <cstdlib>
 #include <iterator>
 #include <string>
 #include <vector>
@@ -71,6 +72,74 @@ inline double renderFrameSeconds(const RenderSettings& s, double secondsPerBar, 
 // 1837.5, ~2.2 s of audio lost per hour). Add a fractional accumulator before allowing one.
 inline int audioSamplesPerFrame(int sampleRate, int fps) {
     return (sampleRate > 0 && fps > 0) ? sampleRate / fps : 0;
+}
+
+// One reason a render cannot start, or true with `err` cleared. `hasOutputNode` is supplied
+// by the caller (core knows no node types). Even dimensions: the H.264 yuv420p encode needs them.
+inline bool validateRenderSettings(const RenderSettings& s, bool hasOutputNode, std::string& err) {
+    if (!hasOutputNode)            { err = "add an Output node"; return false; }
+    if (!(s.endBar > s.startBar))  { err = "finish bar must be after start bar"; return false; }
+    if (s.startBar < 0.0)          { err = "start bar must be 0 or later"; return false; }
+    if (s.prerollBars < 0.0)       { err = "pre-roll must be 0 or more bars"; return false; }
+    if (!isRenderFrameRate(s.fps)) { err = "frame rate must be 24, 25, 30, 50 or 60"; return false; }
+    if (s.width  < kRenderMinSize || s.width  > kRenderMaxSize ||
+        s.height < kRenderMinSize || s.height > kRenderMaxSize) {
+        err = "width and height must be between 16 and 8192"; return false;
+    }
+    if ((s.width % 2) || (s.height % 2)) { err = "width and height must be even"; return false; }
+    if (s.outPath.empty())         { err = "choose an output file"; return false; }
+    err.clear();
+    return true;
+}
+
+// `--render <project.oss> <out.mp4> [--start B] [--end B] [--fps N] [--size WxH] [--preroll B]`
+// (`args` = everything after `--render`). Fields not given are left as SENTINELS for the
+// driver to fill once the project is loaded: endBar = -1 (-> the project's Automation song
+// length) and width = height = 0 (-> the Preferences texture size).
+struct RenderCliArgs {
+    std::string    projectPath;
+    RenderSettings settings;
+};
+
+inline bool parseRenderArgs(const std::vector<std::string>& args, RenderCliArgs& out, std::string& err) {
+    out = RenderCliArgs{};
+    out.settings.endBar = -1.0;
+    out.settings.width  = 0;
+    out.settings.height = 0;
+    std::vector<std::string> positional;
+    for (std::size_t i = 0; i < args.size(); ++i) {
+        const std::string& a = args[i];
+        if (a.size() < 2 || a[0] != '-' || a[1] != '-') { positional.push_back(a); continue; }
+        if (a != "--start" && a != "--end" && a != "--fps" && a != "--size" && a != "--preroll") {
+            err = "unknown option " + a; return false;
+        }
+        if (i + 1 >= args.size()) { err = a + " needs a value"; return false; }
+        const std::string& v = args[++i];
+        const char* c = v.c_str();
+        char* end = nullptr;
+        if (a == "--size") {
+            long w = std::strtol(c, &end, 10);
+            if (end == c || *end != 'x') { err = "--size expects WxH, got " + v; return false; }
+            const char* hs = end + 1;
+            long h = std::strtol(hs, &end, 10);
+            if (end == hs || *end != '\0') { err = "--size expects WxH, got " + v; return false; }
+            out.settings.width = (int)w; out.settings.height = (int)h;
+            continue;
+        }
+        double d = std::strtod(c, &end);
+        if (end == c || *end != '\0') { err = "bad value for " + a + ": " + v; return false; }
+        if      (a == "--start")   out.settings.startBar    = d;
+        else if (a == "--end")     out.settings.endBar      = d;
+        else if (a == "--preroll") out.settings.prerollBars = d;
+        else /* --fps */           out.settings.fps         = (int)d;
+    }
+    if (positional.size() != 2) {
+        err = "usage: --render <project.oss> <out.mp4> [--start B] [--end B] [--fps N] [--size WxH] [--preroll B]";
+        return false;
+    }
+    out.projectPath      = positional[0];
+    out.settings.outPath = positional[1];
+    return true;
 }
 
 } // namespace oss
