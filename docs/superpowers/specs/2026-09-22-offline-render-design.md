@@ -1,7 +1,12 @@
 # Offline Render — Design
 
 **Date:** 2026-09-22
-**Status:** Approved (brainstorm)
+**Status:** Implemented (branch `feat/offline-render`)
+
+> This stayed a design document: the signatures and rules below have been corrected where the
+> built system differs, and **[Changes during implementation](#changes-during-implementation)**
+> at the end lists the behavioural changes and why they were made. For how the shipped code is
+> organised, read `CLAUDE.md`'s *Offline render* bullet and the headers themselves.
 
 ## Goal
 
@@ -121,9 +126,15 @@ false, set by `Graph::evaluate`). Three sinks honour it:
   flush, no ring push (a faster-than-real-time render would overflow the ring anyway).
   Reordering the block build ahead of the device check also means a machine with **no audio
   device** still renders audio.
-- **MIDI Out** — still syncs its port set, but sends nothing while offline.
+- **MIDI Out** — still syncs its port set (so the ports are already right the instant the render
+  ends, with no reopen on that first live frame), but sends nothing while offline. It fires one
+  `allNotesOff()` on the offline edge: since it stops sending note-offs, an external synth would
+  otherwise hold whatever the last live frame left sounding for the whole render.
 - **Recorder** — treats `record` as off while offline. A live recording in progress when a
-  render starts is stopped and saved, and no second file is written during the render.
+  render starts is stopped and saved, and no second file is written during the render. It also
+  **latches** a suppression flag for as long as `record` stays on: otherwise the still-armed
+  toggle restarts the recording on the first live frame after the render and truncates the file
+  it just saved. The latch clears only when `record` is toggled off, so re-arming is explicit.
 
 Audio In and MIDI In are real-time inputs; during a render they yield whatever arrives on
 the wall clock. That is documented as unsupported for offline use, not guarded.
@@ -138,16 +149,24 @@ the wall clock. That is documented as unsupported for offline use, not guarded.
    flip**: FBO textures are bottom-up and `VideoEncoder::addVideoFrame` expects bottom-up
    rows (it flips for encoding), so the orientation matches the Recorder's direct read-back.
    Stretching to the render size mirrors what the Output window does to its framebuffer, so
-   a Video node's native size or a size change mid-render never drops a frame. An empty
-   `TexRef` (nothing connected) clears the FBO to black and counts a black frame.
+   a Video node's native size or a size change mid-render never drops a frame. The whole blit
+   runs inside a `GLStateGuard` (so it assumes nothing about what the caller had bound and
+   leaves nothing behind for the next node or ImGui), and the FBO is cleared **first and
+   unconditionally**, not only on the no-texture branch: `linkProgram` returns a live-looking
+   non-zero handle even when the link failed, so a broken blit program would otherwise read
+   back undefined texture memory and report a clean render. An empty `TexRef` (nothing
+   connected) leaves that clear as the frame and counts a black frame.
 2. **Read back** with `glReadPixels` (`GL_PACK_ALIGNMENT 1`) into a reusable buffer.
 3. **Open the encoder lazily** on the first captured frame:
    `enc.open(outPath, width, height, fps, audioRate, audioRate > 0 ? 2 : 0)` where
-   `audioRate = audioOut ? audioOut->lastSampleRate() : 0`. Same rule as the Recorder:
-   audio is recorded only if it is connected when capture starts; otherwise the file is
-   video-only and the final status says so.
+   `audioRate` is the Audio Out's `lastSampleRate()` if it has a non-empty block, else 0. Same
+   rule as the Recorder: audio is recorded only if it is connected when capture starts — the
+   presence of the track *and* its sample rate are latched there for the whole render, and
+   audio connected later is ignored. Otherwise the file is video-only and the status says so.
 4. `enc.addVideoFrame(pixels, k / (double)fps)` — the encoder's pts is `llround(t · fps)`,
-   so it is exactly `k`.
+   so it is exactly `k`. A refused frame **fails the render** (`finish(Failed)` naming the
+   frame and FFmpeg's reason): a full disk must not come back as exit 0 with a file quietly
+   missing its tail.
 5. **Audio.** Copy `lastBlock()` and pad with silence or trim to exactly
    `audioSamplesPerFrame(rate, fps)` interleaved frames before `enc.addAudio`, so the
    audio clock (sample count) can never drift from the video clock even if a source
@@ -172,7 +191,12 @@ render with the GL error in the status.
 
 `start()` snapshots the whole `Transport` struct and the graph's live `Preferences` pointer.
 `finish()` (reached from success, failure, cancel, and the destructor) restores both, clears
-the offline flag, and closes the encoder (idempotent). It always runs exactly once per job.
+the offline flag, and closes the encoder (idempotent). It always runs exactly once per job —
+`active()` is *derived* from the phase rather than tracked separately, and `finish()` is the only
+place the phase leaves a running state, so no `step()` path may return early without going
+through it (a stuck offline flag would silently mute Audio Out, MIDI Out and the Recorder for the
+rest of the session). A `close()` that fails downgrades a `Done` outcome to `Failed`: an
+unflushed/untrailered mp4 is unplayable however many frames were captured.
 
 **Node-internal state is not restored.** LFO phases, synth envelopes, free-running playheads,
 MIDI note tracking, and the Image Sequencer's position are left where the render ended,
@@ -196,27 +220,38 @@ struct RenderSettings {
     std::string outPath;
 };
 
-// Captured frames: those whose start time lies in [start, end).
-// = ceil(durationSeconds * fps - 1e-6). At 120 bpm, 8 bars @ 60 fps = 960; 1 bar @ 30 fps = 60.
-long   renderFrameCount(const RenderSettings&, double secondsPerBar);
-long   prerollFrameCount(const RenderSettings&, double secondsPerBar);   // same rule over prerollBars
+// Frames whose start time lies in [0, durationSeconds) = ceil(durationSeconds * fps - 1e-6),
+// 0 for an empty/negative range or a non-finite / unrepresentable product.
+long long renderFramesOver(double durationSeconds, int fps);
+// Captured frames for [startBar, endBar). At 120 bpm, 8 bars @ 60 fps = 960; 1 bar @ 30 fps = 60.
+long long renderFrameCount(const RenderSettings&, double secondsPerBar);
+long long prerollFrameCount(const RenderSettings&, double secondsPerBar);   // same rule over prerollBars
 // Transport position for frame k (k < 0 during pre-roll), clamped at 0.
-double renderFrameSeconds(const RenderSettings&, double secondsPerBar, long k);
+double renderFrameSeconds(const RenderSettings&, double secondsPerBar, long long k);
 int    audioSamplesPerFrame(int sampleRate, int fps);   // sampleRate / fps (exact for listed rates at 48 kHz)
 bool   isRenderFrameRate(int fps);
 // One error string; `hasOutputNode` is supplied by the caller (core knows no node types).
+// Width and height must also be EVEN: the H.264 yuv420p encode needs them.
 bool   validateRenderSettings(const RenderSettings&, bool hasOutputNode, std::string& err);
 
 // CLI: `--render <project.oss> <out.mp4> [--start B] [--end B] [--fps N] [--size WxH] [--preroll B]`.
 // The parser first sets the SENTINELS endBar = -1 and width = height = 0, then overwrites
 // only the fields given; the driver fills the sentinels after the project loads
 // (endBar → the project's Automation song length, size → the Preferences texture size).
-struct RenderCliArgs { std::string projectPath; RenderSettings settings; };
+// endGiven/sizeGiven are the structural "was it on the command line" signal — the driver must
+// NOT compare the settings back against the sentinels, or a user who types one (`--end -1`,
+// `--size 0x100`) is silently defaulted instead of rejected by validateRenderSettings.
+struct RenderCliArgs {
+    std::string projectPath; RenderSettings settings;
+    bool endGiven = false, sizeGiven = false;
+};
 bool   parseRenderArgs(const std::vector<std::string>& args, RenderCliArgs& out, std::string& err);
 ```
 
 The epsilon in the frame-count `ceil` guards float noise (0.1 bar at 120 bpm at 60 fps is
-`12.000000000000002`); a non-empty range always yields at least one frame.
+`12.000000000000002`); a non-empty range always yields at least one frame. Counts are `long long`
+because a legal but absurd range (`--end 1e18`) overflows a 32-bit `long` on Windows; a count that
+is not finite and representable comes back as 0 and is rejected by `start()` (see below).
 
 ### `app/OfflineRenderer.{h,cpp}`
 
@@ -226,10 +261,13 @@ public:
     enum class Phase { Idle, Preroll, Rendering, Done, Failed, Cancelled };
     struct Progress {
         Phase  phase = Phase::Idle;
-        long   prerollDone = 0, prerollTotal = 0;
-        long   framesDone  = 0, framesTotal  = 0;   // captured frames
-        long   blackFrames = 0, resizedAudioFrames = 0;
+        long long prerollDone = 0, prerollTotal = 0;
+        long long framesDone  = 0, framesTotal  = 0;   // captured frames
+        int    fps = 0;                            // the job's frame rate, so a driver can show
+                                                   // speed/fps without holding the RenderSettings
+        long long blackFrames = 0, resizedAudioFrames = 0;
         bool   audio = false;                      // file has an audio track
+        bool   waitingForLoad = false;             // this step() yielded on the loader gate
         double elapsedSeconds = 0.0;               // wall time since start()
         double speed = 0.0;                        // captured frames per wall second
         std::string outPath, status;               // status: outcome text or error
@@ -239,8 +277,10 @@ public:
     ~OfflineRenderer();               // cancel() if active (finalises a valid partial file)
 
     // Validate, snapshot state, swap prefs, arm the clock. False + `err` on a bad setting,
-    // no Output node, or a bad size. GL objects are created here (editor context current).
-    bool start(Graph& g, const Preferences* livePrefs, const RenderSettings& s, std::string& err);
+    // no Output node, an empty frame range at this tempo, or a bad size. GL objects are created
+    // here (editor context current). The live Preferences come from g.preferences(): there is no
+    // separate argument for a caller to pass a stale pointer that disagrees with the restore.
+    bool start(Graph& g, const RenderSettings& s, std::string& err);
 
     // Render frames until `budgetSeconds` of wall time have elapsed. Renders at least one
     // frame per call (so progress is guaranteed, even with budget 0) UNLESS a node reports
@@ -256,12 +296,19 @@ public:
 
 `step` per iteration: loader gate → set transport for frame `k` → `graph.evaluate(1.0f/fps)`
 → `capture(k)` when `k ≥ 0` → advance `k`; when `k == framesTotal`, `finish(Done)`.
-Encoder open failure, a GL FBO failure, and the loader timeout call `finish(Failed)` with
-the message in `status`. Progress is updated every iteration.
+Encoder open failure, a GL FBO failure, a refused `addVideoFrame`/`addAudio`, a failed
+`close()`, and the loader timeout all call `finish(Failed)` with the message in `status`.
+Progress is updated every iteration.
 
 Owned: the `VideoEncoder`, the blit `Framebuffer` + `FullscreenPass` + blit program, the
-pixel and audio scratch buffers, `renderPrefs_`, the transport snapshot, the live prefs
-pointer, `Graph*`, and the two sink node pointers.
+pixel and audio scratch buffers, `renderPrefs_`, the transport snapshot (plus `renderClock_`,
+the armed clock re-asserted verbatim each frame), the live prefs pointer, `Graph*`, and the two
+sink node **ids** — re-resolved through `Graph::findNode` every frame, because a project load
+destroys every node and a cached `Node*` would dangle (ids are never reused).
+
+`OfflineRenderer` is non-copyable and address-sensitive: while a job runs, the graph's
+`Preferences` pointer points into `renderPrefs_`. Whatever holds one across frames must be
+declared **after** its `Graph`, so `~OfflineRenderer`'s restore runs before the graph goes away.
 
 ### `ui/RenderDialog.{h,cpp}`
 
@@ -276,7 +323,9 @@ public:
 private:
     RenderSettings settings_;
     bool           seeded_ = false;   // defaults filled on first open
-    std::string    error_;
+    std::string    seededPath_;       // the projectPath settings_ was last seeded from
+    bool           wasActive_ = false;// to notice the job ending between draws
+    std::string    error_, outcome_;
 };
 ```
 
@@ -288,9 +337,15 @@ Settings window ("Render Video"):
 - **Pre-roll (bars)**, default 1. **Frame rate** combo over `kRenderFrameRates`, default 60.
 - **Width / Height** (`InputInt`), seeded from `prefs.textureWidth/Height`, with a
   **Use live size** button.
-- **Output file** text + **Browse…** (`saveFileDialog("Render Video", "MP4", {"mp4"},
-  defName, prefs.projectsDir)` + `ensureExtension(path, "mp4")`). Default name is the project
-  basename with `.mp4`, or `render.mp4` when untitled.
+- **Output file** text + **Browse…** (`saveFileDialog("Render Video", "MP4", {"mp4"}, defName,
+  startDir)` + `ensureExtension(path, "mp4")`, applied to a typed path too, since that one never
+  went through the dialog). Default name is the project basename with `.mp4` (case-insensitively
+  stripped, so `Foo.OSS` does not become `Foo.OSS.mp4`), or `render.mp4` when untitled.
+  `startDir` is the directory currently in the field, falling back to `prefs.projectsDir` only
+  before the user has pointed the dialog anywhere — otherwise every re-open snaps back to the
+  projects folder. The settings are re-seeded whenever the **loaded project changes**, not just
+  on first open: a stale path from the previous project would silently overwrite that project's
+  video.
 - A read-out line: `8.00 bars → 960 frames (16.0 s at 120 bpm)`.
 - **Render** (disabled with the inline validation reason while invalid) and **Close**.
   Render calls `r.start(...)`; a failure shows `error_` inline.
@@ -300,7 +355,9 @@ Settings are kept for the session only (not persisted to the project).
 Progress popup ("Rendering", `BeginPopupModal`, auto-resize, opened while `r.active()`):
 a `ProgressBar` over captured frames (pre-roll shown as its own short bar first), the phase,
 `frames done / total`, elapsed, estimated remaining (`(total − done) / speed`), speed as a
-multiple of real time (`speed / fps`), the output path, and a **Cancel** button. Because it is
+multiple of real time (`speed / progress.fps`), the output path, and a **Cancel** button. Until
+the first captured frame there is no rate to extrapolate from — the whole pre-roll — so only
+elapsed time is shown; `remaining ~0 s, 0.00x real time` would read as a stalled or instant job. Because it is
 modal, no graph edit can slip in during the render. When the job ends the popup closes and
 the outcome (`Done` / `Failed` / `Cancelled` + status) is shown in the settings window and
 copied to the toolbar status line: `rendered out.mp4 (960 frames, 16.0 s)`.
@@ -325,7 +382,10 @@ copied to the toolbar status line: `rendered out.mp4 (960 frames, 16.0 s)`.
   transport). Its sender thread keeps its last snapshot, so sync-out carries on at the
   pre-render state; sync-in is overridden for the duration and restored by the transport
   snapshot. Documented as a known limitation.
-- Public accessors for the CLI: `OfflineRenderer& renderer()`, `const Preferences& preferences() const`.
+  The `else` branch also self-heals a stuck `graph_.offline()` — one line that makes an
+  otherwise unrecoverable-without-restart failure impossible. It should never fire.
+- Public accessors for the CLI: `OfflineRenderer& renderer()`, `const Preferences& preferences() const`,
+  plus `showRenderDialog(bool)` so `--screenshot` opens the dialog and the capture exercises it.
 - `outputTexture()` is unchanged: the Output node's `current()` is the render frame, so the
   Output window shows the render as it progresses.
 
@@ -337,11 +397,16 @@ shader_streamer --render <project.oss> <out.mp4> [--start B] [--end B] [--fps N]
 
 `runRender()` mirrors `runScreenshot()`: hidden GLFW window, ImGui context (the
 `Application` panels need one), `Application app(win)` (which loads `preferences.oss`),
-`app.loadProjectFromFile(project)`, fill the sentinels (`endBar < 0` → song length;
-`width == 0` → Preferences size), `app.renderer().start(...)`, then
+`app.loadProjectFromFile(project)`, fill only what the command line did not give (`!endGiven` →
+the Automation song length; `!sizeGiven` → the Preferences texture size — **not** a comparison
+against the sentinel values), `app.renderer().start(...)`, then
 
 ```cpp
-while (app.renderer().active()) { glfwPollEvents(); app.renderer().step(1.0); /* progress line to stderr once a second */ }
+while (r.step(1.0)) {
+    glfwPollEvents();
+    if (r.progress().waitingForLoad) sleep_for(1ms);   // loader gate: yield, don't spin
+    /* progress line to stderr once a second */
+}
 ```
 
 `Application::frame` is never called (no UI). Exit 0 when the phase is `Done`, otherwise 1
@@ -366,11 +431,15 @@ app. No new `--render`-only dependencies.
 
 | Condition | Behaviour |
 |---|---|
-| Finish ≤ start, fps not listed, size out of `[16,8192]`, empty path | `validateRenderSettings` fails; Render button disabled with the reason / CLI exits 1 |
+| Finish ≤ start, fps not listed, size out of `[16,8192]`, **odd** width or height, negative pre-roll, empty path | `validateRenderSettings` fails; Render button disabled with the reason / CLI exits 1 |
 | No Output node | validation error `add an Output node` |
+| A range that yields < 1 frame at this tempo (`--end 1e18`, `beatsPerBar = 0`) | `start()` rejects: `the render range is empty at this tempo`. Not a completion check in `step()` — that would `finish(Done)` with no encoder ever opened, reporting success and writing no file |
 | No Audio Out, or nothing connected to it at the first captured frame | video-only file; status says `video only` |
 | Encoder `open` fails (bad path, codec) | `finish(Failed)` with the encoder's message; nothing written |
+| `addVideoFrame` / `addAudio` refused mid-render (ENOSPC) | `finish(Failed)`: `encode failed at frame N: <reason>`; CLI exits 1 |
+| `close()` fails (flush / trailer, or a sticky earlier write failure) | a `Done` outcome is downgraded to `Failed`: `could not finalise <path>: <reason>` |
 | FBO creation fails at the render size | `finish(Failed)` with the GL status |
+| The Output node disappears mid-render (a project load) | `finish(Failed)`: `the Output node disappeared mid-render`. An Audio Out that vanishes encodes silence instead, so the two clocks stay locked |
 | A node reports `loading()` for > 30 s | `finish(Failed)`: `timed out waiting for <name> to load`; the partial file is finalised |
 | Cancel | encoder closed → a playable partial file; `cancelled after N frames` |
 | Empty Output texture on a frame | black frame captured (never skipped); counted in the status |
@@ -392,7 +461,7 @@ app. No new `--render`-only dependencies.
 - `parseRenderArgs`: the full option set; defaults leave the sentinels; `--size 12x`,
   an unknown flag, and a missing positional each fail with a message.
 
-### `gl_smoke` — new scenario
+### `gl_smoke` — new scenarios
 
 - **End to end.** Colour → Output, Sine → Audio Out. Render bars `0 → 1` at 120 bpm,
   30 fps, 160×120, pre-roll 0.5 bar to `build/_offline.mp4` via a `step(0.02)` loop. Decode
@@ -406,15 +475,42 @@ app. No new `--render`-only dependencies.
   count is still exact.
 - **Cancel.** `start`, one `step`, `cancel`: the file decodes with ≥ 1 and < 60 frames; the
   transport is restored; `progress().phase == Cancelled`.
-- **Offline sinks.** With a Recorder set to record inline, no recorder file is written
-  during the render; Audio Out's `lastBlock()` is non-empty with no device opened.
+- **Offline sinks.** Audio Out taps a non-empty, correctly-sized, mirrored block with the device
+  never touched (and a live frame afterwards proves the device path *is* otherwise reached — the
+  negative check could pass for the wrong reason). A live Recorder recording is stopped and saved
+  when the render starts, stays saved for the rest of it, and does **not** restart on the first
+  live frame afterwards while `record` is still armed.
+
+Added during implementation, each pinning a claim the scenarios above cannot see:
+
+- **No prefs argument.** The render-time copy and the restored value both come from
+  `g.preferences()`, so they cannot disagree.
+- **The fixed clock places every frame.** Rendering from bar **2** (not 0, where dropping the
+  start offset is invisible) and recording the whole transport per frame catches an accumulated
+  `dt`, a `dt` taken from the step budget, and a pre-roll with the sign backwards.
+- **No V-flip.** The end-to-end scenario renders a flat colour, which is flip-invariant; a
+  vertically asymmetric picture says which end of the decoded frame it lands on.
+- **Exactly `sampleRate/fps` audio frames.** A deliberately mis-sized source (wrong in both
+  directions) proves the encoded track's duration is set by the video clock.
+- **Sinks re-resolved by id.** Clearing the graph mid-render is what tells a re-resolving
+  `capture()` from one holding a stale pointer — and the failure must still run `finish()`.
+- **An empty range is rejected, not "completed"**, and before the graph is put offline.
+- **An unopenable encoder fails the render** (never `Done`), the whole signal the CLI's exit code
+  gives a batch pipeline.
+- **Write failures fail the render.** `RLIMIT_FSIZE` with `SIGXFSZ` ignored is the portable
+  stand-in for a full disk (EFBIG for ENOSPC), in two variants: one small enough that the failure
+  surfaces at `close()` (exercising the `Done` → `Failed` downgrade) and one whose high-entropy
+  frames force flushes so it surfaces mid-render. A third checks a **Recorder** take that lost
+  frames but still wrote its trailer reports `save failed`, not `saved`.
 
 ### `render_cli` — ctest
 
 Runs the binary on a checked-in `tests/assets/render_smoke.oss` (Colour → Output, Sine →
-Audio Out): `--render … build/_cli_render.mp4 --end 1 --fps 24 --size 160x120`, expecting
-exit 0. Needs a GL context like `gl_smoke`; the three CI workflows run it in the same
-best-effort step (`-R "gl_smoke|render_cli"`).
+Audio Out): `--render … build/_cli_render.mp4 --end 1 --fps 24 --size 160x120 --preroll 0.25`,
+expecting exit 0 — plus a `FAIL_REGULAR_EXPRESSION` on `black frames|video only`, because
+`restoreProject` silently drops unknown node types and type-mismatched control lines, so a
+mis-typed fixture would otherwise "succeed" as a black, video-only file. Needs a GL context like
+`gl_smoke`; the three CI workflows run it in the same best-effort step (`-R "gl_smoke|render_cli"`).
 
 ## Documentation
 
@@ -432,3 +528,41 @@ best-effort step (`-R "gl_smoke|render_cli"`).
 - Restoring node-internal state after a render.
 - Offline handling of Audio In / MIDI In (real-time inputs).
 - Pausing the MIDI sync sender during a render.
+
+## Changes during implementation
+
+Everything above is the design as built, with these corrections folded in. The list is here so a
+reader who remembers the original design knows what moved and why.
+
+1. **`start()` lost its `Preferences*` argument.** Both the render-time copy and the value
+   restored by `finish()` now come from `g.preferences()`, so a caller cannot pass a stale
+   pointer and have the two disagree.
+2. **Frame counts are `long long`**, computed by a shared `renderFramesOver(durationSeconds, fps)`
+   that also returns 0 for a non-finite or unrepresentable product (casting one is undefined).
+   `start()` rejects a count of 0 as `the render range is empty at this tempo` — the design had no
+   such check, and a completion check in `step()` would have reported success with no file.
+3. **Even width and height are required** (`width % 2 || height % 2` → `width and height must be
+   even`): the H.264 yuv420p encode needs them.
+4. **Encode failures propagate.** The design assumed the encoder's per-call bools; five call sites
+   were discarding them. `addVideoFrame`/`addAudio` refusals now fail the render, `VideoEncoder`
+   latches a sticky `writeFailed_` that `close()` consults, a failed `close()` downgrades `Done`
+   to `Failed`, and the **Recorder** reports `save failed` instead of `saved` for a take that lost
+   frames. A file that lost frames can never be reported as finalised.
+5. **`RenderCliArgs::endGiven` / `sizeGiven`.** The design had the driver recognise "not given" by
+   comparing the settings back against the parser's sentinels, which silently reinterprets a user
+   who types one (`--end -1`, `--size 0x100`) as "not given" instead of rejecting it. The flags are
+   now the structural signal and the sentinels are purely the parser's internal default.
+6. **`Progress` gained `waitingForLoad` and `fps`.** `waitingForLoad` is a structured signal for
+   the loader-gate yield, so the CLI sleeps rather than string-matching `status` or busy-spinning;
+   `fps` lets a driver compute the real-time multiple without also holding the `RenderSettings`
+   (the `--render` CLI can start a job the dialog never configured).
+7. **The Recorder latches its offline suppression.** Stopping and saving the interrupted recording
+   was not enough: the still-armed `record` toggle restarted it on the first live frame after the
+   render, truncating the file just saved.
+8. **`--screenshot` opens the Render dialog** (and adds an Output node so it validates), so the
+   headless UI capture exercises the new window.
+9. Smaller: `renderClock_` pins the whole armed transport and is re-asserted verbatim each frame;
+   the two sinks are tracked by **id** and re-resolved every frame; `active()` is derived from the
+   phase rather than being a second flag to keep in sync; the capture FBO is cleared before the
+   blit unconditionally; the dialog re-seeds when the loaded project changes and seeds Browse from
+   the directory already in the field.

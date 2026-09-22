@@ -19,6 +19,15 @@ PNG and exit:
 ./build/shader_streamer --screenshot ui.png
 ```
 
+To write a project's output to a movie file without opening the windows — the
+offline render described under [Render Video](#render-video-offline) — use
+`--render` (`tests/assets/render_smoke.oss` is a tiny checked-in project to try
+it on):
+
+```bash
+./build/shader_streamer --render tests/assets/render_smoke.oss out.mp4 --start 0 --end 8 --fps 30 --size 1920x1080
+```
+
 Most dependencies are fetched and pinned by CMake. The one system package is
 **FFmpeg** (for the Video node) — install it first: `brew install ffmpeg` on
 macOS, or your distro's `libav*-dev` packages. A network connection is needed the
@@ -112,7 +121,7 @@ shaders. Packaging helper files live in `packaging/{linux,macos,windows}/`.
 | **Vertex Shader** | pick a preset transform (Identity / Twist / Wave / Bulge) → a **Shader** edge (a new input kind carrying a GLSL vertex shader). Wire `shader` into a **Deform** node |
 | **Deform** | runs a vertex shader (the `shader` input) over a vertex buffer via GPU transform feedback → a colored vertex buffer; `position` and `colour` drive the shader. Wire `geometry` into **Wireframe** / **Shaded Render** |
 | **Vertex Trail** | snapshots a vertex buffer each frame into a trail (queue of `max frames`); each copy is offset in Z (`z spacing`) and hue-rotated (`hue rate`) by its age, and is drawn unconnected to the others → a colored vertex buffer; wire `geometry` into **Wireframe** |
-| **Recorder** | inline tap: passes video + `left`/`right` audio through unchanged while recording them to a movie file (H.264/AAC mp4, interleaved stereo from the two mono sides); toggle `record`, set `file` |
+| **Recorder** | inline tap: passes video + `left`/`right` audio through unchanged while recording them to a movie file (H.264/AAC mp4, interleaved stereo from the two mono sides); toggle `record`, set `file`. It records in real time — for a capture that can't miss a frame use [Render Video](#render-video-offline) |
 | **Output** | marks the texture shown in the Output window |
 | **Automation** | 4 stream channels (Float outputs you wire), each a mouse-drawn curve over song time (bars), sampled at the transport position. Plus ui channels created by right-clicking any node's Float parameter — bound directly to that control. Edited in the **Automation** window |
 | **LFO** | low-frequency oscillator → a Float modulation signal: pick a waveform (sine/triangle/square/ramp up/down/sample & hold), run it free (Hz) or BPM-synced (32 bars … 1/64 bar), and map it into a `[min, max]` range. Every control is an input port, so waveform/rate/sync can be driven by another node — chain LFOs. A second `amplified` output gives `out` scaled by an `amplify` input. Wire `out` (or `amplified`) into any Float parameter (e.g. a Sine's `amp`) |
@@ -130,6 +139,69 @@ like **Save As** when the project is still untitled. A saved/loaded project file
 all connections, the transport (tempo + loop), and the automation (the Automation node's
 curves and the right-click parameter-automation channels). Playback position is not saved —
 a loaded project opens paused at the start. The `.oss` format is plain line-based text.
+
+### Render Video (offline)
+
+The File menu's **Render Video…** item writes the graph's output between a **start bar** and a
+**finish bar** to an H.264/AAC `.mp4`, taking as long as it needs so **no frame is ever dropped** —
+unlike the **Recorder** node, which captures in real time and stamps frames with the wall clock, so
+whatever the app cannot render fast enough is simply missing from the file. Here the graph runs on
+a fixed clock instead: each frame the transport is *placed* at that frame's position rather than
+advanced, and every node is evaluated with `dt = 1/fps`. So every frame of the range lands in the
+file, in order, and each one carries exactly `48000 / fps` audio samples — picture and sound cannot
+drift apart.
+
+Video is whatever the first **Output** node shows (the same texture as the Output window, stretched
+to the render size); audio is what feeds the first **Audio Out** (a lone `left` or `right` wire is
+mirrored to both channels). Audio Out is optional — with nothing connected to it when capture
+starts, the file is video-only and the outcome line says so.
+
+- **Start bar / Finish bar** — the same convention as the **Loop** fields: start 0 is the first bar
+  and the finish bar is exclusive, so `0 → 8` is the first eight bars. Fractions are allowed, and
+  **Use loop range** copies the loop fields.
+- **Pre-roll (bars)** — bars evaluated before the start bar but *not* captured (default 1), so
+  envelopes, notes that begin before the range, and file loaders have settled by the first captured
+  frame. A render that starts at bar 0 pre-rolls sitting at bar 0.
+- **Frame rate** — 24, 25, 30, 50 or 60: the rates that divide 48 kHz exactly.
+- **Width / Height** — seeded from the Preferences texture size (**Use live size** re-copies it),
+  16 to 8192 per axis and **even** (the H.264 encode needs even dimensions). For the length of the
+  render, every render-to-texture node recreates its framebuffer at the render size, so shader,
+  Wireframe and Shaded Render nodes genuinely draw at that size instead of being upscaled to it.
+- **Output file** — the project's name with `.mp4`, editable, or picked with **Browse…**; the
+  `.mp4` extension is added if you leave it off.
+
+While the job runs, a modal **Rendering** popup shows the pre-roll and frame counters, elapsed and
+estimated remaining time, and the speed as a multiple of real time; the Output window shows the
+frames as they are rendered. Because the popup is modal, no graph edit can slip into the middle of a
+render. **Cancel** finalises the file where it stopped — a playable partial. If a node is still
+loading a file (Audio Player, Drum Machine, Mesh Loader, Image Sequencer) the render waits for it
+between frames rather than capturing a stale frame, and gives up after 30 seconds naming the node.
+The outcome lands on the toolbar status line: `rendered out.mp4 (480 frames, 16.0 s)`.
+
+The same render runs headlessly from the command line, no windows:
+
+```
+shader_streamer --render <project.oss> <out.mp4> [--start B] [--end B] [--fps N] [--size WxH] [--preroll B]
+```
+
+Finish defaults to the project's Automation song length, the size to the Preferences texture size,
+the frame rate to 60, and the pre-roll to 1 bar. It exits 0 when the file was written and 1 with the
+reason on stderr otherwise, so it can be scripted.
+
+Four things to know:
+
+- **Nothing is rewound afterwards.** The graph is left exactly where the render ended, as if you had
+  played the range: LFO phases, free-running playheads, synth envelopes and sequencer positions are
+  not restored. The transport (position, tempo, loop) is.
+- **Real-time inputs are not offline-capable.** **Audio In** and **MIDI In** capture whatever happens
+  to arrive while the render runs, which has nothing to do with the bar being rendered.
+- **MIDI sync is not driven during a render.** Incoming Beat Clock / MTC is ignored for the duration
+  (the transport is restored when the render ends), and the sync-out sender carries on ticking from
+  its last pre-render state.
+- **Audio Out, MIDI Out and the Recorder are silent while rendering** — nothing goes to your sound
+  card or to MIDI hardware, and the render owns the encoder. A Recorder recording in progress is
+  stopped and saved when the render starts, and stays stopped afterwards until you toggle its
+  `record` off and on again (restarting it would reopen and truncate the file it just saved).
 
 ### Preferences
 

@@ -396,6 +396,56 @@ shaders by CWD-relative path, each package launches the app with `shaders/` as t
   during reopen). `app/ThreadPriority.h`'s `setThisThreadTimeCritical()` (macOS QoS) raises the MIDI
   sender thread. This is **Phase A** of the audio-decouple roadmap (B = audio-subgraph
   compile/snapshot, C = dedicated audio thread, D = render frame-drop).
+- **Offline render** — `app/OfflineRenderer.{h,cpp}` renders the graph between a start and a finish
+  bar (Loop-field convention, finish exclusive) to an mp4 with **no dropped frames**. It poses as
+  the transport's **external clock** (`externalClock = true`, `playing = true`, `looping = false`;
+  the whole armed clock is pinned in `renderClock_` and re-asserted verbatim each frame with
+  `seconds = startBar·spb + k/fps`, so `advance()` is a no-op and there is no loop wrap or float
+  drift) and evaluates with a fixed `dt = 1/fps`. The listed rates (24/25/30/50/60) all divide
+  48 kHz, so every frame carries exactly `sampleRate/fps` samples — the encoded block is
+  padded/trimmed to that count regardless, and resized frames are counted in the outcome line. A
+  **pre-roll** (frames `-P..-1`, position clamped at 0) is evaluated but not captured. Between
+  frames it waits while any node reports the `Node::loading()` hook (Audio Player / Drum Machine /
+  Mesh Loader via `AsyncLoader::pending()` — in flight AND not yet consumed, so a finished-but-
+  unpolled future can't deadlock the gate; Image Sequencer via `futurePending` on its prefetch),
+  surfacing that as `Progress::waitingForLoad` (a structured signal, so the CLI sleeps instead of
+  spinning) and failing after `kRenderLoadTimeoutSeconds` naming the node. `Graph::setOffline(true)`
+  flows `EvalContext::offline` to every node: **Audio Out** builds its stereo block *before* any
+  device work (so it exists on a machine with no device) and exposes `lastBlock()`/`lastSampleRate()`
+  but never touches the device or ring; **MIDI Out** keeps its port set synced, fires one
+  `allNotesOff()` on the offline edge and then sends nothing; **Recorder** treats `record` as off and
+  **latches** a suppression flag, so the live recording it stopped-and-saved can't restart and
+  truncate that file when the render ends (cleared only by toggling `record` off). Capture = blit the
+  first `OutputNode`'s texture through the renderer's own render-sized FBO inside a `GLStateGuard`
+  (stretched, NO V-flip — the encoder wants bottom-up rows; cleared first and unconditionally, since
+  `linkProgram` returns a live-looking handle even on a failed link and the read-back would otherwise
+  be undefined memory), `glReadPixels`, then `VideoEncoder::addVideoFrame(k/fps)` + the Audio Out
+  block. The encoder opens lazily on the first captured frame and **latches the audio track there**
+  (present + sample rate, the Recorder's rule); both sinks are re-resolved by id every frame
+  (`Graph::findNode`, never a cached `Node*` — a project load frees them). **Encode failures fail the
+  render**: a refused `addVideoFrame`/`addAudio` is `finish(Failed)` naming the frame, and a `close()`
+  that fails downgrades `Done` to `Failed` (`VideoEncoder` latches a sticky `writeFailed_`, so a file
+  that lost frames can never be reported as finalised) — the CLI's exit code is `phase == Done ? 0 : 1`.
+  The resolution override is a temporary `Preferences` copy pointed at by `Graph::setPreferences`
+  (ShaderNode / Wireframe / Shaded Render recreate their FBOs from it); `finish()` restores that
+  pointer, the `Transport` snapshot and the offline flag exactly once per job (success / failure /
+  cancel / destructor), which is why an `OfflineRenderer` member is declared AFTER the `Graph` it
+  borrows and why no `step()` path may return without funnelling through `finish()` (a stuck offline
+  flag would mute the three sinks for the rest of the session). **Node-internal state is NOT
+  restored.** The GL-free settings, frame-count (`renderFramesOver`, `long long`) / fixed-clock math,
+  validation and `--render` parsing live in `core/OfflineRender.h` (unit-tested): validation also
+  requires **even** width and height (the H.264 yuv420p encode), and `start()` separately rejects a
+  range that yields < 1 frame ("empty at this tempo") rather than finishing `Done` with no file;
+  `RenderCliArgs::endGiven`/`sizeGiven` are the structural "not given" signal, so someone who types
+  the sentinel itself (`--end -1`, `--size 0x100`) is rejected instead of silently defaulted. Drivers:
+  `ui/RenderDialog` (File → Render Video…; `Application::frame` calls `step(0.1 s)` while `active()`
+  in place of the sync update + wall-clock `evaluate`, behind a modal progress popup with Cancel) and
+  `main.cpp --render` (hidden window, same class, `while (r.step(1.0))`). `gl_smoke` covers the
+  offline sinks, the end-to-end decode, the fixed clock, sample-locked audio, the no-flip blit, the
+  loader gate + timeout, cancel, an unopenable encoder, mid-encode and at-close write failures, and
+  the state restore; `render_cli` is a best-effort ctest over `tests/assets/render_smoke.oss` guarded
+  by `FAIL_REGULAR_EXPRESSION "black frames|video only"` so a silently empty render can't pass, and
+  `--screenshot` opens the Render dialog so the capture exercises it.
 - **Texture nodes** derive from `ShaderNode` (`src/gfx/ShaderNode.h`): render a
   fragment shader into their own FBO and publish a `TexRef` on output 0. `ColourNode`
   is the minimal example — declare ports, override `setUniforms()`, call `render(ctx)`.
@@ -464,6 +514,10 @@ shaders by CWD-relative path, each package launches the app with `shaders/` as t
    `src/app/Application.cpp` (the string key is the editor's add-node menu label).
 3. Add a unit test in `tests/` (GL-free logic) and/or a `gl_smoke` scenario
    (renders + pixel-readback) where it makes sense.
+4. If it loads anything asynchronously, override `Node::loading()` (see `AsyncLoader::pending`)
+   so the offline render waits instead of capturing a stale frame — and publish the polled
+   result on the same `evaluate()` that consumes it. If it drives a real-time device or owns a
+   file (audio/MIDI out, an encoder), honour `EvalContext::offline` and stay quiet.
 
 ## Tests
 
