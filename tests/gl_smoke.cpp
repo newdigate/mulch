@@ -1122,6 +1122,86 @@ int main() {
                      fwd, before, after);
     }
 
+    // --- Scenario: Audio File `auto play` follows the transport ---
+    // With `auto play` on, the transport's play state drives the clip and the `play` input is
+    // ignored. Pause holds the position; Stop zeroes the transport, which the node sees as a
+    // BACKWARDS move and rewinds the clip, so the next Play starts the file from the beginning.
+    // A forward scrub is deliberately NOT followed -- strict position locking is what `sync` is
+    // for, and auto play is about free-running playback the transport starts and stops.
+    {
+        Graph g;
+        auto ap = std::make_unique<AudioPlayerNode>();
+        ap->inputDefault(0) = std::string("tests/assets/tone.mp3");
+        ap->inputDefault(3) = false;                 // loop off, so the playhead is monotonic
+        ap->inputDefault(6) = true;                  // auto play on
+        int aId = g.addNode(std::move(ap));
+        auto* an = dynamic_cast<AudioPlayerNode*>(g.findNode(aId));
+        g.transport().bpm = 120.0;
+        g.transport().playing = false;
+        g.transport().seconds = 0.0;
+
+        auto pump = [&](int n) { for (int i = 0; i < n; ++i) g.evaluate(1.0f / 60.0f); };
+        // The decode STARTS inside evaluate() (loader_.request), so loading() is false until one
+        // frame has run -- drive a frame first, then wait, then drive one more so poll() adopts it.
+        pump(1);
+        for (int f = 0; f < 500 && an->loading(); ++f) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(2));
+            pump(1);
+        }
+        pump(1);
+        if (an->loading()) { glfwTerminate(); return fail("auto play: clip never finished loading"); }
+
+        auto blockSilent = [&]() {
+            AudioRef l = an->leftOut();
+            if (l.count == 0) return true;
+            for (std::size_t i = 0; i < l.count; ++i) if (std::fabs(l.samples[i]) > 0.01f) return false;
+            return true;
+        };
+
+        // (1) Transport stopped -> silent, and the playhead does not move.
+        pump(5);
+        if (!blockSilent()) { glfwTerminate(); return fail("auto play: clip sounded while the transport was stopped"); }
+        if (an->playhead() != 0.0) { glfwTerminate(); return fail("auto play: playhead advanced while the transport was stopped"); }
+
+        // (2) Transport playing -> audible, and the playhead advances. (Graph::evaluate advances
+        // the transport itself, so nothing here moves `seconds` by hand.)
+        g.transport().playing = true;
+        bool heard = false;
+        for (int f = 0; f < 20 && !heard; ++f) { pump(1); if (!blockSilent()) heard = true; }
+        if (!heard) { glfwTerminate(); return fail("auto play: clip stayed silent while the transport played"); }
+        double playedTo = an->playhead();
+        if (!(playedTo > 0.0)) { glfwTerminate(); return fail("auto play: playhead did not advance while the transport played"); }
+
+        // (3) Pause -> position holds (the transport stops moving; it does not move backwards).
+        g.transport().playing = false;
+        pump(5);
+        if (an->playhead() != playedTo) { glfwTerminate(); return fail("auto play: a pause did not hold the playhead"); }
+        if (!blockSilent()) { glfwTerminate(); return fail("auto play: clip sounded while paused"); }
+
+        // (4) Stop -> playing false AND seconds 0, a backwards move, so the clip rewinds.
+        g.transport().stop();
+        pump(1);
+        if (an->playhead() != 0.0) { glfwTerminate(); return fail("auto play: a stop did not rewind the clip"); }
+
+        // (5) auto play OFF -> the `play` toggle governs again, transport still stopped.
+        an->inputDefault(6) = false;
+        an->inputDefault(2) = true;
+        bool heardManual = false;
+        for (int f = 0; f < 20 && !heardManual; ++f) { pump(1); if (!blockSilent()) heardManual = true; }
+        if (!heardManual) { glfwTerminate(); return fail("auto play off: the play toggle should still work with the transport stopped"); }
+
+        // (6) A FORWARD scrub is not followed: the clip keeps playing at its own rate.
+        an->inputDefault(6) = true;
+        g.transport().playing = true;
+        pump(3);
+        double beforeScrub = an->playhead();
+        g.transport().seconds += 5.0;
+        pump(1);
+        if (an->playhead() < beforeScrub) { glfwTerminate(); return fail("auto play: a forward scrub must not rewind the clip"); }
+
+        std::fprintf(stderr, "gl_smoke OK: Audio File auto play follows the transport (stop rewinds, pause holds, forward scrub ignored)\n");
+    }
+
     // --- Scenario 14: a shared World Transform aligns two renderers ---
     // The same triangle is streamed as lines to Wireframe and as triangles to
     // Shaded Render, both driven by one World Transform. With a shared rotation

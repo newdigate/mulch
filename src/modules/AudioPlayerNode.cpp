@@ -15,6 +15,9 @@ AudioPlayerNode::AudioPlayerNode() : Node("Audio File") {
     addInput("loop", PortType::Bool,   true);
     addInput("sync", PortType::Bool,   false);               // warp the clip to `length` bars
     addIntInput("length", 4, 1, 64);                         // bars to fit the clip into (whole)
+    // APPENDED LAST on purpose: ProjectFile stores control defaults by port index, so a port
+    // inserted earlier would silently reassign every saved value after it.
+    addInput("auto play", PortType::Bool, false);            // transport drives playback (overrides `play`)
     addOutput("left",  PortType::Audio);
     addOutput("right", PortType::Audio);
     outL_.assign(kAudioMaxBlock, 0.0f);
@@ -28,6 +31,14 @@ void AudioPlayerNode::evaluate(EvalContext& ctx) {
     bool  loop = ctx.in<bool>(3);
     bool  sync       = ctx.in<bool>(4);
     int   lengthBars = std::max(1, (int)std::lround(ctx.in<float>(5)));
+    bool  autoPlay   = ctx.in<bool>(6) && ctx.transport != nullptr;
+
+    // Snapshot last frame's transport position, then update the tracker for this one. This runs
+    // before the not-yet-loaded early return below, so a Stop during the decode is not missed.
+    const double prevTs = prevTransportSeconds_;
+    const bool   hadTs  = hadTransport_;
+    if (ctx.transport) { prevTransportSeconds_ = ctx.transport->seconds; hadTransport_ = true; }
+    else                 hadTransport_ = false;
 
     // Start a worker-thread decode whenever the file path changes.
     if (loader_.request(path, [path] { return decodeAudioFile(path); })) {
@@ -60,11 +71,23 @@ void AudioPlayerNode::evaluate(EvalContext& ctx) {
     double prev = playhead_;
     bool wrapped = false;
     bool syncActive = sync && ctx.transport && duration_ > 0.0;
+    // `auto play` hands playback to the transport and overrides the manual toggle.
+    bool effPlay = autoPlay ? ctx.transport->playing : play;
 
     // Switching between sync and free playback jumps the playhead to an unrelated
     // position; treat it like a seam so that block is silenced, not swept.
     if (syncActive != wasSync_) wrapped = true;
     wasSync_ = syncActive;
+
+    // Auto play follows the transport's own position: a backwards move is Stop (which zeroes the
+    // transport) or a loop wrap, and rewinds the clip so the next Play starts from the beginning.
+    // A forward scrub is deliberately left alone -- strict position locking is what `sync` is for.
+    // Skipped while synced, where the playhead is derived from the bar position every frame.
+    // `prev` above is captured BEFORE this, so a rewinding frame emits (prev, prev): silence.
+    if (autoPlay && !syncActive && hadTs && ctx.transport->seconds < prevTs) {
+        playhead_ = 0.0;
+        wrapped   = true;                 // reuse the seam path so a Stop is a clean cut, not a click
+    }
 
     if (syncActive) {
         // Bar-locked: derive the playhead from the transport so the clip spans exactly
@@ -72,7 +95,7 @@ void AudioPlayerNode::evaluate(EvalContext& ctx) {
         playhead_ = barSyncPlayhead(ctx.transport->bars(), lengthBars, duration_);
         if (playhead_ < prev) wrapped = true;    // crossed a length-bar seam (or a transport seek-back)
     } else {
-        if (play) playhead_ += (double)rate * (double)ctx.dt;
+        if (effPlay) playhead_ += (double)rate * (double)ctx.dt;
         if (duration_ > 0.0) {
             if (loop) {
                 if (playhead_ >= duration_ || playhead_ < 0.0) {
@@ -91,9 +114,9 @@ void AudioPlayerNode::evaluate(EvalContext& ctx) {
     // A wrap/seam (or pause) makes the source slice discontinuous -> emit silence for
     // that one block rather than a swept glitch.
     double a0 = prev, a1 = playhead_;
-    if (wrapped || !play) a1 = a0;
+    if (wrapped || !effPlay) a1 = a0;
     emitAudio(ctx, a0, a1);
-    updateStatus(play, rate, syncActive, lengthBars);
+    updateStatus(effPlay, rate, syncActive, lengthBars, autoPlay);
 }
 
 void AudioPlayerNode::emitAudio(EvalContext& ctx, double t0, double t1) {
@@ -124,15 +147,18 @@ void AudioPlayerNode::emitAudio(EvalContext& ctx, double t0, double t1) {
     ctx.out<AudioRef>(1, AudioRef{outR_.data(), (std::size_t)n, sampleRate_});
 }
 
-void AudioPlayerNode::updateStatus(bool play, float rate, bool synced, int lengthBars) {
+void AudioPlayerNode::updateStatus(bool play, float rate, bool synced, int lengthBars, bool autoPlay) {
     char buf[96];
+    // Name the control that is actually deciding, so a clip silent because the transport is
+    // stopped reads as stopped rather than broken.
+    const char* state = play ? (autoPlay ? " (auto)" : "")
+                             : (autoPlay ? " (auto, stopped)" : " (paused)");
     if (synced)
         std::snprintf(buf, sizeof(buf), "%.1f / %.1f s  sync %d bar%s%s",
-                      playhead_, duration_, lengthBars, lengthBars == 1 ? "" : "s",
-                      play ? "" : " (paused)");
+                      playhead_, duration_, lengthBars, lengthBars == 1 ? "" : "s", state);
     else
         std::snprintf(buf, sizeof(buf), "%.1f / %.1f s  x%.2f%s",
-                      playhead_, duration_, rate, play ? "" : " (paused)");
+                      playhead_, duration_, rate, state);
     status_ = buf;
 }
 
