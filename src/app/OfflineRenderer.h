@@ -65,8 +65,10 @@ public:
 
     // Validate, find the Output / Audio Out nodes, create the blit FBO at the render size,
     // snapshot state, arm the clock. False + `err` on a bad setting, no Output node, or an FBO
-    // the driver refuses. `livePrefs` may be null (nodes then fall back to their canvas size).
-    bool start(Graph& g, const Preferences* livePrefs, const RenderSettings& s, std::string& err);
+    // the driver refuses. Sources both the render-time copy and the value restored on finish()
+    // from g.preferences() -- there is no separate prefs argument for a caller to pass a stale
+    // or mismatched pointer through and have the two disagree.
+    bool start(Graph& g, const RenderSettings& s, std::string& err);
 
     // Render frames until `budgetSeconds` of wall time have elapsed. Renders at least one frame
     // per call (so progress is guaranteed, even with budget 0) UNLESS a node reports loading(),

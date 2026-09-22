@@ -32,9 +32,10 @@ bool Framebuffer::create(int w, int h, bool depth) {
         glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_RENDERBUFFER, depth_);
         glBindRenderbuffer(GL_RENDERBUFFER, 0);
     }
-    bool complete = glCheckFramebufferStatus(GL_FRAMEBUFFER) == GL_FRAMEBUFFER_COMPLETE;
+    GLenum status = glCheckFramebufferStatus(GL_FRAMEBUFFER);
+    bool complete = status == GL_FRAMEBUFFER_COMPLETE;
     if (!complete)
-        std::fprintf(stderr, "[Framebuffer] incomplete\n");
+        std::fprintf(stderr, "[Framebuffer] %dx%d incomplete (status 0x%x)\n", w, h, (unsigned)status);
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
     return complete;
 }

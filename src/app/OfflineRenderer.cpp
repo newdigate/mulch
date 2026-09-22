@@ -36,7 +36,7 @@ OfflineRenderer::~OfflineRenderer() {
     if (blitProg_) glDeleteProgram(blitProg_);
 }
 
-bool OfflineRenderer::start(Graph& g, const Preferences* livePrefs, const RenderSettings& s, std::string& err) {
+bool OfflineRenderer::start(Graph& g, const RenderSettings& s, std::string& err) {
     // A second start() while a job is running is rejected without disturbing THAT job's
     // progress()/active() -- unlike the failures below, there is no stale "previous job" for
     // progress_ to describe here; it is already reporting the live one. (Routing this through
@@ -46,11 +46,13 @@ bool OfflineRenderer::start(Graph& g, const Preferences* livePrefs, const Render
     if (active()) { err = "a render is already running"; return false; }
 
     // Any failure from here on means no earlier attempt's progress_ should linger: reset it to
-    // Failed so progress() and `err` never disagree about the latest attempt.
+    // Failed so progress() and `err` never disagree about the latest attempt. outPath is kept
+    // (not just wiped by Progress{}) so a failure dialog still has a path to name.
     auto reject = [&](const std::string& why) {
         progress_ = Progress{};
-        progress_.phase  = Phase::Failed;
-        progress_.status = why;
+        progress_.phase   = Phase::Failed;
+        progress_.status  = why;
+        progress_.outPath = s.outPath;
         err = why;
         return false;
     };
@@ -71,12 +73,12 @@ bool OfflineRenderer::start(Graph& g, const Preferences* livePrefs, const Render
     }
 
     graph_      = &g;
-    livePrefs_  = g.preferences();     // the graph's ACTUAL current prefs pointer, not just the argument
+    livePrefs_  = g.preferences();     // the ONE source for both the render copy below and the restore
     settings_   = s;
     outputId_   = out->id();           // validated non-null above
     audioOutId_ = aout ? aout->id() : 0;
     savedTransport_ = g.transport();
-    renderPrefs_ = livePrefs ? *livePrefs : Preferences{};
+    renderPrefs_ = livePrefs_ ? *livePrefs_ : Preferences{};
     renderPrefs_.textureWidth  = s.width;
     renderPrefs_.textureHeight = s.height;
     g.setPreferences(&renderPrefs_);

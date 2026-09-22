@@ -2075,13 +2075,15 @@ int main() {
         RenderSettings s; s.startBar = 0.0; s.endBar = 1.0; s.prerollBars = 0.5; s.fps = 30;
         s.width = 160; s.height = 120; s.outPath = "build/_offline_cancel.mp4";
         OfflineRenderer r; std::string err;
-        if (r.start(g, &live, s, err)) { glfwTerminate(); return fail("offline start: should refuse a graph with no Output node"); }
+        if (r.start(g, s, err)) { glfwTerminate(); return fail("offline start: should refuse a graph with no Output node"); }
         if (err != "add an Output node") { glfwTerminate(); return fail("offline start: wrong error for a missing Output node"); }
+        if (r.progress().phase != OfflineRenderer::Phase::Failed || r.progress().outPath != s.outPath)
+            { glfwTerminate(); return fail("offline start: a rejected start should still report its outPath"); }
 
         auto out = std::make_unique<OutputNode>(); out->initGL();
         int oId = g.addNode(std::move(out));
         if (!g.connect(cId, 0, oId, 0)) { glfwTerminate(); return fail("offline start: connect"); }
-        if (!r.start(g, &live, s, err)) { glfwTerminate(); return fail(("offline start: " + err).c_str()); }
+        if (!r.start(g, s, err)) { glfwTerminate(); return fail(("offline start: " + err).c_str()); }
         if (!r.active()) { glfwTerminate(); return fail("offline start: not active"); }
         if (r.progress().framesTotal != 60 || r.progress().prerollTotal != 30) { glfwTerminate(); return fail("offline start: expected 60 frames + 30 pre-roll (0.5 bar = 1 s at 30 fps)"); }
         if (!g.offline()) { glfwTerminate(); return fail("offline start: graph should be offline"); }
@@ -2098,7 +2100,7 @@ int main() {
         // Starting a second job while this one is active is refused -- and must not disturb it.
         RenderSettings s2 = s; s2.outPath = "build/_offline_cancel2.mp4";
         std::string err2;
-        if (r.start(g, &live, s2, err2)) { glfwTerminate(); return fail("offline start: should refuse a second job while active"); }
+        if (r.start(g, s2, err2)) { glfwTerminate(); return fail("offline start: should refuse a second job while active"); }
         if (err2 != "a render is already running") { glfwTerminate(); return fail("offline start: wrong error for starting while active"); }
         if (!r.active() || r.progress().framesTotal != 60)
             { glfwTerminate(); return fail("offline start: a rejected second start must not disturb the running job"); }
@@ -2108,6 +2110,7 @@ int main() {
         if (r.progress().phase != OfflineRenderer::Phase::Cancelled) { glfwTerminate(); return fail("offline cancel: phase should be Cancelled"); }
         if (g.offline()) { glfwTerminate(); return fail("offline cancel: graph still offline"); }
         if (!(t.seconds == 5.0 && t.looping && !t.playing && !t.externalClock && t.bpm == 120.0)) { glfwTerminate(); return fail("offline cancel: transport not restored"); }
+        if (g.preferences() != &live) { glfwTerminate(); return fail("offline cancel: prefs pointer not restored to the graph's original"); }
         g.evaluate(1.0f / 60.0f);
         auto* on = dynamic_cast<OutputNode*>(g.findNode(oId));
         if (on->current().w != 320 || on->current().h != 240) { glfwTerminate(); return fail("offline cancel: live prefs (texture size) not restored"); }
@@ -2127,29 +2130,33 @@ int main() {
         std::fprintf(stderr, "gl_smoke OK: OfflineRenderer start validates, swaps prefs + clock, and cancel restores them\n");
     }
 
-    // --- Scenario: OfflineRenderer restores the graph's ACTUAL prefs pointer, not just the
-    //     start() argument -- a caller passing a mismatched pointer must not rebind the graph ---
+    // --- Scenario: start() has no separate prefs argument -- the render-time copy and the
+    //     restored value are both sourced from g.preferences(), so they cannot disagree ---
     {
         Graph g;
         auto col = std::make_unique<ColourNode>(); col->initGL();
         int cId = g.addNode(std::move(col));
         auto out = std::make_unique<OutputNode>(); out->initGL();
         int oId = g.addNode(std::move(out));
-        if (!g.connect(cId, 0, oId, 0)) { glfwTerminate(); return fail("offline prefs mismatch: connect"); }
+        if (!g.connect(cId, 0, oId, 0)) { glfwTerminate(); return fail("offline prefs source: connect"); }
 
         Preferences real; real.textureWidth = 400; real.textureHeight = 300;
         g.setPreferences(&real);
 
-        Preferences argOnly; argOnly.textureWidth = 500; argOnly.textureHeight = 500;   // deliberately mismatched
         RenderSettings s; s.startBar = 0.0; s.endBar = 1.0; s.prerollBars = 0.0; s.fps = 30;
-        s.width = 160; s.height = 120; s.outPath = "build/_offline_prefs_mismatch.mp4";
+        s.width = 160; s.height = 120; s.outPath = "build/_offline_prefs_source.mp4";
 
         OfflineRenderer r; std::string err;
-        if (!r.start(g, &argOnly, s, err)) { glfwTerminate(); return fail(("offline prefs mismatch: start: " + err).c_str()); }
+        if (!r.start(g, s, err)) { glfwTerminate(); return fail(("offline prefs source: start: " + err).c_str()); }
+        // The render-time copy was built from the graph's actual prefs (real), then resized.
+        g.evaluate(1.0f / 60.0f);
+        auto* on = dynamic_cast<OutputNode*>(g.findNode(oId));
+        if (on->current().w != s.width || on->current().h != s.height)
+            { glfwTerminate(); return fail("offline prefs source: render size did not reach the graph"); }
         r.cancel();
         if (g.preferences() != &real)
-            { glfwTerminate(); return fail("offline prefs mismatch: restore should use the graph's actual prefs pointer, not the start() argument"); }
-        std::fprintf(stderr, "gl_smoke OK: OfflineRenderer restores the graph's actual prefs pointer even when start()'s argument is a mismatched pointer\n");
+            { glfwTerminate(); return fail("offline prefs source: restore should return the graph's actual prefs pointer"); }
+        std::fprintf(stderr, "gl_smoke OK: OfflineRenderer sources the render-time copy and the restore from the same g.preferences(), with no separate argument to disagree\n");
     }
 
     glfwDestroyWindow(win);
