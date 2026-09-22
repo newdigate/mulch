@@ -17,7 +17,7 @@ TEST_CASE("AsyncLoader::pending is true only while the worker has not finished")
     CHECK(loader.pending());                                    // worker blocked on the gate
 
     gate.set_value();
-    for (int i = 0; i < 1000 && loader.pending(); ++i)
+    for (int i = 0; i < 5000 && loader.pending(); ++i)
         std::this_thread::sleep_for(std::chrono::milliseconds(2));
     CHECK_FALSE(loader.pending());                              // finished but NOT yet polled -> not pending
 

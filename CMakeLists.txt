@@ -178,6 +178,7 @@ unset(CMAKE_POLICY_VERSION_MINIMUM)
 set(OSS_DEFAULT_FONT "${imgui_SOURCE_DIR}/misc/fonts/Roboto-Medium.ttf")
 
 find_package(OpenGL REQUIRED)
+find_package(Threads REQUIRED)
 
 # --- FFmpeg (video/audio decoding for the Video Player node) ---
 # The one system dependency: FFmpeg doesn't FetchContent cleanly (it's not a
@@ -358,7 +359,9 @@ add_executable(core_tests
   src/audio/AcidVoice.cpp
 )
 target_include_directories(core_tests PRIVATE src ${stb_SOURCE_DIR})
-find_package(Threads REQUIRED)
+# shader_streamer/gl_smoke run the same std::async code but link glfw, which pulls in pthreads
+# transitively; core_tests links neither glfw nor anything else that drags in Threads, so it
+# needs Threads::Threads explicitly.
 target_link_libraries(core_tests PRIVATE glm::glm doctest::doctest ${CMAKE_DL_LIBS} Threads::Threads)
 add_test(NAME core_tests COMMAND core_tests)
 

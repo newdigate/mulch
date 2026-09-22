@@ -59,6 +59,17 @@ public:
     // True while an asynchronous load (worker-thread decode/parse) is in flight and NOT yet
     // finished. The offline renderer polls this between frames and waits before advancing, so
     // it must be answerable without evaluate(). Default false (synchronous nodes).
+    //
+    // Contract: a node that polls an async result during evaluate() MUST publish it on that
+    // same evaluate(). The renderer checks loading() before evaluating, so a result consumed
+    // in frame N but only published in N+1 captures frame N stale.
+    // Note the converse is NOT implied: false does not mean the node's output is final --
+    // Image Sequencer prefetches ahead and renders fine while loading() is true.
+    //
+    // Limit: because loading() is checked BEFORE evaluate(), the frame on which a node first
+    // discovers it needs new media is still captured with the old content (e.g. the sequencer
+    // publishes its current texture and only then launches the fetch). The gate prevents the
+    // 2nd..Nth stale frames, not the 1st.
     virtual bool loading() const { return false; }
 
     // Optional button bank, rendered by the node editor as a row of buttons under the

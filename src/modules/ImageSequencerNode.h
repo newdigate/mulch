@@ -7,6 +7,7 @@
 #include <string>
 #include <utility>
 #include <vector>
+#include "core/AsyncLoader.h"
 #include "core/Node.h"
 #include "core/PathUtil.h"
 #include "core/ImageSequence.h"
@@ -160,9 +161,9 @@ public:
     }
 
     std::string statusLine() const override { return status_; }
-    bool loading() const override {   // a prefetch in flight and not yet decoded
-        return fetch_.valid() && fetch_.wait_for(std::chrono::seconds(0)) != std::future_status::ready;
-    }
+    // A prefetch in flight and not yet decoded (finished-but-unpolled does not count --
+    // see futurePending() in core/AsyncLoader.h).
+    bool loading() const override { return futurePending(fetch_); }
 
 private:
     // Synchronous decode+upload into the shown texture (the first image on folder load).

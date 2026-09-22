@@ -7,6 +7,17 @@
 
 namespace oss {
 
+// True while `f` holds a worker-thread result that is in flight AND not yet finished. A
+// finished-but-unpolled future does NOT count: callers (AsyncLoader::pending(), and any node
+// that hand-rolls a std::future instead of going through AsyncLoader) use this to decide
+// whether to wait for more data, and the actual consumption happens via .get()/poll() on the
+// next pass -- counting a finished-but-unconsumed future as pending would wait for a
+// consumption that only happens after the wait ends.
+template <class T>
+inline bool futurePending(const std::future<T>& f) {
+    return f.valid() && f.wait_for(std::chrono::seconds(0)) != std::future_status::ready;
+}
+
 // Runs a load function on a worker thread whenever its string key changes, and
 // lets the main thread poll for the finished result (which it then applies --
 // e.g. uploads to GL). The load runs entirely off the main thread; the future's
@@ -35,14 +46,9 @@ public:
         return false;
     }
 
-    // True while a load is in flight AND not yet finished. A finished-but-unpolled future does
-    // NOT count: the offline renderer waits on this between frames, and the node's next
-    // evaluate() consumes the result via poll() -- counting it would wait for an evaluate that
-    // only happens after the wait ends.
-    bool pending() const {
-        return future_.valid() &&
-               future_.wait_for(std::chrono::seconds(0)) != std::future_status::ready;
-    }
+    // True while a load is in flight AND not yet finished. See futurePending() above for why
+    // a finished-but-unpolled future does not count.
+    bool pending() const { return futurePending(future_); }
 
 private:
     std::string    key_;
