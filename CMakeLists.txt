@@ -328,6 +328,7 @@ add_executable(core_tests
   tests/test_state_variable_filter.cpp
   tests/test_crossover_filter.cpp
   tests/test_bar_sync.cpp
+  tests/test_offline_render.cpp
   src/gfx/ImageLoader.cpp
   tests/test_image_loader.cpp
   tests/test_image_sequence.cpp
