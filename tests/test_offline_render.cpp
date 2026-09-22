@@ -105,9 +105,19 @@ TEST_CASE("validateRenderSettings: a good set passes and each fault has its own 
     CHECK_FALSE(validateRenderSettings(s, true, err));
     CHECK(err == "finish bar must be after start bar");
 
+    s = validSettings(); s.endBar = std::nan("");   // the negated `!(end > start)` is deliberate: pin it
+    CHECK_FALSE(validateRenderSettings(s, true, err));
+    CHECK(err == "finish bar must be after start bar");
+
     s = validSettings(); s.startBar = -1.0; s.endBar = 2.0;
     CHECK_FALSE(validateRenderSettings(s, true, err));
     CHECK(err == "start bar must be 0 or later");
+
+    // Both the finish-bar-order check and the start->=0 check fail at once: this pins which
+    // one wins, i.e. that they run in this order and not the other way around.
+    s = validSettings(); s.startBar = -2.0; s.endBar = -3.0;
+    CHECK_FALSE(validateRenderSettings(s, true, err));
+    CHECK(err == "finish bar must be after start bar");
 
     s = validSettings(); s.prerollBars = -0.5;
     CHECK_FALSE(validateRenderSettings(s, true, err));
@@ -125,13 +135,29 @@ TEST_CASE("validateRenderSettings: a good set passes and each fault has its own 
     CHECK_FALSE(validateRenderSettings(s, true, err));
     CHECK(err == "width and height must be between 16 and 8192");
 
+    s = validSettings(); s.width = 9000;   // other axis, other direction
+    CHECK_FALSE(validateRenderSettings(s, true, err));
+    CHECK(err == "width and height must be between 16 and 8192");
+
+    s = validSettings(); s.height = 8;     // other axis, other direction
+    CHECK_FALSE(validateRenderSettings(s, true, err));
+    CHECK(err == "width and height must be between 16 and 8192");
+
     s = validSettings(); s.width = 641;
+    CHECK_FALSE(validateRenderSettings(s, true, err));
+    CHECK(err == "width and height must be even");
+
+    s = validSettings(); s.height = 481;   // the other axis of the even check
     CHECK_FALSE(validateRenderSettings(s, true, err));
     CHECK(err == "width and height must be even");
 
     s = validSettings(); s.outPath.clear();
     CHECK_FALSE(validateRenderSettings(s, true, err));
     CHECK(err == "choose an output file");
+
+    err = "stale";   // a success must clear a leftover message from a prior failed call
+    CHECK(validateRenderSettings(validSettings(), true, err));
+    CHECK(err.empty());
 }
 
 TEST_CASE("parseRenderArgs: full option set") {
@@ -157,6 +183,12 @@ TEST_CASE("parseRenderArgs: defaults leave the sentinels for the driver to fill"
     CHECK(a.settings.height == 0);
     CHECK(a.settings.fps == 60);
     CHECK(a.settings.prerollBars == doctest::Approx(1.0));
+
+    // A second parse into the same struct must not inherit anything from the first: it has
+    // to reset every field, not just the ones this call happens to set explicitly.
+    a.settings.fps = 7;
+    REQUIRE(parseRenderArgs({"song.oss", "out.mp4"}, a, err));
+    CHECK(a.settings.fps == 60);
 }
 
 TEST_CASE("parseRenderArgs: bad input is rejected with a message") {
@@ -167,8 +199,15 @@ TEST_CASE("parseRenderArgs: bad input is rejected with a message") {
     CHECK(err == "--size expects WxH, got 12x");
     CHECK_FALSE(parseRenderArgs({"song.oss", "out.mp4", "--size", "abc"}, a, err));
     CHECK(err == "--size expects WxH, got abc");
+    CHECK_FALSE(parseRenderArgs({"song.oss", "out.mp4", "--size", "1920y1080"}, a, err));      // wrong separator
+    CHECK(err == "--size expects WxH, got 1920y1080");
+    CHECK_FALSE(parseRenderArgs({"song.oss", "out.mp4", "--size", "1920x1080junk"}, a, err));  // trailing junk
+    CHECK(err == "--size expects WxH, got 1920x1080junk");
     CHECK_FALSE(parseRenderArgs({"song.oss", "out.mp4", "--fps", "sixty"}, a, err));
     CHECK(err == "bad value for --fps: sixty");
+    CHECK_FALSE(parseRenderArgs({"song.oss", "out.mp4", "--fps", "inf"}, a, err));             // not an integer
+    CHECK_FALSE(parseRenderArgs({"song.oss", "out.mp4", "--start", "2junk"}, a, err));         // trailing junk
+    CHECK_FALSE(parseRenderArgs({"song.oss", "out.mp4", "--start", "nan"}, a, err));           // non-finite
     CHECK_FALSE(parseRenderArgs({"song.oss", "out.mp4", "--end"}, a, err));
     CHECK(err == "--end needs a value");
     CHECK_FALSE(parseRenderArgs({"song.oss", "out.mp4", "--bogus", "1"}, a, err));

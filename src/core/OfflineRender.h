@@ -1,4 +1,5 @@
 #pragma once
+#include <climits>
 #include <cmath>
 #include <cstdlib>
 #include <iterator>
@@ -17,6 +18,11 @@ constexpr int    kRenderFrameRateCount = (int)std::size(kRenderFrameRates);   //
 constexpr int    kRenderMinSize        = 16;
 constexpr int    kRenderMaxSize        = 8192;
 constexpr double kRenderLoadTimeoutSeconds = 30.0;   // give up waiting for a node's async load
+
+// parseRenderArgs sentinels for "not given on the command line" -- the driver (main.cpp,
+// not yet written) fills these in once the project is loaded / Preferences are read.
+inline constexpr double kRenderEndBarFromProject   = -1.0;  // -> the project's Automation song length
+inline constexpr int    kRenderSizeFromPreferences = 0;     // -> the Preferences texture size
 
 struct RenderSettings {
     double startBar    = 0.0;    // first captured bar (>= 0)
@@ -93,19 +99,23 @@ inline bool validateRenderSettings(const RenderSettings& s, bool hasOutputNode, 
 }
 
 // `--render <project.oss> <out.mp4> [--start B] [--end B] [--fps N] [--size WxH] [--preroll B]`
-// (`args` = everything after `--render`). Fields not given are left as SENTINELS for the
-// driver to fill once the project is loaded: endBar = -1 (-> the project's Automation song
-// length) and width = height = 0 (-> the Preferences texture size).
+// (`args` = everything after `--render`). Fields not given are left as SENTINELS (see
+// kRenderEndBarFromProject / kRenderSizeFromPreferences above) for the driver to fill once
+// the project is loaded.
 struct RenderCliArgs {
     std::string    projectPath;
     RenderSettings settings;
 };
 
+inline const char* renderUsage() {
+    return "usage: --render <project.oss> <out.mp4> [--start B] [--end B] [--fps N] [--size WxH] [--preroll B]";
+}
+
 inline bool parseRenderArgs(const std::vector<std::string>& args, RenderCliArgs& out, std::string& err) {
     out = RenderCliArgs{};
-    out.settings.endBar = -1.0;
-    out.settings.width  = 0;
-    out.settings.height = 0;
+    out.settings.endBar = kRenderEndBarFromProject;
+    out.settings.width  = kRenderSizeFromPreferences;
+    out.settings.height = kRenderSizeFromPreferences;
     std::vector<std::string> positional;
     for (std::size_t i = 0; i < args.size(); ++i) {
         const std::string& a = args[i];
@@ -118,23 +128,46 @@ inline bool parseRenderArgs(const std::vector<std::string>& args, RenderCliArgs&
         const char* c = v.c_str();
         char* end = nullptr;
         if (a == "--size") {
+            // strtol saturates to LONG_MIN/LONG_MAX on overflow rather than failing to parse
+            // (`end` still advances past the digits), so an absurd value like a 20-digit
+            // width would otherwise reach the `(int)` cast below and truncate to garbage
+            // (or be UB outright) instead of being rejected here.
             long w = std::strtol(c, &end, 10);
-            if (end == c || *end != 'x') { err = "--size expects WxH, got " + v; return false; }
+            if (end == c || *end != 'x' || w < INT_MIN || w > INT_MAX) {
+                err = "--size expects WxH, got " + v; return false;
+            }
             const char* hs = end + 1;
             long h = std::strtol(hs, &end, 10);
-            if (end == hs || *end != '\0') { err = "--size expects WxH, got " + v; return false; }
+            if (end == hs || *end != '\0' || h < INT_MIN || h > INT_MAX) {
+                err = "--size expects WxH, got " + v; return false;
+            }
             out.settings.width = (int)w; out.settings.height = (int)h;
             continue;
         }
+        if (a == "--fps") {
+            // Parsed as an integer, not through the generic double branch below: `(int)d`
+            // on a double is only well-defined once you already know it is finite and in
+            // range, and a bogus "59.94" should be reported as-typed rather than silently
+            // truncated to 59 and then diagnosed as an unsupported frame rate.
+            long n = std::strtol(c, &end, 10);
+            if (end == c || *end != '\0' || n < 1 || n > 1000) {
+                err = "bad value for --fps: " + v; return false;
+            }
+            out.settings.fps = (int)n;
+            continue;
+        }
         double d = std::strtod(c, &end);
-        if (end == c || *end != '\0') { err = "bad value for " + a + ": " + v; return false; }
+        // strtod happily parses "inf"/"infinity"/"nan"/huge exponents; casting or comparing
+        // those downstream is undefined or nonsensical, so require finite here.
+        if (end == c || *end != '\0' || !std::isfinite(d)) {
+            err = "bad value for " + a + ": " + v; return false;
+        }
         if      (a == "--start")   out.settings.startBar    = d;
         else if (a == "--end")     out.settings.endBar      = d;
-        else if (a == "--preroll") out.settings.prerollBars = d;
-        else /* --fps */           out.settings.fps         = (int)d;
+        else /* --preroll */       out.settings.prerollBars = d;
     }
     if (positional.size() != 2) {
-        err = "usage: --render <project.oss> <out.mp4> [--start B] [--end B] [--fps N] [--size WxH] [--preroll B]";
+        err = renderUsage();
         return false;
     }
     out.projectPath      = positional[0];
