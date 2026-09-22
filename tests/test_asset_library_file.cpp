@@ -87,3 +87,25 @@ TEST_CASE("An unknown (future) asset type int is preserved verbatim; a negative 
         for (const Asset* a : out.byType((AssetType)t)) CHECK(a->id != 7);
     CHECK(serializeLibrary(out).find("asset 7 99") != std::string::npos);   // a save writes it back
 }
+
+TEST_CASE("parseLibrary tolerates CRLF line endings (no trailing CR on paths, labels, tags, tag names)") {
+    // A .osslib hand-edited on Windows, or passed through a line-ending converter, then opened
+    // on macOS / Linux. Every rest-of-line value used to keep an invisible '\r', so the media
+    // path failed to open with an error that looked correct.
+    AssetLibrary out;
+    REQUIRE(parseLibrary("oss-assetlib 1\r\n"
+                         "asset 3 0\r\n"
+                         "alabel Kick Drum\r\n"
+                         "apath /Volumes/media/my kit/kick 01.wav\r\n"
+                         "atag drums\r\n"
+                         "\r\n"                                  // a blank CRLF line is "\r", not ""
+                         "tagcolor 0.1 0.2 0.3 1.0 drums\r\n", out));
+    const Asset* a = out.find(3);
+    REQUIRE(a != nullptr);
+    CHECK(a->label == "Kick Drum");
+    CHECK(a->path  == "/Volumes/media/my kit/kick 01.wav");   // spaces survive, CR does not
+    REQUIRE(a->tags.size() == 1);
+    CHECK(a->tags[0] == "drums");
+    CHECK(out.tagColors().count("drums") == 1);              // the registry key has no CR either
+    CHECK(out.tagColors().size() == 1);
+}

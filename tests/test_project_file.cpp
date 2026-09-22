@@ -175,3 +175,30 @@ TEST_CASE("parseProject still reads legacy embedded assets") {
     CHECK(out.assets[0].tags[0] == "drums");
     CHECK(out.assetLibraryPath.empty());
 }
+
+TEST_CASE("parseProject tolerates CRLF line endings (no trailing CR on any rest-of-line value)") {
+    // A .oss hand-edited on Windows, or passed through a line-ending converter, then opened on
+    // macOS / Linux. The node `type` is the worst case: "Colour\r" is unknown to the factory, so
+    // restoreProject would silently drop every node. String control defaults, the asset-library
+    // reference, a node's saved state and an automation curve are rest-of-line values too.
+    ProjectDoc out;
+    REQUIRE(parseProject("oss-project 1\r\n"
+                         "transport 120.000000 4 0 0.000000 4.000000 8.000000\r\n"
+                         "node 1 10.000000 20.000000\r\n"
+                         "type Colour\r\n"
+                         "ins 2 /Volumes/media/my kit/kick 01.wav\r\n"
+                         "state b1;0,0.5\r\n"
+                         "\r\n"
+                         "auto 1 0 0.000000 1.000000 b1;0.000000,0.250000,0.000000,0.000000,0.000000,0.000000,0,4.000000,0.750000,0.000000,0.000000,0.000000,0.000000,0\r\n"
+                         "assetlib /Volumes/media/my lib.osslib\r\n", out));
+    CHECK(out.bpm == doctest::Approx(120.0));                 // numeric fields were already CR-safe
+    REQUIRE(out.nodes.size() == 1);
+    CHECK(out.nodes[0].type == "Colour");
+    REQUIRE(out.nodes[0].inputs.size() == 1);
+    CHECK(std::get<std::string>(out.nodes[0].inputs[0].value) == "/Volumes/media/my kit/kick 01.wav");
+    CHECK(out.nodes[0].state == "b1;0,0.5");
+    REQUIRE(out.autos.size() == 1);
+    REQUIRE(out.autos[0].curve.points.size() == 2);
+    CHECK(out.autos[0].curve.points[1].value == doctest::Approx(0.75f));
+    CHECK(out.assetLibraryPath == "/Volumes/media/my lib.osslib");
+}
