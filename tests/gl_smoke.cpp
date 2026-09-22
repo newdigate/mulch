@@ -60,6 +60,10 @@
 #include <chrono>
 #include <cmath>
 #include <thread>
+#ifndef _WIN32
+#include <csignal>
+#include <sys/resource.h>
+#endif
 
 using namespace oss;
 
@@ -208,6 +212,22 @@ public:
     }
 private:
     std::vector<float> buf_;
+};
+
+// Records the clock it was evaluated with, so the offline render's central claim -- that frame k
+// sits at exactly startBar*secondsPerBar + k/fps on a fixed 1/fps dt -- is checked rather than
+// assumed. Wired into nothing: Graph::topologicalOrder seeds every zero-indegree node, so a
+// disconnected probe still runs once per evaluate.
+class ClockProbeNode : public Node {
+public:
+    ClockProbeNode() : Node("ClockProbe") { addOutput("f", PortType::Float); }
+    void evaluate(EvalContext& ctx) override {
+        secs.push_back(ctx.transport ? ctx.transport->seconds : -1.0);
+        dts.push_back(ctx.dt);
+        ext.push_back(ctx.transport && ctx.transport->externalClock && ctx.transport->playing);
+        ctx.out<float>(0, 0.0f);
+    }
+    std::vector<double> secs; std::vector<float> dts; std::vector<char> ext;
 };
 
 // Write a 16x16 solid-colour PNG at `path`. Returns true on success.
@@ -2403,6 +2423,265 @@ int main() {
         if (!dec.open(s.outPath, derr)) { glfwTerminate(); return fail(("offline vanish: the partial file should still be finalised: " + derr).c_str()); }
         std::fprintf(stderr, "gl_smoke OK: the offline capture re-resolves its sinks by id and a vanished Output fails through finish()\n");
     }
+
+    // --- Scenario: the fixed clock places every frame, pre-roll included ---
+    // The feature's central claim, and the one thing the other scenarios all ASSUME: they render
+    // from bar 0, where dropping the start offset entirely -- the likeliest clock bug, and the one
+    // that makes a render begin at the wrong musical position -- is invisible. Rendering from
+    // bar 2 makes the offset load-bearing, and recording the whole clock catches an accumulated
+    // dt, a dt taken from the step budget, and a pre-roll with the sign backwards.
+    {
+        Graph g;
+        auto col   = std::make_unique<ColourNode>(); col->initGL();
+        auto out   = std::make_unique<OutputNode>(); out->initGL();
+        auto probe = std::make_unique<ClockProbeNode>();
+        int cId = g.addNode(std::move(col));
+        int oId = g.addNode(std::move(out));
+        int pId = g.addNode(std::move(probe));
+        if (!g.connect(cId, 0, oId, 0)) { glfwTerminate(); return fail("offline clock: connect"); }
+        g.transport().bpm = 120.0;                     // 4/4 at 120 bpm -> 2 s per bar
+
+        RenderSettings s; s.startBar = 2.0; s.endBar = 2.5; s.prerollBars = 0.25; s.fps = 30;
+        s.width = 64; s.height = 64; s.outPath = "build/_offline_clock.mp4";   // 15 pre-roll + 30 captured
+        std::remove(s.outPath.c_str());
+        OfflineRenderer r; std::string err;
+        if (!r.start(g, s, err)) { glfwTerminate(); return fail(("offline clock: start: " + err).c_str()); }
+        int guard = 0;
+        while (r.step(0.05)) { if (++guard > 100000) { glfwTerminate(); return fail("offline clock: never finished"); } }
+        if (r.progress().phase != OfflineRenderer::Phase::Done) { glfwTerminate(); return fail(("offline clock: " + r.progress().status).c_str()); }
+
+        auto* pr = dynamic_cast<ClockProbeNode*>(g.findNode(pId));
+        if (!pr) { glfwTerminate(); return fail("offline clock: probe node missing"); }
+        if (pr->secs.size() != 45) { std::fprintf(stderr, "offline clock: %zu evaluates\n", pr->secs.size()); glfwTerminate(); return fail("offline clock: wrong evaluate count"); }
+        for (std::size_t i = 0; i < pr->secs.size(); ++i) {
+            double want = 4.0 + ((double)i - 15.0) / 30.0;   // bar 2 == 4.0 s; frame 0 lands exactly there
+            // EXACT, not a tolerance. renderFrameSeconds computes startBar*secondsPerBar + k/fps,
+            // and `want` is that same expression over the same exactly-representable values
+            // (2.0*2.0 == 4.0, k/30.0), so the two are bit-identical. This is the assertion that
+            // separates PLACING each frame from ACCUMULATING dt: over these 45 frames accumulation
+            // drifts by ~1e-15, which no sane epsilon would catch, yet it grows without bound over
+            // a long render. Measured: a 1e-9 tolerance passes an accumulating implementation.
+            if (pr->secs[i] != want) {
+                std::fprintf(stderr, "offline clock: evaluate %zu at %.9f s, want %.9f s\n", i, pr->secs[i], want);
+                glfwTerminate(); return fail("offline clock: frame placed wrong");
+            }
+            if (pr->dts[i] != 1.0f / 30.0f) { glfwTerminate(); return fail("offline clock: dt is not 1/fps"); }
+            if (!pr->ext[i]) { glfwTerminate(); return fail("offline clock: transport not armed as an external clock"); }
+        }
+        std::fprintf(stderr, "gl_smoke OK: the offline fixed clock places all 45 frames (15 pre-roll + 30) from bar 2 at exactly k/fps\n");
+    }
+
+    // --- Scenario: a render range that is empty at this tempo is rejected, not "completed" ---
+    // renderFrameCount returns 0 for a frame count that overflows (endBar 1e18 is finite and
+    // passes every validateRenderSettings rule) and for a zero-length bar. start() must reject
+    // that rather than let step() finish(Done) with no encoder ever opened -- a success with no
+    // file -- and the reject has to land BEFORE the graph is put offline, or it strands it there.
+    {
+        Graph g;
+        auto col = std::make_unique<ColourNode>(); col->initGL();
+        auto out = std::make_unique<OutputNode>(); out->initGL();
+        int cId = g.addNode(std::move(col));
+        int oId = g.addNode(std::move(out));
+        if (!g.connect(cId, 0, oId, 0)) { glfwTerminate(); return fail("offline empty range: connect"); }
+        Preferences live; live.textureWidth = 320; live.textureHeight = 240;
+        g.setPreferences(&live);
+        g.transport().bpm = 120.0; g.transport().seconds = 5.0;
+
+        RenderSettings s; s.startBar = 0.0; s.endBar = 1e18; s.prerollBars = 0.0; s.fps = 30;
+        s.width = 64; s.height = 64; s.outPath = "build/_offline_empty.mp4";
+        OfflineRenderer r; std::string err;
+        if (r.start(g, s, err)) { glfwTerminate(); return fail("offline empty range: an overflowing range should be refused"); }
+        if (err != "the render range is empty at this tempo") { glfwTerminate(); return fail(("offline empty range: wrong error: " + err).c_str()); }
+        // The reject must leave the graph exactly as it found it -- this is what makes the
+        // ordering in start() (counts before the offline flag and the prefs swap) observable.
+        if (g.offline()) { glfwTerminate(); return fail("offline empty range: a rejected start left the graph offline"); }
+        if (g.preferences() != &live) { glfwTerminate(); return fail("offline empty range: a rejected start swapped the preferences"); }
+        if (g.transport().externalClock || g.transport().playing || g.transport().seconds != 5.0)
+            { glfwTerminate(); return fail("offline empty range: a rejected start armed the transport"); }
+
+        s.endBar = 8.0; g.transport().beatsPerBar = 0;   // a hand-edited project: no seconds in a bar
+        if (r.start(g, s, err)) { glfwTerminate(); return fail("offline empty range: a zero-length bar should be refused"); }
+        if (err != "the render range is empty at this tempo") { glfwTerminate(); return fail("offline empty range: wrong error for a zero-length bar"); }
+        if (g.offline()) { glfwTerminate(); return fail("offline empty range: a zero-tempo reject left the graph offline"); }
+        std::fprintf(stderr, "gl_smoke OK: an empty render range is rejected without disturbing the graph\n");
+    }
+
+    // --- Scenario: an encoder that cannot be opened fails the render (exit 1), never Done ---
+    // The CLI's exit code is `phase == Done ? 0 : 1`, so this is the whole signal a batch
+    // pipeline gets. This is the one encode failure provokable without fault injection; the
+    // write/flush/trailer returns are now propagated the same way (see VideoEncoder).
+    {
+        Graph g;
+        auto col = std::make_unique<ColourNode>(); col->initGL();
+        auto out = std::make_unique<OutputNode>(); out->initGL();
+        int cId = g.addNode(std::move(col));
+        int oId = g.addNode(std::move(out));
+        if (!g.connect(cId, 0, oId, 0)) { glfwTerminate(); return fail("offline enc fail: connect"); }
+
+        RenderSettings s; s.startBar = 0.0; s.endBar = 1.0; s.prerollBars = 0.0; s.fps = 30;
+        s.width = 64; s.height = 64;
+        s.outPath = "build/_no_such_dir_offline/out.mp4";       // the directory does not exist
+        OfflineRenderer r; std::string err;
+        if (!r.start(g, s, err)) { glfwTerminate(); return fail(("offline enc fail: start: " + err).c_str()); }
+        int guard = 0;
+        while (r.step(0.05)) { if (++guard > 100000) { glfwTerminate(); return fail("offline enc fail: never finished"); } }
+        if (r.progress().phase != OfflineRenderer::Phase::Failed) { glfwTerminate(); return fail("offline enc fail: an unopenable encoder must fail the render, not complete it"); }
+        if (r.progress().status.rfind("could not open ", 0) != 0) { glfwTerminate(); return fail(("offline enc fail: wrong status: " + r.progress().status).c_str()); }
+        if (g.offline()) { glfwTerminate(); return fail("offline enc fail: the failure must still clear the offline flag"); }
+        std::fprintf(stderr, "gl_smoke OK: an encoder that will not open fails the render instead of reporting Done\n");
+    }
+
+#ifndef _WIN32
+    // --- Scenario: a write failure mid-encode fails the render (the ENOSPC case) ---
+    // The realistic encode failure is running out of disk, and it is the one that used to be
+    // swallowed at four separate call sites -- so a batch pipeline got exit 0 and a truncated
+    // file. RLIMIT_FSIZE is the portable stand-in: with SIGXFSZ ignored, a write past the limit
+    // returns EFBIG exactly as a full disk returns ENOSPC. The failure may surface at the frame
+    // that overflows or be buffered until close(); BOTH are correct outcomes and both must end
+    // in a non-Done phase. In practice AVIOContext buffers ~32 KiB, so a file this small reaches
+    // the fd only on the final flush and it is close() that fails -- which means this scenario is
+    // what finally exercises finish()'s Done->Failed downgrade, a branch that had never once
+    // executed. The assertion accepts either route so a different FFmpeg buffer size cannot
+    // silently turn the test vacuous.
+    {
+        struct rlimit oldLim{};
+        if (getrlimit(RLIMIT_FSIZE, &oldLim) != 0) { glfwTerminate(); return fail("offline enc write fail: getrlimit"); }
+        void (*oldXfsz)(int) = std::signal(SIGXFSZ, SIG_IGN);   // else the process dies on the first over-limit write
+        // 2 KiB against a ~8 KiB output: a 4x margin, so an x264 that compresses this flat colour
+        // rather better or worse than the one measured still overshoots. Creating the file writes
+        // nothing, so the limit cannot turn this into an open failure instead.
+        struct rlimit lim = oldLim; lim.rlim_cur = 2 * 1024;
+        if (setrlimit(RLIMIT_FSIZE, &lim) != 0) {
+            std::signal(SIGXFSZ, oldXfsz); glfwTerminate(); return fail("offline enc write fail: setrlimit");
+        }
+
+        Graph g;
+        auto col = std::make_unique<ColourNode>(); col->initGL();
+        auto out = std::make_unique<OutputNode>(); out->initGL();
+        int cId = g.addNode(std::move(col));
+        int oId = g.addNode(std::move(out));
+        bool wired = g.connect(cId, 0, oId, 0);
+
+        RenderSettings s; s.startBar = 0.0; s.endBar = 4.0; s.prerollBars = 0.0; s.fps = 30;
+        s.width = 320; s.height = 240; s.outPath = "build/_offline_enospc.mp4";
+        std::remove(s.outPath.c_str());
+        OfflineRenderer r; std::string err;
+        bool started = wired && r.start(g, s, err);
+        int guard = 0; bool spun = true;
+        while (started && r.step(0.05)) { if (++guard > 100000) { spun = false; break; } }
+        OfflineRenderer::Progress p = r.progress();      // copy before the limit is lifted
+        bool stillOffline = g.offline();
+
+        // The same bug at the second call site: RecorderNode::stop() used to discard close()'s
+        // bool outright, so an inline recording that never got its trailer still said "saved"
+        // and the user closed the app believing the take was on disk.
+        std::string recStatus = "(not run)";
+        {
+            Graph g2;
+            Preferences small; small.textureWidth = 320; small.textureHeight = 240;
+            g2.setPreferences(&small);
+            auto col2 = std::make_unique<ColourNode>(); col2->initGL();
+            auto rec2 = std::make_unique<RecorderNode>();
+            rec2->inputDefault(3) = true;
+            rec2->inputDefault(4) = std::string("build/_rec_enospc.mp4");
+            auto out2 = std::make_unique<OutputNode>(); out2->initGL();
+            int c2 = g2.addNode(std::move(col2)); int r2 = g2.addNode(std::move(rec2));
+            int o2 = g2.addNode(std::move(out2));
+            if (g2.connect(c2, 0, r2, 0) && g2.connect(r2, 0, o2, 0)) {
+                for (int i = 0; i < 240; ++i) g2.evaluate(1.0f / 30.0f);
+                auto* rn2 = dynamic_cast<RecorderNode*>(g2.findNode(r2));
+                rn2->inputDefault(3) = false;
+                g2.evaluate(1.0f / 30.0f);               // toggles record off -> stop() -> close() fails
+                recStatus = rn2->statusLine();
+            }
+        }
+
+        setrlimit(RLIMIT_FSIZE, &oldLim);                // restore BEFORE any further file writes
+        std::signal(SIGXFSZ, oldXfsz);
+
+        if (!wired)   { glfwTerminate(); return fail("offline enc write fail: connect"); }
+        if (!started) { glfwTerminate(); return fail(("offline enc write fail: start: " + err).c_str()); }
+        if (!spun)    { glfwTerminate(); return fail("offline enc write fail: never finished"); }
+        std::fprintf(stderr, "[enospc] phase=%d status=%s\n", (int)p.phase, p.status.c_str());
+        if (p.phase == OfflineRenderer::Phase::Done) { glfwTerminate(); return fail("offline enc write fail: a truncated file was reported as a completed render"); }
+        if (p.phase != OfflineRenderer::Phase::Failed) { glfwTerminate(); return fail("offline enc write fail: expected Failed"); }
+        // It must be an ENCODE failure, not the encoder failing to open -- otherwise this
+        // scenario would pass without ever reaching a write.
+        if (p.status.rfind("encode failed at frame ", 0) != 0 && p.status.rfind("could not finalise ", 0) != 0) {
+            glfwTerminate(); return fail(("offline enc write fail: wrong failure: " + p.status).c_str());
+        }
+        if (stillOffline) { glfwTerminate(); return fail("offline enc write fail: the failure must still clear the offline flag"); }
+        if (p.status.rfind("could not finalise ", 0) != 0) { glfwTerminate(); return fail("offline enc write fail: the small-file case should fail at close(), exercising finish()'s Done->Failed downgrade"); }
+        std::fprintf(stderr, "[enospc] recorder status=%s\n", recStatus.c_str());
+        if (recStatus.rfind("save failed: ", 0) != 0) { glfwTerminate(); return fail(("offline enc write fail: the Recorder claimed a file it could not finalise: " + recStatus).c_str()); }
+        std::fprintf(stderr, "gl_smoke OK: a render and an inline recording that cannot write their file both fail instead of reporting success\n");
+    }
+
+    // --- Scenario: a write that fails DURING the render (not at close) fails the render ---
+    // The case above is small enough that AVIOContext (~32 KiB buffer) holds the whole file until
+    // close(), so it never reaches av_interleaved_write_frame's return -- the one the encoder used
+    // to discard, and the true ENOSPC path for a long render that fills a disk hours in. High-
+    // entropy frames force flushes mid-render, so the limit is crossed by a write, not a trailer.
+    {
+        const int W = 640, H = 480;
+        std::vector<unsigned char> px((std::size_t)W * H * 4);
+        std::uint32_t seed = 12345u;                                  // deterministic LCG noise
+        for (std::size_t i = 0; i < px.size(); i += 4) {
+            seed = seed * 1664525u + 1013904223u;
+            px[i] = (unsigned char)(seed >> 24); px[i+1] = (unsigned char)(seed >> 16);
+            px[i+2] = (unsigned char)(seed >> 8); px[i+3] = 255;
+        }
+        const char* fixture = "gl_smoke_enospc_noise.png";
+        if (!stbi_write_png(fixture, W, H, 4, px.data(), W * 4)) { glfwTerminate(); return fail("offline enc mid-write: write fixture"); }
+
+        struct rlimit oldLim{};
+        if (getrlimit(RLIMIT_FSIZE, &oldLim) != 0) { std::remove(fixture); glfwTerminate(); return fail("offline enc mid-write: getrlimit"); }
+        void (*oldXfsz)(int) = std::signal(SIGXFSZ, SIG_IGN);
+        // 16 KiB against a ~70 KiB output: a ~4x margin on TOTAL size, which is what has to hold
+        // for the limit to be crossed at all. Which frame reports it is incidental and late
+        // (measured: 54 of 60) because x264's lookahead and B-frame delay mean a frame's packet
+        // reaches the muxer well after capture() handed it over -- so the assertion below is
+        // "stopped short of framesTotal", not a specific frame number.
+        struct rlimit lim = oldLim; lim.rlim_cur = 16 * 1024;
+        if (setrlimit(RLIMIT_FSIZE, &lim) != 0) {
+            std::signal(SIGXFSZ, oldXfsz); std::remove(fixture); glfwTerminate(); return fail("offline enc mid-write: setrlimit");
+        }
+
+        Graph g;
+        auto img = std::make_unique<ImageStreamerNode>(); img->initGL();
+        img->inputDefault(0) = Value(std::string(fixture));
+        auto out = std::make_unique<OutputNode>(); out->initGL();
+        int iId = g.addNode(std::move(img));
+        int oId = g.addNode(std::move(out));
+        bool wired = g.connect(iId, 0, oId, 0);
+
+        RenderSettings s; s.startBar = 0.0; s.endBar = 1.0; s.prerollBars = 0.0; s.fps = 30;
+        s.width = W; s.height = H; s.outPath = "build/_offline_enospc_mid.mp4";
+        std::remove(s.outPath.c_str());
+        OfflineRenderer r; std::string err;
+        bool started = wired && r.start(g, s, err);
+        int guard = 0; bool spun = true;
+        while (started && r.step(0.05)) { if (++guard > 100000) { spun = false; break; } }
+        OfflineRenderer::Progress p = r.progress();
+        bool stillOffline = g.offline();
+
+        setrlimit(RLIMIT_FSIZE, &oldLim);
+        std::signal(SIGXFSZ, oldXfsz);
+        std::remove(fixture);
+
+        if (!wired)   { glfwTerminate(); return fail("offline enc mid-write: connect"); }
+        if (!started) { glfwTerminate(); return fail(("offline enc mid-write: start: " + err).c_str()); }
+        if (!spun)    { glfwTerminate(); return fail("offline enc mid-write: never finished"); }
+        std::fprintf(stderr, "[enospc-mid] phase=%d frames=%lld status=%s\n", (int)p.phase, p.framesDone, p.status.c_str());
+        if (p.phase == OfflineRenderer::Phase::Done) { glfwTerminate(); return fail("offline enc mid-write: a render that could not write its frames reported success"); }
+        // Specifically the frame route: this is what proves av_interleaved_write_frame's return is
+        // propagated and that capture() acts on addVideoFrame's bool.
+        if (p.status.rfind("encode failed at frame ", 0) != 0) { glfwTerminate(); return fail(("offline enc mid-write: expected a per-frame encode failure, got: " + p.status).c_str()); }
+        if (p.framesDone >= p.framesTotal) { glfwTerminate(); return fail("offline enc mid-write: the render should have stopped short, not captured every frame"); }
+        if (stillOffline) { glfwTerminate(); return fail("offline enc mid-write: the failure must still clear the offline flag"); }
+        std::fprintf(stderr, "gl_smoke OK: a write failure mid-render stops the render and reports the frame it failed on\n");
+    }
+#endif
 
     glfwDestroyWindow(win);
     glfwTerminate();

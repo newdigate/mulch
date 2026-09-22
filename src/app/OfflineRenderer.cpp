@@ -66,6 +66,20 @@ bool OfflineRenderer::start(Graph& g, const RenderSettings& s, std::string& err)
     }
     if (!validateRenderSettings(s, out != nullptr, err)) return reject(err);
 
+    // Frame counts BEFORE anything is mutated: they depend only on the tempo, which arming the
+    // transport below does not touch, and a reject() once the graph has been put offline would
+    // strand it there -- the stuck-flag failure step()'s INVARIANT warns about.
+    const double    secondsPerBar = g.transport().secondsPerBar();
+    const long long preroll       = prerollFrameCount(s, secondsPerBar);
+    const long long total         = renderFrameCount(s, secondsPerBar);
+    // renderFramesOver returns 0 for a range that is empty or whose frame count is not a finite,
+    // representable number -- `--end 1e18` is finite and passes every rule above, then overflows
+    // the count -- and a hand-edited beatsPerBar = 0 makes secondsPerBar 0. This has to be a
+    // reject, not a completion check hoisted to the top of step()'s loop: that would get the
+    // count right but then finish(Done) with no encoder ever opened, reporting success and
+    // writing no file at all.
+    if (total < 1) return reject("the render range is empty at this tempo");
+
     // GL objects live in the editor context (current on the graph thread). The FBO is
     // re-created per job at the render size; Framebuffer::create reports completeness itself.
     if (!blitProg_) { blitProg_ = linkProgram(kBlitVS, kBlitFS); fsq_.create(); }
@@ -91,9 +105,9 @@ bool OfflineRenderer::start(Graph& g, const RenderSettings& s, std::string& err)
     t.playing       = true;          // synced nodes run
     t.looping       = false;         // linear start -> finish
     renderClock_    = t;             // pin the WHOLE armed clock; evaluateFrame re-asserts it verbatim
-    secondsPerBar_  = t.secondsPerBar();
-    prerollFrames_  = prerollFrameCount(s, secondsPerBar_);
-    totalFrames_    = renderFrameCount(s, secondsPerBar_);
+    secondsPerBar_  = secondsPerBar;   // computed above, before any of this ran
+    prerollFrames_  = preroll;
+    totalFrames_    = total;
     k_              = -prerollFrames_;
     enc_.reset();
     audioRate_ = 0;
@@ -129,6 +143,7 @@ void OfflineRenderer::finish(Phase outcome, std::string status) {
     graph_ = nullptr;                  // guard against any accidental post-job use
     progress_.phase          = outcome;
     progress_.status         = status;
+    progress_.waitingForLoad = false;   // a finished job is not waiting, however it ended
     progress_.elapsedSeconds = now() - startTime_;
     std::fprintf(stderr, "[Render] %s\n", status.c_str());
 }
@@ -162,6 +177,14 @@ static AudioOutputNode* audioOutNodeOf(Graph* g, int id) {
     return (g && id) ? dynamic_cast<AudioOutputNode*>(g->findNode(id)) : nullptr;
 }
 
+// A frame the encoder refused: finish(Failed) so the CLI's `phase == Done ? 0 : 1` exit code
+// actually reports it, naming FFmpeg's reason (ENOSPC is the realistic one).
+bool OfflineRenderer::encodeFailed(long long k) {
+    const std::string& why = enc_->lastError();
+    finish(Phase::Failed, "encode failed at frame " + std::to_string(k) + (why.empty() ? "" : ": " + why));
+    return false;
+}
+
 bool OfflineRenderer::openEncoder() {
     // Audio is recorded only if it is connected at the first captured frame (the Recorder's rule).
     AudioOutputNode* aout = audioOutNodeOf(graph_, audioOutId_);
@@ -189,8 +212,18 @@ bool OfflineRenderer::capture(long long k) {
         return false;
     }
     TexRef src = out->current();
+    // The guard restores the framebuffer bindings, viewport, program, VAO and enables on exit, so
+    // this makes no assumption about what the caller had bound and leaves nothing behind for the
+    // next node or ImGui. It also removes the need for an explicit Framebuffer::unbind().
+    GLStateGuard guard;
     fbo_.bind();                                          // FBO + viewport
     glDisable(GL_BLEND); glDisable(GL_DEPTH_TEST); glDisable(GL_SCISSOR_TEST);
+    // Clear FIRST and unconditionally, not just on the no-texture branch: linkProgram returns a
+    // live-looking non-zero handle even when the link FAILED (it only logs), so a broken blit
+    // program draws nothing and the read-back below would otherwise return undefined texture
+    // memory -- uncounted by blackFrames and reported as a clean render.
+    glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
+    glClear(GL_COLOR_BUFFER_BIT);
     if (src.id) {
         glUseProgram(blitProg_);
         glActiveTexture(GL_TEXTURE0);
@@ -200,22 +233,24 @@ bool OfflineRenderer::capture(long long k) {
         glBindTexture(GL_TEXTURE_2D, 0);
         glUseProgram(0);
     } else {
-        glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
-        glClear(GL_COLOR_BUFFER_BIT);
-        ++progress_.blackFrames;
+        ++progress_.blackFrames;                          // no texture: the clear above IS the frame
     }
     // 2. Read back (bottom-up rows, what the encoder wants).
     pixels_.resize((std::size_t)settings_.width * settings_.height * 4);
     glPixelStorei(GL_PACK_ALIGNMENT, 1);
     glReadPixels(0, 0, settings_.width, settings_.height, GL_RGBA, GL_UNSIGNED_BYTE, pixels_.data());
-    Framebuffer::unbind();
 
-    // 3. Encode: pts is exactly k (the encoder rounds t*fps).
+    // 3. Encode: pts is exactly k (the encoder rounds t*fps). A refused frame is a failed render
+    //    -- a full disk must not come back as exit 0 and a file quietly missing its tail.
     if (!enc_ && !openEncoder()) return false;
-    enc_->addVideoFrame(pixels_.data(), (double)k / (double)settings_.fps);
+    if (!enc_->addVideoFrame(pixels_.data(), (double)k / (double)settings_.fps))
+        return encodeFailed(k);
 
     // 4. Audio: pad with silence / trim to exactly sampleRate/fps frames so the audio clock
-    //    (sample count) can never drift from the video clock.
+    //    (sample count) can never drift from the video clock. This assumes a CONSTANT sample
+    //    rate: audioRate_ is latched when the encoder opens and the block's own rate is not
+    //    re-checked, so a source that changed rate mid-render would be silently time-warped
+    //    rather than resampled. Unreachable today -- every audio source is fixed at 48 kHz.
     if (progress_.audio) {
         AudioOutputNode* aout = audioOutNodeOf(graph_, audioOutId_);
         // An Audio Out that vanished mid-render (Graph::clear()) encodes as silence rather than
@@ -228,7 +263,7 @@ bool OfflineRenderer::capture(long long k) {
         audioScratch_.assign(want * 2, 0.0f);
         const std::size_t n = std::min(have, want);
         std::copy(blk.begin(), blk.begin() + (std::ptrdiff_t)(n * 2), audioScratch_.begin());
-        enc_->addAudio(audioScratch_.data(), (int)(want * 2));
+        if (!enc_->addAudio(audioScratch_.data(), (int)(want * 2))) return encodeFailed(k);
     }
     return true;
 }
@@ -253,11 +288,13 @@ bool OfflineRenderer::step(double budgetSeconds) {
                 return false;
             }
             progress_.status = "waiting for " + who;
+            progress_.waitingForLoad = true;
             progress_.elapsedSeconds = n - startTime_;
             return true;
         }
         loadWaitStart_ = -1.0;
         progress_.status.clear();
+        progress_.waitingForLoad = false;
 
         if (k_ == 0) captureStartTime_ = now();
         evaluateFrame(k_);

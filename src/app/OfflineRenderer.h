@@ -9,6 +9,7 @@
 #include "core/Transport.h"
 #include "gfx/Framebuffer.h"
 #include "gfx/FullscreenPass.h"
+#include "gfx/GLStateGuard.h"
 #include "gfx/VideoEncoder.h"
 
 namespace oss {
@@ -21,6 +22,10 @@ class Graph;
 // node's texture through its own render-sized FBO into a VideoEncoder together with the first
 // Audio Out node's stereo block (padded/trimmed to exactly sampleRate/fps frames, so audio can
 // never drift from video). Between frames it waits while any node reports loading().
+//
+// The audio track is LATCHED at the first captured frame, the Recorder's rule: if Audio Out has
+// nothing connected then, the file is video only for the whole render (the outcome line says so)
+// and audio connected later is ignored. The latch covers the sample rate too.
 //
 // start() snapshots the Transport and the graph's Preferences pointer, swaps in a copy with the
 // render size (ShaderNodes recreate their FBOs from it), and sets the graph offline; finish()
@@ -41,6 +46,10 @@ public:
         long long blackFrames = 0;                     // frames with no Output texture (captured black)
         long long resizedAudioFrames = 0;              // frames whose audio block was padded/trimmed
         bool   audio = false;                          // the file has an audio track
+        // True exactly on a step() that yielded without rendering because a node is still
+        // loading. A structured signal so a driver does not have to string-match `status`:
+        // the CLI's plain step() loop uses it to sleep instead of busy-spinning the gate.
+        bool   waitingForLoad = false;
         double elapsedSeconds = 0.0;                   // wall time since start()
         double speed = 0.0;                            // captured frames per wall second
         std::string outPath;
@@ -87,6 +96,7 @@ private:
     bool anyNodeLoading(std::string& who) const;
     void evaluateFrame(long long k);
     bool capture(long long k);                         // false after finish(Failed)
+    bool encodeFailed(long long k);                    // finish(Failed) naming the frame; returns false
     bool openEncoder();
     void finish(Phase outcome, std::string status);
     static double now();

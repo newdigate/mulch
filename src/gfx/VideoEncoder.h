@@ -34,6 +34,8 @@ public:
     // Append one video frame. `rgba` is width*height*4 bytes, bottom row first
     // (GL/FBO order); it is flipped to top-down for encoding. `tSeconds` is the
     // frame's presentation time (the recording elapsed time).
+    // FALSE means the frame did not reach the file (a full disk, an I/O error, a
+    // codec refusal). A caller that ignores it ships a file missing frames.
     bool addVideoFrame(const std::uint8_t* rgba, double tSeconds);
 
     // Append interleaved float audio at the rate/channels passed to open()
@@ -42,7 +44,13 @@ public:
     bool addAudio(const float* samples, int count);
 
     // Flush the encoders, write the trailer, and close the file. Idempotent.
+    // FALSE with `err` set means the file was NOT finalised -- an mp4 without its
+    // trailer is unplayable, so a caller must report that rather than "saved".
     bool close(std::string& err);
+
+    // FFmpeg's message for the most recent write/encode failure ("" if none). Lets a caller
+    // that only has the bool from addVideoFrame()/addAudio() name the cause.
+    const std::string& lastError() const { return writeErr_; }
 
 private:
     bool encodeWrite(AVCodecContext* ctx, AVStream* st, AVFrame* frame);
@@ -63,6 +71,7 @@ private:
     int64_t lastVpts_ = -1;          // last video pts (codec time base = 1/fps)
     int64_t aCount_   = 0;           // audio samples written (audio pts)
     std::vector<float> afifo_;       // pending mono float samples
+    std::string writeErr_;           // FFmpeg's message for the last write/encode failure
     bool    opened_ = false;
 };
 

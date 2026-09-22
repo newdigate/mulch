@@ -51,6 +51,32 @@ TEST_CASE("renderFrameCount: a non-finite or absurd range yields no frames, neve
     CHECK(renderFrameCount(s, kSpb120) == 0);
 }
 
+// Documented where the math lives, because the consequence is in OfflineRenderer::start(): a
+// zero frame count is reachable through settings that pass EVERY validation rule, so start() has
+// to reject it separately (`if (total < 1) ... "the render range is empty at this tempo"`).
+// Without that, step() would capture one frame and then immediately finish(Done) -- a success
+// reporting "0 frames" -- or, if the completion check were hoisted above the first frame instead,
+// a Done outcome with no encoder ever opened and no file on disk at all.
+TEST_CASE("renderFrameCount: zero is reachable from settings that validate, so start() must reject") {
+    std::string err;
+    // Route 1: an endBar that is finite, positive and after startBar -- nothing validateRenderSettings
+    // tests -- whose frame count then overflows renderFramesOver's representable range.
+    RenderSettings s; s.startBar = 0.0; s.endBar = 1e18; s.fps = 60;
+    s.width = 64; s.height = 64; s.outPath = "out.mp4";
+    CHECK(validateRenderSettings(s, true, err));       // every rule passes...
+    CHECK(renderFrameCount(s, kSpb120) == 0);          // ...and there is still nothing to render
+
+    // Route 2: a hand-edited project file with beatsPerBar = 0 -> no seconds in a bar, so any
+    // bar range is zero-length however sane the settings are.
+    RenderSettings ok; ok.startBar = 0.0; ok.endBar = 8.0; ok.fps = 60;
+    ok.width = 64; ok.height = 64; ok.outPath = "out.mp4";
+    Transport t; t.bpm = 120.0; t.beatsPerBar = 0;
+    CHECK(t.secondsPerBar() == 0.0);
+    CHECK(validateRenderSettings(ok, true, err));
+    CHECK(renderFrameCount(ok, t.secondsPerBar()) == 0);
+    CHECK(renderFrameCount(ok, kSpb120) == 960);       // the same settings at a real tempo
+}
+
 TEST_CASE("prerollFrameCount: same rule over prerollBars") {
     RenderSettings s; s.prerollBars = 1.0; s.fps = 60;
     CHECK(prerollFrameCount(s, kSpb120) == 120);
