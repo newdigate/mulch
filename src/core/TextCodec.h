@@ -23,8 +23,14 @@ inline std::string unescape(const std::string& s) {
     return o;
 }
 // The remainder of `ls` after the current token, leading whitespace trimmed (rest-of-line fields).
+// One trailing '\r' is dropped so a CRLF-edited .oss/.osslib parses like an LF one: the values here
+// are paths, labels, node types and control text, none of which legitimately ends in a CR, and a CR
+// left on a path fails to open with an error that looks correct. Numeric fields need no help
+// (`operator>>` treats '\r' as whitespace) and the header checks are prefix tests.
 inline std::string restOfLine(std::istringstream& ls) {
-    std::string rest; std::getline(ls >> std::ws, rest); return rest;
+    std::string rest; std::getline(ls >> std::ws, rest);
+    if (!rest.empty() && rest.back() == '\r') rest.pop_back();
+    return rest;
 }
 
 } // namespace oss
