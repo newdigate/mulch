@@ -1,4 +1,5 @@
 #include <doctest/doctest.h>
+#include <limits>
 #include "core/OfflineRender.h"
 
 using namespace oss;
@@ -28,6 +29,25 @@ TEST_CASE("renderFrameCount: float noise does not add a frame, a tiny range stil
     CHECK(renderFrameCount(s, kSpb120) == 0);                   // inverted
 }
 
+TEST_CASE("renderFrameCount: a partial trailing frame is still rendered") {
+    RenderSettings s; s.startBar = 0.0; s.endBar = 1.0; s.fps = 60;
+    const double spb145 = 240.0 / 145.0;              // 1 bar @ 145 bpm = 1.655172 s
+    CHECK(renderFrameCount(s, spb145) == 100);        // 99.31 -> ceil, not round/floor
+    long long n = renderFrameCount(s, spb145);        // the contract, asserted directly:
+    CHECK(renderFrameSeconds(s, spb145, n - 1) <  spb145);   // last frame starts in range
+    CHECK(renderFrameSeconds(s, spb145, n)     >= spb145);   // the next one does not
+}
+
+TEST_CASE("renderFrameCount: a non-finite or absurd range yields no frames, never UB") {
+    RenderSettings s; s.startBar = 0.0; s.fps = 60;
+    s.endBar = std::numeric_limits<double>::quiet_NaN();
+    CHECK(renderFrameCount(s, kSpb120) == 0);
+    s.endBar = std::numeric_limits<double>::infinity();
+    CHECK(renderFrameCount(s, kSpb120) == 0);
+    s.endBar = 1e18;
+    CHECK(renderFrameCount(s, kSpb120) == 0);
+}
+
 TEST_CASE("prerollFrameCount: same rule over prerollBars") {
     RenderSettings s; s.prerollBars = 1.0; s.fps = 60;
     CHECK(prerollFrameCount(s, kSpb120) == 120);
@@ -45,6 +65,13 @@ TEST_CASE("renderFrameSeconds: frame k from the start bar, clamped at zero") {
     s.startBar = 0.0;
     CHECK(renderFrameSeconds(s, kSpb120, -120) == doctest::Approx(0.0));   // pre-roll sits at the start
     CHECK(renderFrameSeconds(s, kSpb120, -1)   == doctest::Approx(0.0));
+}
+
+TEST_CASE("pre-roll and the frame clock compose: frame -P sits prerollBars before the start") {
+    RenderSettings s; s.startBar = 4.0; s.prerollBars = 1.0; s.fps = 60;
+    const long long P = prerollFrameCount(s, kSpb120);
+    CHECK(P == 120);
+    CHECK(renderFrameSeconds(s, kSpb120, -P) == doctest::Approx(6.0));   // one bar before bar 4
 }
 
 TEST_CASE("audioSamplesPerFrame: exact at 48 kHz for every listed rate") {
