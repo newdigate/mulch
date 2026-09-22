@@ -23,6 +23,7 @@ public:
     AudioPlayerNode();
     void evaluate(EvalContext& ctx) override;
     std::string statusLine() const override { return status_; }
+    bool loading() const override { return loader_.pending(); }
 
     // Test/inspection accessors.
     double   playhead() const { return playhead_; }

@@ -329,6 +329,7 @@ add_executable(core_tests
   tests/test_crossover_filter.cpp
   tests/test_bar_sync.cpp
   tests/test_offline_render.cpp
+  tests/test_async_loader.cpp
   src/gfx/ImageLoader.cpp
   tests/test_image_loader.cpp
   tests/test_image_sequence.cpp
@@ -357,7 +358,8 @@ add_executable(core_tests
   src/audio/AcidVoice.cpp
 )
 target_include_directories(core_tests PRIVATE src ${stb_SOURCE_DIR})
-target_link_libraries(core_tests PRIVATE glm::glm doctest::doctest ${CMAKE_DL_LIBS})
+find_package(Threads REQUIRED)
+target_link_libraries(core_tests PRIVATE glm::glm doctest::doctest ${CMAKE_DL_LIBS} Threads::Threads)
 add_test(NAME core_tests COMMAND core_tests)
 
 # Two fake "projectM" modules (4.1 and 4.2) so core_tests can exercise ProjectMApi's version gate,

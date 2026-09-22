@@ -56,6 +56,11 @@ public:
     virtual std::string saveState() const { return std::string(); }
     virtual void        loadState(const std::string& /*s*/) {}
 
+    // True while an asynchronous load (worker-thread decode/parse) is in flight and NOT yet
+    // finished. The offline renderer polls this between frames and waits before advancing, so
+    // it must be answerable without evaluate(). Default false (synchronous nodes).
+    virtual bool loading() const { return false; }
+
     // Optional button bank, rendered by the node editor as a row of buttons under the
     // node's name (GL-free: ints/strings only). Default = none. A node exposes preset/
     // mode buttons by overriding these; the editor calls onButtonPressed() on a click.

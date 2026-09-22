@@ -160,6 +160,9 @@ public:
     }
 
     std::string statusLine() const override { return status_; }
+    bool loading() const override {   // a prefetch in flight and not yet decoded
+        return fetch_.valid() && fetch_.wait_for(std::chrono::seconds(0)) != std::future_status::ready;
+    }
 
 private:
     // Synchronous decode+upload into the shown texture (the first image on folder load).

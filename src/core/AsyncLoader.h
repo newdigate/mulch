@@ -35,6 +35,15 @@ public:
         return false;
     }
 
+    // True while a load is in flight AND not yet finished. A finished-but-unpolled future does
+    // NOT count: the offline renderer waits on this between frames, and the node's next
+    // evaluate() consumes the result via poll() -- counting it would wait for an evaluate that
+    // only happens after the wait ends.
+    bool pending() const {
+        return future_.valid() &&
+               future_.wait_for(std::chrono::seconds(0)) != std::future_status::ready;
+    }
+
 private:
     std::string    key_;
     std::future<T> future_;
