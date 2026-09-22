@@ -12,12 +12,16 @@ void drawTransportBar(Transport& t, ProjectBarIO* io) {
 
     // Project actions in a left-anchored "File" menu (drawn first, so it sits to the left of
     // the "View" menu); a left menu never clips off a narrow window.
-    if (io && (io->onLoad || io->onSave || io->onSaveAs)) {
+    if (io && (io->onLoad || io->onSave || io->onSaveAs || io->onRender)) {
         if (ImGui::BeginMenu("File")) {
             if (io->onLoad   && ImGui::MenuItem("Load..."))    io->onLoad();
             ImGui::Separator();
             if (io->onSave   && ImGui::MenuItem("Save"))       io->onSave();
             if (io->onSaveAs && ImGui::MenuItem("Save As...")) io->onSaveAs();
+            if (io->onRender) {
+                ImGui::Separator();
+                if (ImGui::MenuItem("Render Video...")) io->onRender();
+            }
             ImGui::EndMenu();
         }
     }

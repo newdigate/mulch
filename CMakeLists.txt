@@ -262,6 +262,7 @@ set(APP_SOURCES
   src/ui/DockLayout.cpp
   src/ui/ControlsPanel.cpp
   src/ui/PropertiesPanel.cpp
+  src/ui/RenderDialog.cpp
   src/app/ThreadPriority.cpp
   src/app/MidiSyncEngine.cpp
   src/app/OfflineRenderer.cpp

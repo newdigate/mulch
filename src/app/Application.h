@@ -12,6 +12,8 @@
 #include "ui/PropertiesPanel.h"
 #include "ui/ControlsPanel.h"
 #include "app/MidiSyncEngine.h"
+#include "app/OfflineRenderer.h"
+#include "ui/RenderDialog.h"
 
 struct GLFWwindow;
 
@@ -28,6 +30,8 @@ public:
     void frame(float dt);             // build the editor UI and evaluate the graph
     TexRef outputTexture() const;     // the OutputNode's current texture (for the output window)
     Graph& graph() { return graph_; }
+    OfflineRenderer&   renderer() { return renderer_; }             // the offline render job (also driven by --render)
+    const Preferences& preferences() const { return prefs_; }
 
     bool saveProjectToFile(const std::string& path);
     bool loadProjectFromFile(const std::string& path);
@@ -64,6 +68,12 @@ private:
     bool saveLibraryOrPrompt();   // write currentLibraryPath_, or Save-As when unbound; false if cancelled
     bool saveLibraryToFile(const std::string& path);
     bool loadLibraryFromFile(const std::string& path);
+
+    // Declared LAST, after graph_, so they are destroyed before it: OfflineRenderer's destructor
+    // cancels any running job, which restores the graph/transport/preferences it is mid-render.
+    OfflineRenderer  renderer_;
+    RenderDialog     renderDialog_;
+    bool             showRender_ = false;
 };
 
 // Factory used by the app and the add-node menu.
