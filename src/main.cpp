@@ -50,7 +50,10 @@ static int runScreenshot(const std::string& path) {
     GLFWwindow* win = glfwCreateWindow(1280, 900, "shader-streamer-screenshot", nullptr, nullptr);
     if (!win) { std::fprintf(stderr, "createWindow failed (no offscreen GL?)\n"); glfwTerminate(); return 1; }
     glfwMakeContextCurrent(win);
-    if (!gladLoadGL((GLADloadfunc)glfwGetProcAddress)) { glfwDestroyWindow(win); glfwTerminate(); return 1; }
+    if (!gladLoadGL((GLADloadfunc)glfwGetProcAddress)) {
+        std::fprintf(stderr, "gladLoadGL failed\n");
+        glfwDestroyWindow(win); glfwTerminate(); return 1;
+    }
 
     IMGUI_CHECKVERSION();
     ImGui::CreateContext();
@@ -148,7 +151,10 @@ static int runRender(const std::vector<std::string>& args) {
     GLFWwindow* win = glfwCreateWindow(640, 480, "shader-streamer-render", nullptr, nullptr);
     if (!win) { std::fprintf(stderr, "createWindow failed (no offscreen GL?)\n"); glfwTerminate(); return 1; }
     glfwMakeContextCurrent(win);
-    if (!gladLoadGL((GLADloadfunc)glfwGetProcAddress)) { glfwDestroyWindow(win); glfwTerminate(); return 1; }
+    if (!gladLoadGL((GLADloadfunc)glfwGetProcAddress)) {
+        std::fprintf(stderr, "gladLoadGL failed\n");
+        glfwDestroyWindow(win); glfwTerminate(); return 1;
+    }
 
     IMGUI_CHECKVERSION();                     // the Application's panels need a context even unused
     ImGui::CreateContext();
@@ -163,10 +169,11 @@ static int runRender(const std::vector<std::string>& args) {
             std::fprintf(stderr, "could not load project %s\n", cli.projectPath.c_str());
         } else {
             oss::RenderSettings s = cli.settings;
-            if (s.endBar == oss::kRenderEndBarFromProject) s.endBar = app.graph().automation().lengthBars();
-            if (s.width == oss::kRenderSizeFromPreferences || s.height == oss::kRenderSizeFromPreferences) {
-                s.width = app.preferences().textureWidth; s.height = app.preferences().textureHeight;
-            }
+            // Fill only what the command line did not actually give: comparing endBar/width/height
+            // back against the parser's sentinels would misfire if someone typed the sentinel itself
+            // (e.g. `--end -1`, `--size 0x100`) -- endGiven/sizeGiven are the structural signal.
+            if (!cli.endGiven)  s.endBar = app.graph().automation().lengthBars();
+            if (!cli.sizeGiven) { s.width = app.preferences().textureWidth; s.height = app.preferences().textureHeight; }
             oss::OfflineRenderer& r = app.renderer();
             if (!r.start(app.graph(), s, err)) {
                 std::fprintf(stderr, "render failed: %s\n", err.c_str());
@@ -180,8 +187,9 @@ static int runRender(const std::vector<std::string>& args) {
                     if (t - lastPrint >= 1.0) {
                         lastPrint = t;
                         const oss::OfflineRenderer::Progress& p = r.progress();
-                        std::fprintf(stderr, "  %lld / %lld frames (%.1fx real time)\n",
-                                     p.framesDone, p.framesTotal, p.speed / (double)s.fps);
+                        std::fprintf(stderr, "  %lld / %lld frames (%.1fx real time)%s%s\n",
+                                     p.framesDone, p.framesTotal, p.speed / (double)s.fps,
+                                     p.status.empty() ? "" : " - ", p.status.c_str());
                     }
                 }
                 rc = (r.progress().phase == oss::OfflineRenderer::Phase::Done) ? 0 : 1;

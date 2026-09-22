@@ -5,6 +5,7 @@
 extern "C" {
 #include <libavformat/avformat.h>
 #include <libavcodec/avcodec.h>
+#include <libavutil/log.h>
 #include <libavutil/opt.h>
 #include <libavutil/channel_layout.h>
 #include <libswscale/swscale.h>
@@ -42,6 +43,10 @@ void VideoEncoder::freeAll() {
 
 bool VideoEncoder::open(const std::string& path, int width, int height, int fps,
                         int audioRate, int audioChannels, std::string& err) {
+    // Both consumers (the Recorder and the offline --render CLI) otherwise get ~20 lines of
+    // libx264/aac per-frame statistics dumped to stderr on every open -- harmless in the app's
+    // own log but noise on the scripted path this CLI exists for. Process-wide and idempotent.
+    av_log_set_level(AV_LOG_ERROR);
     width_ = width; height_ = height;
     writeErr_.clear(); writeFailed_ = false;   // no stale failure from an earlier attempt
     if (fps <= 0) fps = 60;

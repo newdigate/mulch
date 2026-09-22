@@ -455,6 +455,11 @@ add_test(NAME render_cli
   COMMAND shader_streamer --render tests/assets/render_smoke.oss ${CMAKE_BINARY_DIR}/_cli_render.mp4
           --end 1 --fps 24 --size 160x120 --preroll 0.25
   WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
+# Exit 0 alone does not prove the fixture actually rendered anything: restoreProject silently
+# drops unknown node types and type-mismatched control lines, so a mis-typed fixture (or one
+# missing everything but an Output node) would still "succeed" as a black, video-only file.
+# The renderer's own outcome line says so ("... video only" / "N black frames") -- fail on it.
+set_tests_properties(render_cli PROPERTIES FAIL_REGULAR_EXPRESSION "black frames|video only")
 
 # Copy shaders next to the executable so the app can be run from the build dir too
 # (it also resolves shaders/ when run from the repo root).

@@ -212,12 +212,67 @@ TEST_CASE("parseRenderArgs: defaults leave the sentinels for the driver to fill"
     CHECK(a.settings.height == 0);
     CHECK(a.settings.fps == 60);
     CHECK(a.settings.prerollBars == doctest::Approx(1.0));
+    CHECK_FALSE(a.endGiven);
+    CHECK_FALSE(a.sizeGiven);
 
     // A second parse into the same struct must not inherit anything from the first: it has
     // to reset every field, not just the ones this call happens to set explicitly.
     a.settings.fps = 7;
+    a.endGiven = a.sizeGiven = true;
     REQUIRE(parseRenderArgs({"song.oss", "out.mp4"}, a, err));
     CHECK(a.settings.fps == 60);
+    CHECK_FALSE(a.endGiven);
+    CHECK_FALSE(a.sizeGiven);
+}
+
+TEST_CASE("parseRenderArgs: endGiven/sizeGiven are true only when that option was actually typed") {
+    RenderCliArgs a; std::string err;
+    REQUIRE(parseRenderArgs({"song.oss", "out.mp4", "--start", "1"}, a, err));
+    CHECK_FALSE(a.endGiven);    // --start does not imply --end
+    CHECK_FALSE(a.sizeGiven);
+
+    REQUIRE(parseRenderArgs({"song.oss", "out.mp4", "--end", "10"}, a, err));
+    CHECK(a.endGiven);
+    CHECK(a.settings.endBar == doctest::Approx(10.0));
+
+    REQUIRE(parseRenderArgs({"song.oss", "out.mp4", "--size", "640x480"}, a, err));
+    CHECK(a.sizeGiven);
+    CHECK(a.settings.width == 640);
+    CHECK(a.settings.height == 480);
+}
+
+// The two sentinels (kRenderEndBarFromProject == -1.0, kRenderSizeFromPreferences == 0) are
+// values a user can legitimately type. Comparing settings.endBar/width/height back against
+// them to decide "was this given" would silently reinterpret an explicit, invalid request as
+// "not given" and let it through -- these values must instead reach validateRenderSettings
+// (via endGiven/sizeGiven staying true) and be rejected there, not be swallowed by the parser.
+TEST_CASE("parseRenderArgs: typing the sentinel value itself still counts as given") {
+    RenderCliArgs a; std::string err;
+    REQUIRE(parseRenderArgs({"song.oss", "out.mp4", "--end", "-1"}, a, err));
+    CHECK(a.endGiven);
+    CHECK(a.settings.endBar == doctest::Approx(-1.0));
+    {
+        // With startBar defaulted to 0, endBar == -1 must fail validation rather than be
+        // silently swapped out for the project's song length.
+        std::string verr;
+        CHECK_FALSE(validateRenderSettings(a.settings, /*hasOutputNode=*/true, verr));
+        CHECK(verr == "finish bar must be after start bar");
+    }
+
+    // --end 8 keeps the endBar/startBar check from firing first (a fresh parseRenderArgs call
+    // resets endBar back to its own sentinel unless --end is given again), isolating the check
+    // this case is actually about: width == 0.
+    REQUIRE(parseRenderArgs({"song.oss", "out.mp4", "--end", "8", "--size", "0x100"}, a, err));
+    CHECK(a.sizeGiven);
+    CHECK(a.settings.width == 0);
+    CHECK(a.settings.height == 100);
+    {
+        // width == 0 must fail validation rather than be silently swapped out for the
+        // Preferences texture size.
+        std::string verr;
+        CHECK_FALSE(validateRenderSettings(a.settings, /*hasOutputNode=*/true, verr));
+        CHECK(verr == "width and height must be between 16 and 8192");
+    }
 }
 
 TEST_CASE("parseRenderArgs: bad input is rejected with a message") {

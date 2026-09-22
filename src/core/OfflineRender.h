@@ -100,11 +100,17 @@ inline bool validateRenderSettings(const RenderSettings& s, bool hasOutputNode, 
 
 // `--render <project.oss> <out.mp4> [--start B] [--end B] [--fps N] [--size WxH] [--preroll B]`
 // (`args` = everything after `--render`). Fields not given are left as SENTINELS (see
-// kRenderEndBarFromProject / kRenderSizeFromPreferences above) for the driver to fill once
-// the project is loaded.
+// kRenderEndBarFromProject / kRenderSizeFromPreferences above) as the parser's one place
+// defining "not given"; the driver must NOT compare settings.endBar/width/height back against
+// those sentinels to decide whether to fill them in -- a user who happens to type the sentinel
+// (`--end -1`, `--size 0x100`) would then be silently reinterpreted as "not given" instead of
+// rejected by validateRenderSettings. endGiven/sizeGiven are the structural signal: true only
+// when parseRenderArgs actually saw that option on the command line.
 struct RenderCliArgs {
     std::string    projectPath;
     RenderSettings settings;
+    bool           endGiven  = false;   // false -> settings.endBar is the sentinel; driver fills from the project
+    bool           sizeGiven = false;   // false -> settings.width/height are the sentinel; driver fills from Preferences
 };
 
 inline const char* renderUsage() {
@@ -142,6 +148,7 @@ inline bool parseRenderArgs(const std::vector<std::string>& args, RenderCliArgs&
                 err = "--size expects WxH, got " + v; return false;
             }
             out.settings.width = (int)w; out.settings.height = (int)h;
+            out.sizeGiven = true;
             continue;
         }
         if (a == "--fps") {
@@ -163,7 +170,7 @@ inline bool parseRenderArgs(const std::vector<std::string>& args, RenderCliArgs&
             err = "bad value for " + a + ": " + v; return false;
         }
         if      (a == "--start")   out.settings.startBar    = d;
-        else if (a == "--end")     out.settings.endBar      = d;
+        else if (a == "--end")   { out.settings.endBar      = d; out.endGiven = true; }
         else /* --preroll */       out.settings.prerollBars = d;
     }
     if (positional.size() != 2) {
