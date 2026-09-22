@@ -191,6 +191,25 @@ static std::string writeSplitFixture() {
     return path;
 }
 
+// A deliberately mis-sized audio source for the offline capture's pad/trim contract: it ignores
+// dt and always publishes `frames` samples at 48 kHz. Every real source sizes its block with
+// audioBlockFrames(), which at 48 kHz divides exactly by all five supported frame rates -- so
+// nothing in a normal graph exercises the capture's resize to audioSamplesPerFrame(), and a
+// dropped pad/trim would silently drift the audio clock away from the video clock.
+class MisSizedAudioNode : public Node {
+public:
+    explicit MisSizedAudioNode(int frames) : Node("MisSizedAudio"), buf_((std::size_t)frames) {
+        for (std::size_t i = 0; i < buf_.size(); ++i)
+            buf_[i] = 0.5f * (float)std::sin(6.283185307179586 * 440.0 * (double)i / 48000.0);
+        addOutput("audio", PortType::Audio);
+    }
+    void evaluate(EvalContext& ctx) override {
+        ctx.out<AudioRef>(0, AudioRef{buf_.data(), buf_.size(), 48000});
+    }
+private:
+    std::vector<float> buf_;
+};
+
 // Write a 16x16 solid-colour PNG at `path`. Returns true on success.
 static bool writeSolidPNG(const std::string& path, unsigned char r, unsigned char g, unsigned char b) {
     const int W = 16, H = 16;
@@ -2157,6 +2176,232 @@ int main() {
         if (g.preferences() != &real)
             { glfwTerminate(); return fail("offline prefs source: restore should return the graph's actual prefs pointer"); }
         std::fprintf(stderr, "gl_smoke OK: OfflineRenderer sources the render-time copy and the restore from the same g.preferences(), with no separate argument to disagree\n");
+    }
+
+    // --- Scenario: offline render writes every frame of a bar range, sample-locked, and restores state ---
+    {
+        Graph g;
+        auto col  = std::make_unique<ColourNode>(); col->initGL();
+        auto rec  = std::make_unique<RecorderNode>();
+        rec->inputDefault(3) = true;                                            // a LIVE recording in progress
+        rec->inputDefault(4) = std::string("build/_offline_live_rec.mp4");
+        auto out  = std::make_unique<OutputNode>(); out->initGL();
+        auto sine = std::make_unique<SineWaveNode>();
+        auto aout = std::make_unique<AudioOutputNode>();
+        int cId = g.addNode(std::move(col));  int rId = g.addNode(std::move(rec));
+        int oId = g.addNode(std::move(out));  int sId = g.addNode(std::move(sine));
+        int aId = g.addNode(std::move(aout));
+        if (!g.connect(cId, 0, rId, 0) || !g.connect(rId, 0, oId, 0) || !g.connect(sId, 0, aId, 0)) {
+            glfwTerminate(); return fail("offline e2e: connect");
+        }
+        Preferences live; live.textureWidth = 320; live.textureHeight = 240;
+        g.setPreferences(&live);
+        g.transport().bpm = 120.0; g.transport().seconds = 5.0; g.transport().looping = true;
+        g.evaluate(1.0f / 60.0f);                         // one live frame: 320x240, recorder starts
+        auto* on = dynamic_cast<OutputNode*>(g.findNode(oId));
+        auto* rn = dynamic_cast<RecorderNode*>(g.findNode(rId));
+        if (on->current().w != 320) { glfwTerminate(); return fail("offline e2e: live size not applied"); }
+        if (rn->statusLine().rfind("REC", 0) != 0) { glfwTerminate(); return fail("offline e2e: live recorder should be recording"); }
+
+        RenderSettings s; s.startBar = 0.0; s.endBar = 1.0; s.prerollBars = 0.5; s.fps = 30;
+        s.width = 160; s.height = 120; s.outPath = "build/_offline.mp4";
+        std::remove("build/_offline.mp4");
+        OfflineRenderer r; std::string err;
+        if (!r.start(g, s, err)) { glfwTerminate(); return fail(("offline e2e: start: " + err).c_str()); }
+        // The header's contract: step() renders AT LEAST one frame per call, so progress is
+        // guaranteed even with a zero budget. A budget test made before the first frame (rather
+        // than after) would stall here forever.
+        for (long long want = 1; want <= 2; ++want) {
+            if (!r.step(0.0)) { glfwTerminate(); return fail("offline e2e: a zero-budget step ended the job"); }
+            if (r.progress().prerollDone != want) { glfwTerminate(); return fail("offline e2e: a zero-budget step must still render exactly one frame"); }
+        }
+        int steps = 0;
+        while (r.step(0.02)) { if (++steps > 100000) { glfwTerminate(); return fail("offline e2e: never finished"); } }
+        const OfflineRenderer::Progress& p = r.progress();
+        if (p.phase != OfflineRenderer::Phase::Done) { glfwTerminate(); return fail(("offline e2e: " + p.status).c_str()); }
+        if (p.framesDone != 60 || p.prerollDone != 30) { glfwTerminate(); return fail("offline e2e: progress counts (want 60 + 30 pre-roll)"); }
+        if (!p.audio) { glfwTerminate(); return fail("offline e2e: expected an audio track (Sine -> Audio Out)"); }
+        if (p.blackFrames != 0 || p.resizedAudioFrames != 0) { glfwTerminate(); return fail("offline e2e: unexpected black frames or resized audio blocks"); }
+        if (p.status.rfind("rendered _offline.mp4 (60 frames, 2.0 s)", 0) != 0) { glfwTerminate(); return fail(("offline e2e: status line: " + p.status).c_str()); }
+        if (rn->statusLine() != "saved build/_offline_live_rec.mp4") { glfwTerminate(); return fail("offline e2e: the live recording should have stopped + saved during the render"); }
+        // finish() must run exactly once per job. A stray cancel() after a completed render must
+        // not overwrite the outcome -- this is the assertion that makes cancel()'s active() guard
+        // observable in the Done direction (Task 6 covers the never-started null-graph direction).
+        r.cancel();
+        if (r.progress().phase != OfflineRenderer::Phase::Done) { glfwTerminate(); return fail("offline e2e: a cancel() after the job finished overwrote the outcome"); }
+        if (r.progress().framesDone != 60) { glfwTerminate(); return fail("offline e2e: a cancel() after the job finished disturbed the counts"); }
+
+        // The file: exactly 60 frames, 160x120, 2-channel non-silent audio, the Colour at the centre.
+        VideoDecoder dec; std::string derr;
+        if (!dec.open("build/_offline.mp4", derr)) { glfwTerminate(); return fail(("offline e2e: open output: " + derr).c_str()); }
+        if (dec.width() != 160 || dec.height() != 120) { glfwTerminate(); return fail("offline e2e: output size should be 160x120"); }
+        if (!dec.hasAudio() || dec.audioChannels() != 2) { glfwTerminate(); return fail("offline e2e: output should have 2-channel audio"); }
+        VideoFrame vf; std::vector<float> au; double aS = 0; bool aV = false;
+        int frames = 0; bool nz = false; bool centreOk = false;
+        while (dec.decodeFrame(vf, au, aS, aV)) {
+            if (frames == 0) {
+                std::size_t i = ((std::size_t)(vf.height / 2) * vf.width + vf.width / 2) * 4;
+                // Colour default (255,128,25) through a lossy yuv420p round-trip: check loosely.
+                centreOk = vf.rgba[i] > 200 && vf.rgba[i + 1] > 90 && vf.rgba[i + 1] < 170 && vf.rgba[i + 2] < 80;
+            }
+            ++frames;
+            for (float v : au) if (v > 0.01f || v < -0.01f) { nz = true; break; }
+            au.clear();
+        }
+        if (frames != 60) { std::fprintf(stderr, "got %d frames\n", frames); glfwTerminate(); return fail("offline e2e: expected exactly 60 frames in the file"); }
+        if (!nz) { glfwTerminate(); return fail("offline e2e: encoded audio is silent"); }
+        if (!centreOk) { glfwTerminate(); return fail("offline e2e: centre pixel is not the Colour"); }
+
+        // State restored; the next live frame is back at the live size.
+        const Transport& t = g.transport();
+        if (!(t.seconds == 5.0 && t.looping && !t.playing && !t.externalClock)) { glfwTerminate(); return fail("offline e2e: transport not restored"); }
+        if (g.offline()) { glfwTerminate(); return fail("offline e2e: graph still offline"); }
+        g.evaluate(1.0f / 60.0f);
+        if (on->current().w != 320 || on->current().h != 240) { glfwTerminate(); return fail("offline e2e: live texture size not restored"); }
+        // The interrupted live recording must NOT restart on its own: `record` is still true, so
+        // without the Recorder's re-arm latch this frame reopens the same path and truncates the
+        // file the render just saved. Assert the saved file survives, byte size and all.
+        if (rn->statusLine() != "saved build/_offline_live_rec.mp4") { glfwTerminate(); return fail("offline e2e: the live recorder restarted and overwrote its saved file"); }
+        std::ifstream liveRec("build/_offline_live_rec.mp4", std::ios::binary | std::ios::ate);
+        if (!liveRec.good() || liveRec.tellg() <= 0) { glfwTerminate(); return fail("offline e2e: the interrupted live recording was truncated"); }
+        rn->inputDefault(3) = false; g.evaluate(1.0f / 60.0f);   // re-arm cleared; still not recording
+        std::fprintf(stderr, "gl_smoke OK: offline render wrote 60 sample-locked 160x120 frames with stereo audio and restored state\n");
+    }
+
+    // --- Scenario: the capture blit must NOT flip vertically ---
+    // The end-to-end scenario above renders a FLAT colour, which is flip-invariant: not one of
+    // its assertions can tell an upright movie from an upside-down one. FBO textures are
+    // bottom-up and VideoEncoder::addVideoFrame wants bottom-up rows (it flips for encoding),
+    // so the capture blit must leave the rows alone -- unlike the Output window's blit, which
+    // flips because it draws to a screen. Render a vertically asymmetric picture and check which
+    // end of the decoded frame it lands on.
+    {
+        const int W = 64, H = 64;
+        std::vector<unsigned char> px((std::size_t)W * H * 4);
+        for (int y = 0; y < H; ++y)
+            for (int x = 0; x < W; ++x) {
+                std::size_t i = ((std::size_t)y * W + x) * 4;
+                unsigned char v = (y < H / 2) ? 255 : 0;    // stb_image_write's row 0 is the TOP row
+                px[i] = px[i + 1] = px[i + 2] = v; px[i + 3] = 255;
+            }
+        const char* fixture = "gl_smoke_offline_orient.png";
+        if (!stbi_write_png(fixture, W, H, 4, px.data(), W * 4)) { glfwTerminate(); return fail("offline flip: write fixture"); }
+
+        Graph g;
+        auto img = std::make_unique<ImageStreamerNode>(); img->initGL();
+        img->inputDefault(0) = Value(std::string(fixture));
+        auto out = std::make_unique<OutputNode>(); out->initGL();
+        int iId = g.addNode(std::move(img));
+        int oId = g.addNode(std::move(out));
+        if (!g.connect(iId, 0, oId, 0)) { std::remove(fixture); glfwTerminate(); return fail("offline flip: connect"); }
+
+        RenderSettings s; s.startBar = 0.0; s.endBar = 0.1; s.prerollBars = 0.0; s.fps = 30;
+        s.width = 64; s.height = 64; s.outPath = "build/_offline_flip.mp4";
+        std::remove(s.outPath.c_str());
+        OfflineRenderer r; std::string err;
+        if (!r.start(g, s, err)) { std::remove(fixture); glfwTerminate(); return fail(("offline flip: start: " + err).c_str()); }
+        int guard = 0;
+        while (r.step(0.05)) { if (++guard > 100000) { std::remove(fixture); glfwTerminate(); return fail("offline flip: never finished"); } }
+        std::remove(fixture);
+        if (r.progress().phase != OfflineRenderer::Phase::Done) { glfwTerminate(); return fail(("offline flip: " + r.progress().status).c_str()); }
+
+        VideoDecoder dec; std::string derr;
+        if (!dec.open(s.outPath, derr)) { glfwTerminate(); return fail(("offline flip: open output: " + derr).c_str()); }
+        VideoFrame vf; std::vector<float> au; double aS = 0; bool aV = false;
+        if (!dec.decodeFrame(vf, au, aS, aV)) { glfwTerminate(); return fail("offline flip: no frame decoded"); }
+        // VideoFrame rows are bottom-up as well, so row 0 is the BOTTOM of the picture: the
+        // white half must come out at the far end. A flipping blit puts it at row 0 instead.
+        auto midRow = [&](int y) { return (int)vf.rgba[((std::size_t)y * vf.width + vf.width / 2) * 4]; };
+        int bottom = midRow(2), top = midRow(vf.height - 3);
+        if (!(top > 170 && bottom < 90)) {
+            std::fprintf(stderr, "offline flip: bottom row = %d, top row = %d (want dark bottom, bright top)\n", bottom, top);
+            glfwTerminate(); return fail("offline flip: the captured frame is upside down -- the capture blit must not flip");
+        }
+        std::fprintf(stderr, "gl_smoke OK: the offline capture blit preserves bottom-up row order\n");
+    }
+
+    // --- Scenario: every captured frame encodes exactly sampleRate/fps audio frames ---
+    // The end-to-end scenario's Sine sizes its block with audioBlockFrames(), which at 48 kHz
+    // divides exactly by every supported frame rate -- so its blocks are already the right
+    // length and none of its assertions can tell a padding/trimming capture from one that
+    // encodes the raw block. Drive the capture with a source that hands it the WRONG length in
+    // both directions and check the encoded track's duration is set by the video clock anyway.
+    {
+        struct Case { int block; const char* path; } cases[] = {
+            {  800, "build/_offline_audio_pad.mp4"  },   // half a frame's worth -> padded
+            { 2400, "build/_offline_audio_trim.mp4" },   // 1.5x                 -> trimmed
+        };
+        for (const Case& c : cases) {
+            Graph g;
+            auto col = std::make_unique<ColourNode>(); col->initGL();
+            auto out = std::make_unique<OutputNode>(); out->initGL();
+            auto src = std::make_unique<MisSizedAudioNode>(c.block);
+            auto ao  = std::make_unique<AudioOutputNode>();
+            int cId = g.addNode(std::move(col)); int oId = g.addNode(std::move(out));
+            int sId = g.addNode(std::move(src)); int aId = g.addNode(std::move(ao));
+            if (!g.connect(cId, 0, oId, 0) || !g.connect(sId, 0, aId, 0)) { glfwTerminate(); return fail("offline audio lock: connect"); }
+
+            RenderSettings s; s.startBar = 0.0; s.endBar = 0.25; s.prerollBars = 0.0; s.fps = 30;
+            s.width = 64; s.height = 64; s.outPath = c.path;    // 0.25 bar at 120 bpm = 0.5 s = 15 frames
+            std::remove(c.path);
+            OfflineRenderer r; std::string err;
+            if (!r.start(g, s, err)) { glfwTerminate(); return fail(("offline audio lock: start: " + err).c_str()); }
+            int guard = 0;
+            while (r.step(0.05)) { if (++guard > 100000) { glfwTerminate(); return fail("offline audio lock: never finished"); } }
+            if (r.progress().phase != OfflineRenderer::Phase::Done) { glfwTerminate(); return fail(("offline audio lock: " + r.progress().status).c_str()); }
+            if (r.progress().framesDone != 15) { glfwTerminate(); return fail("offline audio lock: expected 15 frames"); }
+            // Every block was the wrong length, so every frame was resized -- and the outcome says so.
+            if (r.progress().resizedAudioFrames != 15) { glfwTerminate(); return fail("offline audio lock: resizedAudioFrames should count every resized frame"); }
+            if (r.progress().status.find("15 audio blocks resized") == std::string::npos) { glfwTerminate(); return fail("offline audio lock: the outcome line should name the resized blocks"); }
+
+            VideoDecoder dec; std::string derr;
+            if (!dec.open(c.path, derr)) { glfwTerminate(); return fail(("offline audio lock: open output: " + derr).c_str()); }
+            VideoFrame vf; std::vector<float> au; double aS = 0; bool aV = false;
+            std::size_t total = 0;
+            while (dec.decodeFrame(vf, au, aS, aV)) { total += au.size(); au.clear(); }   // 48 kHz MONO
+            // 15 frames * 48000/30 = 24000 samples of audio, whatever the source's block size.
+            // Encoding the raw block instead gives 12000 (pad case) or 36000 (trim case), so the
+            // window below is wide enough for AAC's priming/padding and the tail the decoder
+            // stops short of, yet nowhere near either drifted value.
+            std::fprintf(stderr, "[audio lock] %s: %zu mono samples decoded (want ~24000)\n", c.path, total);
+            if (total < 20000 || total > 28000) { glfwTerminate(); return fail("offline audio lock: the audio clock drifted from the video clock"); }
+        }
+        std::fprintf(stderr, "gl_smoke OK: the offline capture pads/trims every frame's audio to sampleRate/fps, so the audio clock cannot drift\n");
+    }
+
+    // --- Scenario: the sinks are re-resolved by id, and a vanished Output fails through finish() ---
+    // capture() looks the Output/Audio Out nodes up through Graph::findNode every frame instead
+    // of caching a Node*, because Graph::clear() (a project load) frees every node mid-render.
+    // Clearing the graph between steps is what tells a re-resolving capture() from one holding a
+    // stale pointer, and the failure must still run finish(): a skipped finish() leaves the
+    // graph's offline flag stuck true, silently muting Audio Out, MIDI Out and the Recorder.
+    {
+        Graph g;
+        auto col = std::make_unique<ColourNode>(); col->initGL();
+        auto out = std::make_unique<OutputNode>(); out->initGL();
+        int cId = g.addNode(std::move(col));
+        int oId = g.addNode(std::move(out));
+        if (!g.connect(cId, 0, oId, 0)) { glfwTerminate(); return fail("offline vanish: connect"); }
+        Preferences live; live.textureWidth = 320; live.textureHeight = 240;
+        g.setPreferences(&live);
+
+        RenderSettings s; s.startBar = 0.0; s.endBar = 1.0; s.prerollBars = 0.0; s.fps = 30;
+        s.width = 64; s.height = 64; s.outPath = "build/_offline_vanish.mp4";
+        std::remove(s.outPath.c_str());
+        OfflineRenderer r; std::string err;
+        if (!r.start(g, s, err)) { glfwTerminate(); return fail(("offline vanish: start: " + err).c_str()); }
+        if (!r.step(0.0) || r.progress().framesDone != 1) { glfwTerminate(); return fail("offline vanish: expected one captured frame before the graph is cleared"); }
+
+        g.clear();                                   // the nodes capture() was reading are now gone
+        if (r.step(0.0)) { glfwTerminate(); return fail("offline vanish: step should have failed once the Output node was freed"); }
+        if (r.progress().phase != OfflineRenderer::Phase::Failed) { glfwTerminate(); return fail("offline vanish: phase should be Failed"); }
+        if (r.progress().status != "the Output node disappeared mid-render") { glfwTerminate(); return fail(("offline vanish: wrong status: " + r.progress().status).c_str()); }
+        if (g.offline()) { glfwTerminate(); return fail("offline vanish: the failure path must still clear the offline flag"); }
+        if (g.preferences() != &live) { glfwTerminate(); return fail("offline vanish: the failure path must still restore the live preferences"); }
+        // The encoder was open with one frame in it; finish() closed it, so the partial file plays.
+        VideoDecoder dec; std::string derr;
+        if (!dec.open(s.outPath, derr)) { glfwTerminate(); return fail(("offline vanish: the partial file should still be finalised: " + derr).c_str()); }
+        std::fprintf(stderr, "gl_smoke OK: the offline capture re-resolves its sinks by id and a vanished Output fails through finish()\n");
     }
 
     glfwDestroyWindow(win);

@@ -30,10 +30,6 @@ class Graph;
 // Driven incrementally: Application::frame calls step(budget) while active() so ImGui can draw
 // progress; the --render CLI calls step() in a plain loop. Runs on the graph thread with the
 // editor GL context current (its FBO/VAO/program live there).
-//
-// TODO(Task 7): step()/capture()/openEncoder() are inert stubs here -- nothing is rendered yet.
-// step() always returns false, so a caller writing the documented `while (active()) step(...)`
-// loop would spin forever (active() stays true from start() until an explicit cancel()).
 class OfflineRenderer {
 public:
     enum class Phase { Idle, Preroll, Rendering, Done, Failed, Cancelled };
