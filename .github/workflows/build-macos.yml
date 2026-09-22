@@ -58,9 +58,9 @@ jobs:
       - name: Test (core, fatal)
         run: ctest --test-dir build -R core_tests --output-on-failure
 
-      - name: Test (gl_smoke, best-effort)
+      - name: Test (gl_smoke + render_cli, best-effort)
         continue-on-error: true
-        run: ctest --test-dir build -R gl_smoke --output-on-failure
+        run: ctest --test-dir build -R "gl_smoke|render_cli" --output-on-failure
 
       - name: Assemble .app bundle
         run: |

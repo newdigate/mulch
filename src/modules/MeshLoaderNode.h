@@ -21,6 +21,7 @@ public:
     void initGL() override;
     void evaluate(EvalContext& ctx) override;
     std::string statusLine() const override { return status_; }
+    bool loading() const override { return loader_.pending(); }
 
 private:
     void uploadScaled(float scale);

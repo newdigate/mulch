@@ -26,6 +26,21 @@ public:
     ~AudioOutputNode() override;
     void evaluate(EvalContext& ctx) override;
 
+    // Test/inspection accessors.
+    // The interleaved-stereo block (L,R,L,R,...) built by the last evaluate(), empty when nothing
+    // was connected. Built on EVERY evaluate -- with or without a device, live or offline -- so the
+    // offline renderer can tap "what you hear". Valid until the next evaluate(), which may
+    // reallocate -- copy, never retain.
+    const std::vector<float>& lastBlock() const { return stereoScratch_; }
+    // The sample rate of the block in lastBlock(); 0 when the block is empty or the source
+    // reported no rate.
+    int lastSampleRate() const { return lastSampleRate_; }
+    // true once evaluate() has entered the device path at all.
+    // ensureDevice() either opens the libsoundio context or latches contextFailed_, so this
+    // flips on ANY machine, with or without a sound card -- it is the offline guard's only
+    // observable, since lastBlock()/lastSampleRate() are filled above the guard.
+    bool deviceTouched() const { return soundio_ != nullptr || contextFailed_; }
+
 private:
     bool ensureDevice(const std::string& wantId, int wantBufferMs);   // open context (once) + ensure the right stream
     bool openContext();
@@ -43,6 +58,7 @@ private:
     std::vector<float>    scratch_;
     std::vector<float>    stereoScratch_;
     int  sampleRate_ = 48000;
+    int  lastSampleRate_ = 0;           // rate of the block in stereoScratch_ (0 = empty)
     std::string currentDeviceId_;       // id the stream is currently open on ("" = default)
     int  currentBufferMs_ = -1;          // buffer ms the stream is currently open with
     bool streamOpen_    = false;

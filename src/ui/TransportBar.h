@@ -11,6 +11,7 @@ struct Transport;
 struct ProjectBarIO {
     std::function<void()> onSave;       // write the current file (or prompt if untitled)
     std::function<void()> onSaveAs;     // always prompt for a destination
+    std::function<void()> onRender;     // File > Render Video... (opens the offline render dialog)
     std::function<void()> onLoad;       // prompt for a file to open
     std::function<void()> onLibOpen;    // Asset Library > Open
     std::function<void()> onLibSave;    // Asset Library > Save

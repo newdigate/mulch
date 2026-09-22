@@ -178,6 +178,7 @@ unset(CMAKE_POLICY_VERSION_MINIMUM)
 set(OSS_DEFAULT_FONT "${imgui_SOURCE_DIR}/misc/fonts/Roboto-Medium.ttf")
 
 find_package(OpenGL REQUIRED)
+find_package(Threads REQUIRED)
 
 # --- FFmpeg (video/audio decoding for the Video Player node) ---
 # The one system dependency: FFmpeg doesn't FetchContent cleanly (it's not a
@@ -261,8 +262,10 @@ set(APP_SOURCES
   src/ui/DockLayout.cpp
   src/ui/ControlsPanel.cpp
   src/ui/PropertiesPanel.cpp
+  src/ui/RenderDialog.cpp
   src/app/ThreadPriority.cpp
   src/app/MidiSyncEngine.cpp
+  src/app/OfflineRenderer.cpp
   src/app/Application.cpp
 )
 
@@ -328,6 +331,8 @@ add_executable(core_tests
   tests/test_state_variable_filter.cpp
   tests/test_crossover_filter.cpp
   tests/test_bar_sync.cpp
+  tests/test_offline_render.cpp
+  tests/test_async_loader.cpp
   src/gfx/ImageLoader.cpp
   tests/test_image_loader.cpp
   tests/test_image_sequence.cpp
@@ -356,7 +361,10 @@ add_executable(core_tests
   src/audio/AcidVoice.cpp
 )
 target_include_directories(core_tests PRIVATE src ${stb_SOURCE_DIR})
-target_link_libraries(core_tests PRIVATE glm::glm doctest::doctest ${CMAKE_DL_LIBS})
+# shader_streamer/gl_smoke run the same std::async code but link glfw, which pulls in pthreads
+# transitively; core_tests links neither glfw nor anything else that drags in Threads, so it
+# needs Threads::Threads explicitly.
+target_link_libraries(core_tests PRIVATE glm::glm doctest::doctest ${CMAKE_DL_LIBS} Threads::Threads)
 add_test(NAME core_tests COMMAND core_tests)
 
 # Two fake "projectM" modules (4.1 and 4.2) so core_tests can exercise ProjectMApi's version gate,
@@ -428,17 +436,30 @@ add_executable(gl_smoke
   src/modules/WireframeNode.cpp
   src/modules/ProjectMNode.cpp
   src/modules/AudioPlayerNode.cpp
+  src/modules/AudioOutputNode.cpp
+  src/app/OfflineRenderer.cpp
   src/audio/FFT.cpp
   src/audio/SignalGenerator.cpp
   src/audio/AudioFile.cpp
 )
 target_include_directories(gl_smoke PRIVATE src ${tinygltf_SOURCE_DIR}
   ${meshoptimizer_SOURCE_DIR}/src ${draco_SOURCE_DIR}/src
-  ${stb_SOURCE_DIR} ${earcut_SOURCE_DIR}/include ${CMAKE_BINARY_DIR})
+  ${stb_SOURCE_DIR} ${earcut_SOURCE_DIR}/include ${CMAKE_BINARY_DIR} ${libsoundio_SOURCE_DIR})
 target_compile_definitions(gl_smoke PRIVATE GLFW_INCLUDE_NONE TINYGLTF_ENABLE_DRACO
   OSS_DEFAULT_FONT="${OSS_DEFAULT_FONT}")
-target_link_libraries(gl_smoke PRIVATE glad_gl41 glfw glm::glm OpenGL::GL tinyobjloader meshoptimizer draco::draco PkgConfig::FFMPEG ${CMAKE_DL_LIBS})
+target_link_libraries(gl_smoke PRIVATE glad_gl41 glfw glm::glm OpenGL::GL tinyobjloader meshoptimizer draco::draco PkgConfig::FFMPEG libsoundio_static ${CMAKE_DL_LIBS})
 add_test(NAME gl_smoke COMMAND gl_smoke WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
+
+# Headless offline render via the app binary (best-effort in CI, like gl_smoke: needs a GL context).
+add_test(NAME render_cli
+  COMMAND shader_streamer --render tests/assets/render_smoke.oss ${CMAKE_BINARY_DIR}/_cli_render.mp4
+          --end 1 --fps 24 --size 160x120 --preroll 0.25
+  WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
+# Exit 0 alone does not prove the fixture actually rendered anything: restoreProject silently
+# drops unknown node types and type-mismatched control lines, so a mis-typed fixture (or one
+# missing everything but an Output node) would still "succeed" as a black, video-only file.
+# The renderer's own outcome line says so ("... video only" / "N black frames") -- fail on it.
+set_tests_properties(render_cli PROPERTIES FAIL_REGULAR_EXPRESSION "black frames|video only")
 
 # Copy shaders next to the executable so the app can be run from the build dir too
 # (it also resolves shaders/ when run from the repo root).

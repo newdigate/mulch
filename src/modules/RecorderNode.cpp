@@ -24,7 +24,10 @@ void RecorderNode::evaluate(EvalContext& ctx) {
     TexRef   vin   = ctx.in<TexRef>(0);
     AudioRef lin   = ctx.in<AudioRef>(1);
     AudioRef rin   = ctx.in<AudioRef>(2);
-    bool     rec   = ctx.in<bool>(3);
+    bool recIn = ctx.in<bool>(3);
+    if (ctx.offline && recording_) suppressed_ = true;  // an offline render interrupted a live recording
+    if (!recIn) suppressed_ = false;                    // re-arm only on a fresh toggle
+    bool rec = recIn && !ctx.offline && !suppressed_;   // the render owns the encoder
     const std::string& file = ctx.in<std::string>(4);
 
     // Pass video + audio straight through so the node is transparent in the graph.
@@ -91,10 +94,17 @@ void RecorderNode::start(const std::string& file, const TexRef& vin, int sampleR
 }
 
 void RecorderNode::stop() {
-    if (enc_) { std::string err; enc_->close(err); enc_.reset(); }
+    // close() failing means the mp4 never got its trailer (or lost frames to a full disk), so it
+    // is unplayable. Reporting "saved" for it would be a lie the user acts on -- they close the
+    // app believing the take is on disk.
+    std::string err;
+    bool ok = true;
+    if (enc_) { ok = enc_->close(err); enc_.reset(); }
     recording_ = false;
-    status_ = file_.empty() ? "idle" : ("saved " + file_);
-    std::fprintf(stderr, "[Recorder] saved %s (%ld frames)\n", file_.c_str(), frames_);
+    if (file_.empty())  status_ = "idle";
+    else if (!ok)       status_ = "save failed: " + err;
+    else                status_ = "saved " + file_;
+    std::fprintf(stderr, "[Recorder] %s (%ld frames)\n", status_.c_str(), frames_);
 }
 
 } // namespace oss

@@ -22,9 +22,11 @@ public:
 
 private:
     void syncPorts(const Preferences* prefs);
+    void allNotesOff();
     void closeAll();
     std::vector<RtMidiOut*>  outs_;
     std::vector<std::string> open_;
+    bool wasOffline_ = false;   // edge-detects entry into offline mode, so allNotesOff() fires once
 };
 
 } // namespace oss

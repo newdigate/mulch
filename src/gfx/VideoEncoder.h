@@ -12,6 +12,18 @@ struct SwsContext;
 
 namespace oss {
 
+// Set FFmpeg's log level to errors only. PROCESS-WIDE, so it belongs at startup and nowhere
+// else: libx264/aac dump ~20 lines of statistics on every encoder open -- noise on the scripted
+// --render path -- but doing it from open() also silenced VideoDecoder and AudioFile for the
+// rest of the session, making the Video Player's diagnostics depend on whether anyone had
+// happened to start a recording first.
+void quietFFmpegLog();
+
+// True if FFmpeg has a muxer for this filename's extension. Exactly the lookup open() does
+// first, so it cannot reject a path open() would have accepted -- it just reports it before any
+// work is done (a render only opens its encoder at the first captured frame).
+bool videoFormatSupported(const std::string& path);
+
 // Thin synchronous FFmpeg muxer: writes RGBA video frames and mono float audio to
 // a movie file (H.264 + AAC in MP4 by default). GL-free -- it takes CPU buffers;
 // the caller reads back the texture and pulls the audio block. The mirror of
@@ -34,6 +46,8 @@ public:
     // Append one video frame. `rgba` is width*height*4 bytes, bottom row first
     // (GL/FBO order); it is flipped to top-down for encoding. `tSeconds` is the
     // frame's presentation time (the recording elapsed time).
+    // FALSE means the frame did not reach the file (a full disk, an I/O error, a
+    // codec refusal). A caller that ignores it ships a file missing frames.
     bool addVideoFrame(const std::uint8_t* rgba, double tSeconds);
 
     // Append interleaved float audio at the rate/channels passed to open()
@@ -42,7 +56,17 @@ public:
     bool addAudio(const float* samples, int count);
 
     // Flush the encoders, write the trailer, and close the file. Idempotent.
+    // FALSE with `err` set means the file was NOT finalised -- an mp4 without its
+    // trailer is unplayable, so a caller must report that rather than "saved".
+    // It also returns false if ANY earlier addVideoFrame()/addAudio() failed, even
+    // when the trailer itself writes: a file that silently lost frames mid-take is
+    // not a successful recording either, and a caller that ignored those per-call
+    // bools still finds out here.
     bool close(std::string& err);
+
+    // FFmpeg's message for the most recent write/encode failure ("" if none). Lets a caller
+    // that only has the bool from addVideoFrame()/addAudio() name the cause.
+    const std::string& lastError() const { return writeErr_; }
 
 private:
     bool encodeWrite(AVCodecContext* ctx, AVStream* st, AVFrame* frame);
@@ -63,6 +87,8 @@ private:
     int64_t lastVpts_ = -1;          // last video pts (codec time base = 1/fps)
     int64_t aCount_   = 0;           // audio samples written (audio pts)
     std::vector<float> afifo_;       // pending mono float samples
+    std::string writeErr_;           // FFmpeg's message for the last write/encode failure
+    bool    writeFailed_ = false;    // STICKY: any write/encode failure since open()
     bool    opened_ = false;
 };
 

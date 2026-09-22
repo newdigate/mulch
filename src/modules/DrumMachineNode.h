@@ -153,6 +153,11 @@ public:
              + std::to_string(loaded_) + "/4 loaded";
     }
 
+    bool loading() const override {
+        for (const auto& l : loaders_) if (l.pending()) return true;
+        return false;
+    }
+
     // Persist only the 8 grids + active index; paths/vol/rate/pan persist as control defaults.
     std::string saveState() const override { return patterns_.encode(); }
     void        loadState(const std::string& s) override { patterns_.decode(s); }

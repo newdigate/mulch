@@ -5,12 +5,29 @@
 extern "C" {
 #include <libavformat/avformat.h>
 #include <libavcodec/avcodec.h>
+#include <libavutil/log.h>
 #include <libavutil/opt.h>
 #include <libavutil/channel_layout.h>
 #include <libswscale/swscale.h>
 }
 
 namespace oss {
+
+// FFmpeg's own message for a negative return code, so a failure names its cause (ENOSPC, EIO...)
+// instead of just "failed". av_strerror falls back to the raw number for codes it does not know.
+static std::string avErr(int code) {
+    char buf[AV_ERROR_MAX_STRING_SIZE] = {0};
+    if (av_strerror(code, buf, sizeof(buf)) < 0) return std::to_string(code);
+    return buf;
+}
+
+void quietFFmpegLog() { av_log_set_level(AV_LOG_ERROR); }
+
+bool videoFormatSupported(const std::string& path) {
+    // The same call avformat_alloc_output_context2(&oc, nullptr, nullptr, path) makes to choose
+    // a muxer from the filename, so the two can never disagree about a path.
+    return av_guess_format(nullptr, path.c_str(), nullptr) != nullptr;
+}
 
 VideoEncoder::~VideoEncoder() {
     if (opened_) { std::string e; close(e); }
@@ -34,7 +51,11 @@ void VideoEncoder::freeAll() {
 
 bool VideoEncoder::open(const std::string& path, int width, int height, int fps,
                         int audioRate, int audioChannels, std::string& err) {
+    // NOTE: the ~20 lines of libx264/aac statistics an open dumps to stderr are quietened by
+    // quietFFmpegLog(), called once at startup. It is NOT done here: av_log_set_level is
+    // process-wide, so opening an encoder would otherwise silence the decoders too.
     width_ = width; height_ = height;
+    writeErr_.clear(); writeFailed_ = false;   // no stale failure from an earlier attempt
     if (fps <= 0) fps = 60;
     if (audioChannels < 1) audioChannels = 1;
     if (audioChannels > 2) audioChannels = 2;
@@ -123,15 +144,24 @@ bool VideoEncoder::open(const std::string& path, int width, int height, int fps,
 }
 
 bool VideoEncoder::encodeWrite(AVCodecContext* ctx, AVStream* st, AVFrame* frame) {
-    if (avcodec_send_frame(ctx, frame) < 0) return false;
+    // Every failure below latches writeFailed_ as well as writeErr_: callers that drop the
+    // per-call bool (RecorderNode::evaluate does, per frame) would otherwise finalise a file
+    // that quietly lost frames and report it as saved. close() consults the latch.
+    int s = avcodec_send_frame(ctx, frame);
+    if (s < 0) { writeErr_ = avErr(s); writeFailed_ = true; return false; }
     for (;;) {
         int r = avcodec_receive_packet(ctx, pkt_);
         if (r == AVERROR(EAGAIN) || r == AVERROR_EOF) break;
-        if (r < 0) return false;
+        if (r < 0) { writeErr_ = avErr(r); writeFailed_ = true; return false; }
         av_packet_rescale_ts(pkt_, ctx->time_base, st->time_base);
         pkt_->stream_index = st->index;
-        av_interleaved_write_frame(oc_, pkt_);
+        // The muxer takes the packet's reference on success and blanks it, so the unref below is
+        // a no-op there and the cleanup path on failure. The return MUST be propagated: this is
+        // where a full disk (ENOSPC) or an I/O error surfaces, and swallowing it is how a
+        // truncated file comes back reported as a clean one.
+        int w = av_interleaved_write_frame(oc_, pkt_);
         av_packet_unref(pkt_);
+        if (w < 0) { writeErr_ = avErr(w); writeFailed_ = true; return false; }
     }
     return true;
 }
@@ -166,21 +196,31 @@ bool VideoEncoder::addAudio(const float* samples, int count) {
         }
         aframe_->pts = aCount_;
         aCount_ += audioFrameSize_;
-        encodeWrite(actx_, ast_, aframe_);
-        afifo_.erase(afifo_.begin(), afifo_.begin() + chunk);
+        bool ok = encodeWrite(actx_, ast_, aframe_);
+        afifo_.erase(afifo_.begin(), afifo_.begin() + chunk);   // drop it either way, so a
+        if (!ok) return false;                                  // failure cannot grow the FIFO
     }
     return true;
 }
 
+// Every step runs even after an earlier one fails -- the trailer and freeAll() must happen either
+// way or the file is left open and the contexts leak -- but the FIRST failure is what `err`
+// reports and what makes this return false. A caller that ignores it publishes a file that was
+// never finalised (or lost frames to a full disk) as a success.
 bool VideoEncoder::close(std::string& err) {
-    (void)err;
     if (!opened_) return true;
     opened_ = false;
-    encodeWrite(vctx_, vst_, nullptr);            // flush video
-    if (actx_) encodeWrite(actx_, ast_, nullptr); // flush audio
-    av_write_trailer(oc_);
+    bool ok = true;
+    auto note = [&](const char* what) {
+        if (ok) { ok = false; err = std::string(what) + (writeErr_.empty() ? "" : ": " + writeErr_); }
+    };
+    if (writeFailed_)                                  note("frames were lost during encoding");
+    if (!encodeWrite(vctx_, vst_, nullptr))            note("flushing the video encoder failed");
+    if (actx_ && !encodeWrite(actx_, ast_, nullptr))   note("flushing the audio encoder failed");
+    int t = av_write_trailer(oc_);
+    if (t < 0) { writeErr_ = avErr(t); note("writing the file trailer failed"); }
     freeAll();
-    return true;
+    return ok;
 }
 
 } // namespace oss

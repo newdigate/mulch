@@ -38,6 +38,11 @@ private:
     std::string status_ = "idle";
     std::vector<std::uint8_t> pixbuf_;          // texture read-back scratch
     std::vector<float> audioScratch_;           // interleave left+right before encoding
+    // Latches once an offline render interrupts a live recording (stop() already saved the
+    // file). Without it, `record` staying true across the render's end restarts and truncates
+    // the file just saved on the next live frame. Clears only when `record` is toggled off,
+    // so the user must re-arm it explicitly.
+    bool suppressed_ = false;
 };
 
 } // namespace oss

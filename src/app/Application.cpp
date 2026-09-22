@@ -56,6 +56,9 @@
 
 namespace oss {
 
+// Wall time the offline render may use per UI frame while active: the editor keeps ~10 fps.
+static constexpr double kRenderStepBudget = 0.1;
+
 std::unique_ptr<Node> makeNode(const std::string& type) {
     if (type == "Colour")      return std::make_unique<ColourNode>();
     if (type == "Image Streamer") return std::make_unique<ImageStreamerNode>();
@@ -237,6 +240,7 @@ void Application::frame(float dt) {
     ProjectBarIO io;
     io.onSave   = [this]{ saveCurrentOrPrompt(); };
     io.onSaveAs = [this]{ saveProjectAs(); };
+    io.onRender = [this]{ showRender_ = true; };
     io.onLoad   = [this]{ loadProjectDialog(); };
     io.onLibOpen   = [this]{ openLibraryDialog(); };
     io.onLibSave   = [this]{ saveLibraryOrPrompt(); };
@@ -270,8 +274,21 @@ void Application::frame(float dt) {
     int selNode = editor_.selectedNodeId();
     properties_.draw(graph_, selNode, &showProperties_);
     controls_.draw(graph_, selNode, &showControls_);
-    syncEngine_.update(graph_.transport(), prefs_, dt);   // MIDI clock sync in/out
-    graph_.evaluate(dt);                     // advances the transport by dt
+
+    renderDialog_.draw(graph_, prefs_, renderer_, &showRender_, currentPath_, projectStatus_);
+    if (renderer_.active()) {
+        // The offline render owns the graph + transport; the sync engine is not updated (it
+        // would fight the renderer for the clock) and the wall-clock evaluate is skipped.
+        renderer_.step(kRenderStepBudget);
+    } else {
+        // Self-heal: the offline flag is bracketed by the renderer's start()/finish(), so a
+        // future early return that skipped finish() would silently mute Audio Out, MIDI Out and
+        // the Recorder for the rest of the session with no error. One line makes that
+        // unrecoverable-without-restart failure impossible. It should never fire.
+        if (graph_.offline()) graph_.setOffline(false);
+        syncEngine_.update(graph_.transport(), prefs_, dt);   // MIDI clock sync in/out
+        graph_.evaluate(dt);                                  // advances the transport by dt
+    }
 }
 
 // The first OutputNode's current texture, shown in the dedicated output window.

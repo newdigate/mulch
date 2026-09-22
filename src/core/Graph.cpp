@@ -125,7 +125,7 @@ void Graph::evaluate(float dt) {
 
         std::vector<Value>& outs = outputs_[id];
         outs.assign(n->outputs().size(), Value{});
-        EvalContext ctx{inputs, outs, dt, &transport_, prefs_};
+        EvalContext ctx{inputs, outs, dt, &transport_, prefs_, offline_};
         n->evaluate(ctx);
     }
 }

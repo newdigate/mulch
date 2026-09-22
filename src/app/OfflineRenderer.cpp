@@ -1,0 +1,374 @@
+#include "app/OfflineRenderer.h"
+#include <algorithm>
+#include <cerrno>
+#include <chrono>
+#include <cstdio>
+#include <cstring>
+#include <filesystem>
+#include <system_error>
+#include "core/Graph.h"
+#include "core/PathUtil.h"
+#include "gfx/GLUtil.h"
+#include "modules/AudioOutputNode.h"
+#include "modules/OutputNode.h"
+
+namespace oss {
+
+// Fullscreen-triangle blit into the render FBO. NO vertical flip: FBO textures are bottom-up
+// and VideoEncoder::addVideoFrame expects bottom-up rows (it flips for encoding), exactly like
+// the Recorder's direct read-back. (The Output window's blit flips because it draws to a screen.)
+static const char* kBlitVS = R"(#version 410 core
+out vec2 vUV;
+void main() {
+    vec2 p = vec2(gl_VertexID == 1 ? 3.0 : -1.0, gl_VertexID == 2 ? 3.0 : -1.0);
+    vUV = (p + 1.0) * 0.5;
+    gl_Position = vec4(p, 0.0, 1.0);
+}
+)";
+static const char* kBlitFS = R"(#version 410 core
+in vec2 vUV;
+out vec4 FragColor;
+uniform sampler2D uTex;
+void main() { FragColor = texture(uTex, vUV); }
+)";
+
+double OfflineRenderer::now() {
+    using clk = std::chrono::steady_clock;
+    return std::chrono::duration<double>(clk::now().time_since_epoch()).count();
+}
+
+OfflineRenderer::~OfflineRenderer() {
+    cancel();
+    if (blitProg_) glDeleteProgram(blitProg_);
+}
+
+bool OfflineRenderer::start(Graph& g, const RenderSettings& s, std::string& err) {
+    // A second start() while a job is running is rejected without disturbing THAT job's
+    // progress()/active() -- unlike the failures below, there is no stale "previous job" for
+    // progress_ to describe here; it is already reporting the live one. (Routing this through
+    // the same reset-progress_ path as the failures below would set phase = Failed on a job
+    // that is still genuinely running, which -- now that active() is derived from phase --
+    // would make active() false out from under it while nothing had actually stopped it.)
+    if (active()) { err = "a render is already running"; return false; }
+
+    // Any failure from here on means no earlier attempt's progress_ should linger: reset it to
+    // Failed so progress() and `err` never disagree about the latest attempt. outPath is kept
+    // (not just wiped by Progress{}) so a failure dialog still has a path to name.
+    auto reject = [&](const std::string& why) {
+        progress_ = Progress{};
+        progress_.phase   = Phase::Failed;
+        progress_.status  = why;
+        progress_.outPath = s.outPath;
+        err = why;
+        return false;
+    };
+
+    OutputNode* out = nullptr; AudioOutputNode* aout = nullptr;
+    for (const auto& n : g.nodes()) {
+        if (!out)  out  = dynamic_cast<OutputNode*>(n.get());
+        if (!aout) aout = dynamic_cast<AudioOutputNode*>(n.get());
+    }
+    if (!validateRenderSettings(s, out != nullptr, err)) return reject(err);
+
+    // Frame counts BEFORE anything is mutated: they depend only on the tempo, which arming the
+    // transport below does not touch, and a reject() once the graph has been put offline would
+    // strand it there -- the stuck-flag failure step()'s INVARIANT warns about.
+    const double    secondsPerBar = g.transport().secondsPerBar();
+    const long long preroll       = prerollFrameCount(s, secondsPerBar);
+    const long long total         = renderFrameCount(s, secondsPerBar);
+    // renderFramesOver returns 0 for a range that is empty or whose frame count is not a finite,
+    // representable number -- `--end 1e18` is finite and passes every rule above, then overflows
+    // the count -- and a hand-edited beatsPerBar = 0 makes secondsPerBar 0. The message covers
+    // BOTH: an overflowing range is the opposite of empty, and reporting it as empty sent the
+    // user looking for a typo in the wrong direction. This has to be a
+    // reject, not a completion check hoisted to the top of step()'s loop: that would get the
+    // count right but then finish(Done) with no encoder ever opened, reporting success and
+    // writing no file at all.
+    if (total < 1) return reject("the render range is empty or too long at this tempo");
+
+    // Reject a destination that cannot be written BEFORE anything renders. openEncoder() runs at
+    // the FIRST CAPTURED frame, so an extension FFmpeg has no muxer for, a missing directory or a
+    // path with no write permission was only discovered after the whole pre-roll had rendered --
+    // measured 1.5 s for a trivial graph at 1920x1080 with a 1-bar 60 fps pre-roll, minutes for a
+    // heavy one. This is an OPTIMISATION, not a guarantee (the path can still vanish, fill up or
+    // lose permission between here and openEncoder()), so the late check stays exactly as it was.
+    if (!videoFormatSupported(s.outPath))
+        return reject("no video format matches " + fileBaseName(s.outPath) + " -- try .mp4");
+    {
+        // Append, never truncate: the probe must not damage a file the user is about to
+        // overwrite (or any other file they mistyped the path of), and it removes only a file it
+        // created itself.
+        std::error_code ec;
+        const bool existed = std::filesystem::exists(s.outPath, ec);
+        std::FILE* f = std::fopen(s.outPath.c_str(), "ab");
+        if (!f) {
+            const std::string why = std::strerror(errno);
+            return reject("cannot write " + s.outPath + ": " + why);
+        }
+        std::fclose(f);
+        if (!existed) std::filesystem::remove(s.outPath, ec);
+    }
+
+    // GL objects live in the editor context (current on the graph thread). The FBO is
+    // re-created per job at the render size; Framebuffer::create reports completeness itself.
+    if (!blitProg_) { blitProg_ = linkProgram(kBlitVS, kBlitFS); fsq_.create(); }
+    if (!fbo_.create(s.width, s.height)) {
+        return reject("could not create a " + std::to_string(s.width) + "x" + std::to_string(s.height)
+                     + " framebuffer");
+    }
+
+    graph_      = &g;
+    livePrefs_  = g.preferences();     // the ONE source for both the render copy below and the restore
+    settings_   = s;
+    outputId_   = out->id();           // validated non-null above
+    audioOutId_ = aout ? aout->id() : 0;
+    savedTransport_ = g.transport();
+    renderPrefs_ = livePrefs_ ? *livePrefs_ : Preferences{};
+    renderPrefs_.textureWidth  = s.width;
+    renderPrefs_.textureHeight = s.height;
+    g.setPreferences(&renderPrefs_);
+    g.setOffline(true);
+
+    Transport& t = g.transport();
+    t.externalClock = true;          // advance() becomes a no-op; we place the position ourselves
+    t.playing       = true;          // synced nodes run
+    t.looping       = false;         // linear start -> finish
+    renderClock_    = t;             // pin the WHOLE armed clock; evaluateFrame re-asserts it verbatim
+    secondsPerBar_  = secondsPerBar;   // computed above, before any of this ran
+    // ALWAYS burn at least one pre-roll frame, whatever the user asked for. A node's async load
+    // only STARTS on its first evaluate() (AudioPlayerNode's loader_.request, the Mesh Loader,
+    // the Image Sequencer), so loading() is false before any frame has run and step()'s gate --
+    // which is checked BEFORE evaluateFrame -- cannot mean anything until one has. With a
+    // pre-roll of 0, frame 0 would be evaluated and CAPTURED while the loaders were still
+    // starting, and openEncoder() latches the audio track from that frame: an Audio File feeding
+    // Audio Out has an empty lastBlock() there, so the whole render comes out video only (exit 0,
+    // wrong file) and the gate then waits for a load whose result can no longer be used.
+    prerollFrames_  = std::max<long long>(1, preroll);
+    totalFrames_    = total;
+    k_              = -prerollFrames_;
+    enc_.reset();
+    audioRate_ = 0;
+
+    progress_ = Progress{};
+    progress_.phase        = Phase::Preroll;      // prerollFrames_ >= 1 always (see above)
+    progress_.prerollTotal = prerollFrames_;
+    progress_.framesTotal  = totalFrames_;
+    progress_.fps          = s.fps;
+    progress_.outPath      = s.outPath;
+    startTime_ = captureStartTime_ = now();
+    loadWaitStart_ = -1.0;
+    std::fprintf(stderr, "[Render] %s: bars %.2f-%.2f, %lld frames at %d fps, %dx%d, pre-roll %lld\n",
+                 s.outPath.c_str(), s.startBar, s.endBar, totalFrames_, s.fps, s.width, s.height, prerollFrames_);
+    return true;
+}
+
+void OfflineRenderer::finish(Phase outcome, std::string status) {
+    if (!active()) return;
+    if (enc_) {
+        std::string e;
+        if (!enc_->close(e) && outcome == Phase::Done) {
+            // A file that failed to finalise is not a success, however many frames were
+            // captured -- an unflushed/untrailered mp4 is unplayable, and the CLI's exit code
+            // (phase == Done ? 0 : 1) is the only signal a batch pipeline gets.
+            outcome = Phase::Failed;
+            status  = "could not finalise " + settings_.outPath + ": " + e;
+        }
+        enc_.reset();
+    }
+    // Release the render-sized framebuffer (shrink, not destroy -- Framebuffer::create is
+    // re-creation-safe and start() sizes it per job anyway). An 8192x8192 render otherwise holds
+    // ~268 MB of texture for the rest of the session. The editor context is current here: every
+    // route into finish() runs on the graph thread, and the destructor already deletes blitProg_.
+    fbo_.create(16, 16);
+    graph_->setOffline(false);
+    graph_->setPreferences(livePrefs_);
+    graph_->transport() = savedTransport_;
+    graph_ = nullptr;                  // guard against any accidental post-job use
+    progress_.phase          = outcome;
+    progress_.status         = status;
+    progress_.waitingForLoad = false;   // a finished job is not waiting, however it ended
+    progress_.elapsedSeconds = now() - startTime_;
+    std::fprintf(stderr, "[Render] %s\n", status.c_str());
+}
+
+void OfflineRenderer::cancel() {
+    if (!active()) return;
+    finish(Phase::Cancelled, "cancelled after " + std::to_string(progress_.framesDone) + " frames");
+}
+
+bool OfflineRenderer::anyNodeLoading(std::string& who) const {
+    for (const auto& n : graph_->nodes())
+        if (n->loading()) { who = n->name() + " #" + std::to_string(n->id()); return true; }
+    return false;
+}
+
+void OfflineRenderer::evaluateFrame(long long k) {
+    Transport& t = graph_->transport();
+    t = renderClock_;                                  // re-assert the WHOLE armed clock verbatim
+    t.seconds = renderFrameSeconds(settings_, secondsPerBar_, k);
+    graph_->evaluate(1.0f / (float)settings_.fps);
+}
+
+// Re-resolve the sinks by id each time rather than caching a Node*: Graph::clear() (a project
+// load) destroys every node, so a pointer held across frames could dangle. Ids are never reused
+// (Graph::addNode counts up and clear() keeps nextId_ monotonic), so a findNode hit can only be
+// the original node -- the dynamic_cast cannot be fooled by a recycled id.
+static OutputNode* outputNodeOf(Graph* g, int id) {
+    return g ? dynamic_cast<OutputNode*>(g->findNode(id)) : nullptr;
+}
+static AudioOutputNode* audioOutNodeOf(Graph* g, int id) {
+    return (g && id) ? dynamic_cast<AudioOutputNode*>(g->findNode(id)) : nullptr;
+}
+
+// A frame the encoder refused: finish(Failed) so the CLI's `phase == Done ? 0 : 1` exit code
+// actually reports it, naming FFmpeg's reason (ENOSPC is the realistic one).
+bool OfflineRenderer::encodeFailed(long long k) {
+    // BY VALUE, not a reference: finish() below resets enc_, which destroys the string this
+    // would otherwise alias. It happens to be safe as one expression today; a local must not
+    // be a use-after-free waiting for someone to hoist it.
+    const std::string why = enc_->lastError();
+    finish(Phase::Failed, "encode failed at frame " + std::to_string(k) + (why.empty() ? "" : ": " + why));
+    return false;
+}
+
+bool OfflineRenderer::openEncoder() {
+    // Audio is recorded only if it is connected at the first captured frame (the Recorder's rule).
+    AudioOutputNode* aout = audioOutNodeOf(graph_, audioOutId_);
+    audioRate_ = (aout && !aout->lastBlock().empty()) ? aout->lastSampleRate() : 0;
+    enc_ = std::make_unique<VideoEncoder>();
+    std::string err;
+    if (!enc_->open(settings_.outPath, settings_.width, settings_.height, settings_.fps,
+                    audioRate_, audioRate_ > 0 ? 2 : 0, err)) {
+        enc_.reset();
+        finish(Phase::Failed, "could not open " + settings_.outPath + ": " + err);
+        return false;
+    }
+    progress_.audio = audioRate_ > 0;
+    return true;
+}
+
+bool OfflineRenderer::capture(long long k) {
+    // 1. Blit the Output node's texture into the render-sized FBO (stretched, like the Output
+    //    window). No texture -> black, counted, never skipped.
+    // Re-resolved by id every frame: Graph::clear() (a project load) can free the node under us,
+    // and the failure has to funnel through finish() like every other one -- see step()'s INVARIANT.
+    OutputNode* out = outputNodeOf(graph_, outputId_);
+    if (!out) {
+        finish(Phase::Failed, "the Output node disappeared mid-render");
+        return false;
+    }
+    TexRef src = out->current();
+    // The guard restores the framebuffer bindings, viewport, program, VAO and enables on exit, so
+    // this makes no assumption about what the caller had bound and leaves nothing behind for the
+    // next node or ImGui. It also removes the need for an explicit Framebuffer::unbind().
+    GLStateGuard guard;
+    fbo_.bind();                                          // FBO + viewport
+    glDisable(GL_BLEND); glDisable(GL_DEPTH_TEST); glDisable(GL_SCISSOR_TEST);
+    // Clear FIRST and unconditionally, not just on the no-texture branch: linkProgram returns a
+    // live-looking non-zero handle even when the link FAILED (it only logs), so a broken blit
+    // program draws nothing and the read-back below would otherwise return undefined texture
+    // memory -- uncounted by blackFrames and reported as a clean render.
+    glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
+    glClear(GL_COLOR_BUFFER_BIT);
+    if (src.id) {
+        glUseProgram(blitProg_);
+        glActiveTexture(GL_TEXTURE0);
+        glBindTexture(GL_TEXTURE_2D, src.id);
+        glUniform1i(glGetUniformLocation(blitProg_, "uTex"), 0);
+        fsq_.draw();
+        glBindTexture(GL_TEXTURE_2D, 0);
+        glUseProgram(0);
+    } else {
+        ++progress_.blackFrames;                          // no texture: the clear above IS the frame
+    }
+    // 2. Read back (bottom-up rows, what the encoder wants).
+    pixels_.resize((std::size_t)settings_.width * settings_.height * 4);
+    glPixelStorei(GL_PACK_ALIGNMENT, 1);
+    glReadPixels(0, 0, settings_.width, settings_.height, GL_RGBA, GL_UNSIGNED_BYTE, pixels_.data());
+
+    // 3. Encode: pts is exactly k (the encoder rounds t*fps). A refused frame is a failed render
+    //    -- a full disk must not come back as exit 0 and a file quietly missing its tail.
+    if (!enc_ && !openEncoder()) return false;
+    if (!enc_->addVideoFrame(pixels_.data(), (double)k / (double)settings_.fps))
+        return encodeFailed(k);
+
+    // 4. Audio: pad with silence / trim to exactly sampleRate/fps frames so the audio clock
+    //    (sample count) can never drift from the video clock. This assumes a CONSTANT sample
+    //    rate: audioRate_ is latched when the encoder opens and the block's own rate is not
+    //    re-checked, so a source that changed rate mid-render would be silently time-warped
+    //    rather than resampled. Unreachable today -- every audio source is fixed at 48 kHz.
+    if (progress_.audio) {
+        AudioOutputNode* aout = audioOutNodeOf(graph_, audioOutId_);
+        // An Audio Out that vanished mid-render (Graph::clear()) encodes as silence rather than
+        // desyncing the track -- the sample count per frame is what keeps the two clocks locked.
+        static const std::vector<float> kNoAudio;
+        const std::vector<float>& blk = aout ? aout->lastBlock() : kNoAudio;
+        const std::size_t want = (std::size_t)audioSamplesPerFrame(audioRate_, settings_.fps);
+        const std::size_t have = blk.size() / 2;
+        if (have != want) ++progress_.resizedAudioFrames;
+        audioScratch_.assign(want * 2, 0.0f);
+        const std::size_t n = std::min(have, want);
+        std::copy(blk.begin(), blk.begin() + (std::ptrdiff_t)(n * 2), audioScratch_.begin());
+        if (!enc_->addAudio(audioScratch_.data(), (int)(want * 2))) return encodeFailed(k);
+    }
+    return true;
+}
+
+bool OfflineRenderer::step(double budgetSeconds) {
+    if (!active()) return false;
+    // INVARIANT: the phase (which active() derives from) and the graph's offline flag are set
+    // together in start() and cleared together in finish(), the ONLY place the phase leaves a
+    // running state. Do not add an early return from step() that bypasses finish(): a stuck-true
+    // offline flag silently mutes Audio Out, MIDI Out and the Recorder for the rest of the
+    // session, with no error and no way back short of restarting. Every failure path here
+    // funnels through finish(Phase::Failed, ...).
+    const double t0 = now();
+    while (active()) {
+        // Loader gate: yield while any node is still loading (re-checked on the next call).
+        std::string who;
+        if (anyNodeLoading(who)) {
+            const double n = now();
+            if (loadWaitStart_ < 0.0) loadWaitStart_ = n;
+            if (n - loadWaitStart_ > loadTimeout_) {
+                finish(Phase::Failed, "timed out waiting for " + who + " to load");
+                return false;
+            }
+            progress_.status = "waiting for " + who;
+            progress_.waitingForLoad = true;
+            progress_.elapsedSeconds = n - startTime_;
+            return true;
+        }
+        loadWaitStart_ = -1.0;
+        progress_.status.clear();
+        progress_.waitingForLoad = false;
+
+        if (k_ == 0) captureStartTime_ = now();
+        evaluateFrame(k_);
+        if (k_ >= 0 && !capture(k_)) return false;    // capture() already finished(Failed)
+        if (k_ < 0) progress_.prerollDone = k_ + prerollFrames_ + 1;
+        else        progress_.framesDone  = k_ + 1;
+        ++k_;
+
+        const double n = now();
+        progress_.phase = k_ < 0 ? Phase::Preroll : Phase::Rendering;
+        progress_.elapsedSeconds = n - startTime_;
+        if (progress_.framesDone > 0 && n > captureStartTime_)
+            progress_.speed = (double)progress_.framesDone / (n - captureStartTime_);
+
+        if (k_ >= totalFrames_) {
+            char buf[256];
+            std::snprintf(buf, sizeof(buf), "rendered %s (%lld frames, %.1f s%s)",
+                          fileBaseName(settings_.outPath).c_str(), totalFrames_,
+                          (double)totalFrames_ / settings_.fps, progress_.audio ? "" : ", video only");
+            std::string msg = buf;
+            if (progress_.blackFrames)        msg += ", " + std::to_string(progress_.blackFrames) + " black frames";
+            if (progress_.resizedAudioFrames) msg += ", " + std::to_string(progress_.resizedAudioFrames) + " audio blocks resized";
+            finish(Phase::Done, msg);
+            return false;
+        }
+        if (n - t0 >= budgetSeconds) break;             // budget spent; at least one frame was rendered
+    }
+    return active();
+}
+
+} // namespace oss

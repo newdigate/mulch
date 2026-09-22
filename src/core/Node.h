@@ -13,12 +13,18 @@ class Graph;
 struct Preferences;
 
 // Per-frame, fully-resolved evaluation context handed to a node.
+// APPEND new fields at the END: ~50 positional brace-inits (almost all in tests/) rely on
+// partial initialisation, and inserting a field of a compatible type silently shifts them.
 struct EvalContext {
     const std::vector<Value>& inputs;   // one resolved value per input port
     std::vector<Value>&       outputs;  // node writes one value per output port
     float                     dt;        // seconds since previous frame
     const Transport*          transport = nullptr;  // global clock (set by Graph::evaluate)
     const Preferences*        prefs     = nullptr;   // app settings (set by Graph::evaluate)
+    bool                      offline   = false;    // an offline render drives the graph (set by Graph::evaluate):
+                                                    // dt is a fixed 1/fps and the transport is externally clocked, so
+                                                    // anything that talks to a real-time device or times a side effect
+                                                    // off the wall clock (Audio Out, MIDI Out, Recorder) must stay quiet
 
     template <class T> const T& in(std::size_t i) const { return std::get<T>(inputs[i]); }
     template <class T> void out(std::size_t i, T v) { outputs[i] = Value(std::move(v)); }
@@ -55,6 +61,25 @@ public:
     // node overrides these (its curves). The string is opaque to the project file.
     virtual std::string saveState() const { return std::string(); }
     virtual void        loadState(const std::string& /*s*/) {}
+
+    // True while an asynchronous load (worker-thread decode/parse) is in flight and NOT yet
+    // finished. The offline renderer polls this between frames and waits before advancing, so
+    // it must be answerable without evaluate(). Default false (synchronous nodes).
+    //
+    // Contract: a node that polls an async result during evaluate() MUST publish it on that
+    // same evaluate(). The renderer checks loading() before evaluating, so a result consumed
+    // in frame N but only published in N+1 captures frame N stale.
+    // Note the converse is NOT implied: false does not mean the node's output is final --
+    // Image Sequencer prefetches ahead and renders fine while loading() is true.
+    //
+    // Limit: because loading() is checked BEFORE evaluate(), the frame on which a node first
+    // discovers it needs new media is still captured with the old content (e.g. the sequencer
+    // publishes its current texture and only then launches the fetch). The gate prevents the
+    // 2nd..Nth stale frames, not the 1st. That first frame is not just cosmetic: the offline
+    // renderer LATCHES the audio track at the first captured frame, so a render that captured
+    // frame 0 before any load had started would come out video only -- which is why it always
+    // burns at least one pre-roll frame before the gate can mean anything.
+    virtual bool loading() const { return false; }
 
     // Optional button bank, rendered by the node editor as a row of buttons under the
     // node's name (GL-free: ints/strings only). Default = none. A node exposes preset/
