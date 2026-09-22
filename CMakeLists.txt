@@ -264,6 +264,7 @@ set(APP_SOURCES
   src/ui/PropertiesPanel.cpp
   src/app/ThreadPriority.cpp
   src/app/MidiSyncEngine.cpp
+  src/app/OfflineRenderer.cpp
   src/app/Application.cpp
 )
 
@@ -435,6 +436,7 @@ add_executable(gl_smoke
   src/modules/ProjectMNode.cpp
   src/modules/AudioPlayerNode.cpp
   src/modules/AudioOutputNode.cpp
+  src/app/OfflineRenderer.cpp
   src/audio/FFT.cpp
   src/audio/SignalGenerator.cpp
   src/audio/AudioFile.cpp

@@ -51,6 +51,8 @@
 #include "gfx/GLUtil.h"
 #include "modules/ProjectMNode.h"
 #include "modules/AudioOutputNode.h"
+#include "core/OfflineRender.h"
+#include "app/OfflineRenderer.h"
 #include <cstdlib>
 #include <fstream>
 #include <filesystem>
@@ -2059,6 +2061,43 @@ int main() {
         // from restarting (and truncating the file it just saved) on this first live frame.
         if (rn->statusLine() != savedStatus) { glfwTerminate(); return fail("offline sinks: Recorder must not restart after an offline render ends"); }
         std::fprintf(stderr, "gl_smoke OK: an offline render interrupts a live recording and it does not restart afterward\n");
+    }
+
+    // --- Scenario: OfflineRenderer start/cancel -- validation, prefs swap, transport snapshot + restore ---
+    {
+        Graph g;
+        auto col = std::make_unique<ColourNode>(); col->initGL();
+        int cId = g.addNode(std::move(col));
+        Preferences live; live.textureWidth = 320; live.textureHeight = 240;
+        g.setPreferences(&live);
+        g.transport().bpm = 120.0; g.transport().seconds = 5.0; g.transport().looping = true;
+
+        RenderSettings s; s.startBar = 0.0; s.endBar = 1.0; s.prerollBars = 0.5; s.fps = 30;
+        s.width = 160; s.height = 120; s.outPath = "build/_offline_cancel.mp4";
+        OfflineRenderer r; std::string err;
+        if (r.start(g, &live, s, err)) { glfwTerminate(); return fail("offline start: should refuse a graph with no Output node"); }
+        if (err != "add an Output node") { glfwTerminate(); return fail("offline start: wrong error for a missing Output node"); }
+
+        auto out = std::make_unique<OutputNode>(); out->initGL();
+        int oId = g.addNode(std::move(out));
+        if (!g.connect(cId, 0, oId, 0)) { glfwTerminate(); return fail("offline start: connect"); }
+        if (!r.start(g, &live, s, err)) { glfwTerminate(); return fail(("offline start: " + err).c_str()); }
+        if (!r.active()) { glfwTerminate(); return fail("offline start: not active"); }
+        if (r.progress().framesTotal != 60 || r.progress().prerollTotal != 30) { glfwTerminate(); return fail("offline start: expected 60 frames + 30 pre-roll (0.5 bar = 1 s at 30 fps)"); }
+        if (!g.offline()) { glfwTerminate(); return fail("offline start: graph should be offline"); }
+        const Transport& t = g.transport();
+        if (!(t.externalClock && t.playing && !t.looping)) { glfwTerminate(); return fail("offline start: transport should be an external, playing, non-looping clock"); }
+
+        r.cancel();
+        if (r.active()) { glfwTerminate(); return fail("offline cancel: still active"); }
+        if (r.progress().phase != OfflineRenderer::Phase::Cancelled) { glfwTerminate(); return fail("offline cancel: phase should be Cancelled"); }
+        if (g.offline()) { glfwTerminate(); return fail("offline cancel: graph still offline"); }
+        if (!(t.seconds == 5.0 && t.looping && !t.playing && !t.externalClock && t.bpm == 120.0)) { glfwTerminate(); return fail("offline cancel: transport not restored"); }
+        g.evaluate(1.0f / 60.0f);
+        auto* on = dynamic_cast<OutputNode*>(g.findNode(oId));
+        if (on->current().w != 320 || on->current().h != 240) { glfwTerminate(); return fail("offline cancel: live prefs (texture size) not restored"); }
+        r.cancel();                                              // idempotent
+        std::fprintf(stderr, "gl_smoke OK: OfflineRenderer start validates, swaps prefs + clock, and cancel restores them\n");
     }
 
     glfwDestroyWindow(win);
