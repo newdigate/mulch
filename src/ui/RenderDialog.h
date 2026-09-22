@@ -24,10 +24,11 @@ private:
     void seed(Graph& g, const Preferences& prefs, const std::string& projectPath);
 
     RenderSettings settings_;
-    bool           seeded_    = false;   // defaults filled on first open
-    bool           wasActive_ = false;   // to notice the job ending between draws
-    std::string    error_;               // start() failure, shown inline
-    std::string    outcome_;             // last job's outcome line, shown inline
+    bool           seeded_     = false;   // defaults filled on first open
+    std::string    seededPath_;           // the projectPath settings_ was last seeded from
+    bool           wasActive_  = false;   // to notice the job ending between draws
+    std::string    error_;                // start() failure, shown inline
+    std::string    outcome_;              // last job's outcome line, shown inline
 };
 
 } // namespace oss

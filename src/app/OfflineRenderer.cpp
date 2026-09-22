@@ -116,6 +116,7 @@ bool OfflineRenderer::start(Graph& g, const RenderSettings& s, std::string& err)
     progress_.phase        = prerollFrames_ > 0 ? Phase::Preroll : Phase::Rendering;
     progress_.prerollTotal = prerollFrames_;
     progress_.framesTotal  = totalFrames_;
+    progress_.fps          = s.fps;
     progress_.outPath      = s.outPath;
     startTime_ = captureStartTime_ = now();
     loadWaitStart_ = -1.0;

@@ -32,6 +32,7 @@ public:
     Graph& graph() { return graph_; }
     OfflineRenderer&   renderer() { return renderer_; }             // the offline render job (also driven by --render)
     const Preferences& preferences() const { return prefs_; }
+    void showRenderDialog(bool on) { showRender_ = on; }   // --screenshot opens it to exercise the dialog
 
     bool saveProjectToFile(const std::string& path);
     bool loadProjectFromFile(const std::string& path);

@@ -1,5 +1,6 @@
 #include "ui/RenderDialog.h"
 #include <algorithm>
+#include <cctype>
 #include <cstdio>
 #include <imgui.h>
 #include "app/OfflineRenderer.h"
@@ -18,7 +19,14 @@ void RenderDialog::seed(Graph& g, const Preferences& prefs, const std::string& p
     settings_.height = prefs.textureHeight;
     // Default file: next to the project as <basename>.mp4, else render.mp4 in the projects dir.
     std::string base = projectPath.empty() ? std::string("render") : fileBaseName(projectPath);
-    if (base.size() > 4 && base.compare(base.size() - 4, 4, ".oss") == 0) base.erase(base.size() - 4);
+    if (base.size() > 4) {
+        // Case-insensitive, matching ensureExtension's own comparison below -- "Foo.OSS" must
+        // strip just like "foo.oss", or it becomes "Foo.OSS.mp4".
+        std::string tail = base.substr(base.size() - 4);
+        std::transform(tail.begin(), tail.end(), tail.begin(),
+                       [](unsigned char c){ return (char)std::tolower(c); });
+        if (tail == ".oss") base.erase(base.size() - 4);
+    }
     std::string dir = projectPath.empty() ? prefs.projectsDir : parentDir(projectPath);
     settings_.outPath = dir.empty() ? base + ".mp4" : dir + "/" + base + ".mp4";
 }
@@ -30,7 +38,17 @@ void RenderDialog::draw(Graph& g, const Preferences& prefs, OfflineRenderer& r, 
     wasActive_ = r.active();
 
     if (show && *show) {
-        if (!seeded_) { seed(g, prefs, projectPath); seeded_ = true; }
+        // Re-seed whenever the loaded project changes (not just on first open): otherwise a
+        // stale path from the PREVIOUS project (its basename, possibly its whole directory)
+        // lingers in settings_.outPath, and pressing Render silently overwrites that project's
+        // video with this one's -- a typed path never goes through the save dialog's overwrite
+        // prompt. Skipped while a job is running so the settings a live job is not consulting
+        // (start() already snapshotted them) don't change out from under the visible fields.
+        if (!r.active() && (!seeded_ || seededPath_ != projectPath)) {
+            seed(g, prefs, projectPath);
+            seeded_     = true;
+            seededPath_ = projectPath;
+        }
         ImGui::SetNextWindowSize(ImVec2(480.0f, 0.0f), ImGuiCond_FirstUseEver);
         if (ImGui::Begin("Render Video", show)) {
             const Transport& t = g.transport();
@@ -62,13 +80,19 @@ void RenderDialog::draw(Graph& g, const Preferences& prefs, OfflineRenderer& r, 
 
             char pathBuf[1024];
             std::snprintf(pathBuf, sizeof(pathBuf), "%s", settings_.outPath.c_str());
-            ImGui::SetNextItemWidth(-100.0f);
-            if (ImGui::InputText("##outpath", pathBuf, sizeof(pathBuf))) settings_.outPath = pathBuf;
+            ImGui::SetNextItemWidth(-180.0f);
+            if (ImGui::InputText("Output file", pathBuf, sizeof(pathBuf))) settings_.outPath = pathBuf;
             ImGui::SameLine();
             if (ImGui::Button("Browse...")) {
                 std::string defName = fileBaseName(settings_.outPath);
                 if (defName.empty()) defName = "render.mp4";
-                std::string p = saveFileDialog("Render Video", "MP4", {"mp4"}, defName, prefs.projectsDir);
+                // Seed from the CURRENT field's directory (wherever the user last pointed this
+                // dialog), not unconditionally prefs.projectsDir -- otherwise every re-open snaps
+                // back to the projects folder even after the user has already chosen elsewhere.
+                // Only the very first Browse (before any directory is known) falls back to it.
+                std::string startDir = parentDir(settings_.outPath);
+                if (startDir.empty()) startDir = prefs.projectsDir;
+                std::string p = saveFileDialog("Render Video", "MP4", {"mp4"}, defName, startDir);
                 if (!p.empty()) settings_.outPath = ensureExtension(p, "mp4");
             }
 
@@ -85,7 +109,17 @@ void RenderDialog::draw(Graph& g, const Preferences& prefs, OfflineRenderer& r, 
             ImGui::BeginDisabled(!valid || r.active());
             if (ImGui::Button("Render")) {
                 error_.clear(); outcome_.clear();
+                // A typed path never passed through Browse's save dialog (and its overwrite
+                // prompt), so it may be missing the extension the encoder needs; fix it up here
+                // rather than rejecting it, mirroring what Browse already does to its result.
+                settings_.outPath = ensureExtension(settings_.outPath, "mp4");
                 if (!r.start(g, settings_, error_)) status = "render failed: " + error_;
+                // The job can finish (or fail) inside its very first step(), which runs AFTER
+                // this draw() call returns, before draw() is entered again. wasActive_ is
+                // recomputed from r.active() at the top of THIS call, before start() ran, so
+                // without this the next draw() sees wasActive_ == false and the end-of-job edge
+                // never fires: outcome_/status silently stay empty. Arm it here instead.
+                else wasActive_ = true;
             }
             ImGui::EndDisabled();
             ImGui::SameLine();
@@ -111,9 +145,18 @@ void RenderDialog::draw(Graph& g, const Preferences& prefs, OfflineRenderer& r, 
             }
             ImGui::Text("Frame %lld / %lld", p.framesDone, p.framesTotal);
             ImGui::ProgressBar(p.framesTotal ? (float)p.framesDone / (float)p.framesTotal : 0.0f, ImVec2(380.0f, 0.0f));
-            const double remaining = p.speed > 0.0 ? (double)(p.framesTotal - p.framesDone) / p.speed : 0.0;
-            ImGui::Text("Elapsed %.0f s   remaining ~%.0f s   %.2fx real time",
-                        p.elapsedSeconds, remaining, p.speed / (double)settings_.fps);
+            // speed (captured frames per wall second) is 0 until the first captured frame, i.e.
+            // for the whole pre-roll -- "remaining ~0 s, 0.00x real time" would read as a stalled
+            // or instant job when it is neither. Show only elapsed time until there is a rate to
+            // extrapolate from. p.fps (the job's own rate, not settings_ -- Task 10's --render
+            // CLI can start a job the dialog never configured) drives the real-time multiple.
+            if (p.framesDone > 0) {
+                const double remaining = p.speed > 0.0 ? (double)(p.framesTotal - p.framesDone) / p.speed : 0.0;
+                ImGui::Text("Elapsed %.0f s   remaining ~%.0f s   %.2fx real time",
+                            p.elapsedSeconds, remaining, p.fps > 0 ? p.speed / (double)p.fps : 0.0);
+            } else {
+                ImGui::Text("Elapsed %.0f s", p.elapsedSeconds);
+            }
             if (!p.status.empty()) ImGui::TextDisabled("%s", p.status.c_str());
             ImGui::TextDisabled("%s", p.outPath.c_str());
             if (ImGui::Button("Cancel")) r.cancel();

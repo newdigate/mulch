@@ -43,6 +43,10 @@ public:
         Phase  phase = Phase::Idle;
         long long prerollDone = 0, prerollTotal = 0;
         long long framesDone  = 0, framesTotal  = 0;   // captured frames
+        int    fps = 0;                                // the job's frame rate (settings_.fps, mirrored
+                                                         // here so a driver -- e.g. the dialog -- can
+                                                         // compute a real-time multiple without also
+                                                         // holding the RenderSettings that started the job)
         long long blackFrames = 0;                     // frames with no Output texture (captured black)
         long long resizedAudioFrames = 0;              // frames whose audio block was padded/trimmed
         bool   audio = false;                          // the file has an audio track

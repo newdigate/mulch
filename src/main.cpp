@@ -87,6 +87,8 @@ static int runScreenshot(const std::string& path) {
         app.addNodeOfType("Mono to Stereo", glm::vec2(560.0f, 380.0f));
         app.addNodeOfType("Stereo to Mono", glm::vec2(920.0f, 380.0f));
         app.addNodeOfType("Vertex Trail", glm::vec2(340.0f, 150.0f));
+        app.addNodeOfType("Output", glm::vec2(900.0f, 200.0f));   // so the Render dialog validates
+        app.showRenderDialog(true);                               // capture the Render Video dialog
         app.graph().transport().bpm = 120.0;
         app.graph().transport().seconds = 6.0;   // playhead at bar 3
 
