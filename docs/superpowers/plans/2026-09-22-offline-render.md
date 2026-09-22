@@ -44,6 +44,7 @@
 - Headless GL test: `ctest --test-dir build -R gl_smoke --output-on-failure` (needs a display; skips otherwise).
 - Every `gl_smoke` failure follows the file's pattern: `{ glfwTerminate(); return fail("..."); }`. The lambda `near(v, t)` (±3) defined near the top of `main()` is in scope for every scenario.
 - Commit after each task with a Conventional Commits message ending in `Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>`.
+- **Adding a new `.cpp` to a CMake target:** CMake 4.x refuses to configure when a listed source file does not exist (`Cannot find source file`), so a task that registers a new source before writing it cannot reach the compile step. Create the file (empty is fine) first, then configure, then watch the expected compile error. Observed on CMake 4.4.3 during Task 6.
 
 ---
 
@@ -62,6 +63,14 @@ Expected: `feat/offline-render`; build succeeds; `100% tests passed`.
 ---
 
 ### Task 1: Frame-count and clock helpers (`core/OfflineRender.h`)
+
+> **Revised after code review (see the follow-up commit).** The shipped header differs from the
+> code block below in five ways, and **later tasks assume the revised version**: `framesOver` is
+> named `renderFramesOver`; the frame-count functions return `long long` (repo convention — MSVC's
+> `long` is 32-bit, cf. `core/ImageSequence.h`); the cast is guarded against non-finite /
+> out-of-range input (cf. `core/PresetPlaylist.h`); `renderFrameSeconds` and
+> `audioSamplesPerFrame` guard their divisors consistently; and `kRenderFrameRateCount` is derived
+> with `std::size`. Read the real `src/core/OfflineRender.h` rather than this block.
 
 **Files:**
 - Create: `src/core/OfflineRender.h`
@@ -231,6 +240,14 @@ Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
 ---
 
 ### Task 2: Validation and CLI argument parsing (`core/OfflineRender.h`)
+
+> **Revised after code review (see the follow-up commit), and later tasks assume the revised
+> version.** `--fps` is parsed with `strtol` (casting a `strtod` result to `int` was undefined for
+> `inf`/`nan`); the numeric options require a finite value; the sentinels are named
+> `kRenderEndBarFromProject` / `kRenderSizeFromPreferences`; the usage string is behind
+> `renderUsage()` (use it in `main.cpp` rather than a fourth copy); and the tests gained the
+> ten-odd assertions that make the guards mutation-proof. Read the real
+> `src/core/OfflineRender.h` rather than the code block below.
 
 **Files:**
 - Modify: `src/core/OfflineRender.h`
@@ -810,13 +827,13 @@ Insert before the final `glfwDestroyWindow(win);`:
         RenderSettings s; s.startBar = 0.0; s.endBar = 1.0; s.prerollBars = 0.5; s.fps = 30;
         s.width = 160; s.height = 120; s.outPath = "build/_offline_cancel.mp4";
         OfflineRenderer r; std::string err;
-        if (r.start(g, &live, s, err)) { glfwTerminate(); return fail("offline start: should refuse a graph with no Output node"); }
+        if (r.start(g, s, err)) { glfwTerminate(); return fail("offline start: should refuse a graph with no Output node"); }
         if (err != "add an Output node") { glfwTerminate(); return fail("offline start: wrong error for a missing Output node"); }
 
         auto out = std::make_unique<OutputNode>(); out->initGL();
         int oId = g.addNode(std::move(out));
         if (!g.connect(cId, 0, oId, 0)) { glfwTerminate(); return fail("offline start: connect"); }
-        if (!r.start(g, &live, s, err)) { glfwTerminate(); return fail(("offline start: " + err).c_str()); }
+        if (!r.start(g, s, err)) { glfwTerminate(); return fail(("offline start: " + err).c_str()); }
         if (!r.active()) { glfwTerminate(); return fail("offline start: not active"); }
         if (r.progress().framesTotal != 60 || r.progress().prerollTotal != 30) { glfwTerminate(); return fail("offline start: expected 60 frames + 30 pre-roll (0.5 bar = 1 s at 30 fps)"); }
         if (!g.offline()) { glfwTerminate(); return fail("offline start: graph should be offline"); }
@@ -887,10 +904,10 @@ public:
 
     struct Progress {
         Phase  phase = Phase::Idle;
-        long   prerollDone = 0, prerollTotal = 0;
-        long   framesDone  = 0, framesTotal  = 0;      // captured frames
-        long   blackFrames = 0;                        // frames with no Output texture (captured black)
-        long   resizedAudioFrames = 0;                 // frames whose audio block was padded/trimmed
+        long long prerollDone = 0, prerollTotal = 0;
+        long long framesDone  = 0, framesTotal  = 0;   // captured frames
+        long long blackFrames = 0;                     // frames with no Output texture (captured black)
+        long long resizedAudioFrames = 0;              // frames whose audio block was padded/trimmed
         bool   audio = false;                          // the file has an audio track
         double elapsedSeconds = 0.0;                   // wall time since start()
         double speed = 0.0;                            // captured frames per wall second
@@ -906,7 +923,7 @@ public:
     // Validate, find the Output / Audio Out nodes, create the blit FBO at the render size,
     // snapshot state, arm the clock. False + `err` on a bad setting, no Output node, or an FBO
     // the driver refuses. `livePrefs` may be null (nodes then fall back to their canvas size).
-    bool start(Graph& g, const Preferences* livePrefs, const RenderSettings& s, std::string& err);
+    bool start(Graph& g, const RenderSettings& s, std::string& err);
 
     // Render frames until `budgetSeconds` of wall time have elapsed. Renders at least one frame
     // per call (so progress is guaranteed, even with budget 0) UNLESS a node reports loading(),
@@ -915,7 +932,7 @@ public:
     bool step(double budgetSeconds);
 
     void cancel();                                     // close the encoder (partial file plays), restore state
-    bool active() const { return active_; }
+    bool active() const { return progress_.phase == Phase::Preroll || progress_.phase == Phase::Rendering; }
     const Progress& progress() const { return progress_; }   // valid after the job ends too
 
     // Test seam: how long to wait on loading() nodes before failing (default kRenderLoadTimeoutSeconds).
@@ -923,10 +940,10 @@ public:
 
 private:
     bool anyNodeLoading(std::string& who) const;
-    void evaluateFrame(long k);
-    bool capture(long k);                              // false after finish(Failed)
+    void evaluateFrame(long long k);
+    bool capture(long long k);                         // false after finish(Failed)
     bool openEncoder();
-    void finish(Phase outcome, const std::string& status);
+    void finish(Phase outcome, std::string status);   // by value: a failed encoder close rewrites it
     static double now();
 
     Graph*             graph_     = nullptr;
@@ -934,8 +951,14 @@ private:
     Preferences        renderPrefs_;
     Transport          savedTransport_;
     RenderSettings     settings_;
-    OutputNode*        output_    = nullptr;
-    AudioOutputNode*   audioOut_  = nullptr;
+    // Node IDS, not pointers: Graph::clear() (a project load) destroys every node, so a Node*
+    // held across frames could dangle. Re-resolved each frame via findNode(), a linear scan over
+    // a handful of nodes -- free next to a glReadPixels.
+    int                outputId_   = 0;
+    int                audioOutId_ = 0;
+    OutputNode*        outputNode() const;      // nullptr if it is gone
+    AudioOutputNode*   audioOutNode() const;    // nullptr if absent or gone
+    static const std::vector<float> kNoAudio;   // empty, for a vanished Audio Out
 
     std::unique_ptr<VideoEncoder> enc_;
     Framebuffer        fbo_;                           // the render-sized blit target
@@ -945,13 +968,12 @@ private:
     std::vector<float>        audioScratch_;
     int                audioRate_ = 0;
 
-    long   k_ = 0;                                     // next frame index (negative = pre-roll)
-    long   prerollFrames_ = 0, totalFrames_ = 0;
+    long long k_ = 0;                                  // next frame index (negative = pre-roll)
+    long long prerollFrames_ = 0, totalFrames_ = 0;
     double secondsPerBar_ = 2.0;
     double startTime_ = 0.0, captureStartTime_ = 0.0;
     double loadWaitStart_ = -1.0;                      // wall time the current loader wait began (-1 = none)
     double loadTimeout_ = kRenderLoadTimeoutSeconds;
-    bool   active_ = false;
     Progress progress_;
 };
 
@@ -1002,8 +1024,8 @@ OfflineRenderer::~OfflineRenderer() {
     if (blitProg_) glDeleteProgram(blitProg_);
 }
 
-bool OfflineRenderer::start(Graph& g, const Preferences* livePrefs, const RenderSettings& s, std::string& err) {
-    if (active_) { err = "a render is already running"; return false; }
+bool OfflineRenderer::start(Graph& g, const RenderSettings& s, std::string& err) {
+    if (active()) { err = "a render is already running"; return false; }
     OutputNode* out = nullptr; AudioOutputNode* aout = nullptr;
     for (const auto& n : g.nodes()) {
         if (!out)  out  = dynamic_cast<OutputNode*>(n.get());
@@ -1025,9 +1047,12 @@ bool OfflineRenderer::start(Graph& g, const Preferences* livePrefs, const Render
         return false;
     }
 
-    graph_ = &g; livePrefs_ = livePrefs; settings_ = s; output_ = out; audioOut_ = aout;
+    graph_ = &g; settings_ = s;
+    livePrefs_  = g.preferences();          // the pointer the GRAPH holds, not the caller's claim about it
+    outputId_   = out  ? out->id()  : 0;
+    audioOutId_ = aout ? aout->id() : 0;
     savedTransport_ = g.transport();
-    renderPrefs_ = livePrefs ? *livePrefs : Preferences{};
+    renderPrefs_ = livePrefs_ ? *livePrefs_ : Preferences{};   // same source as the restore target
     renderPrefs_.textureWidth  = s.width;
     renderPrefs_.textureHeight = s.height;
     g.setPreferences(&renderPrefs_);
@@ -1051,19 +1076,27 @@ bool OfflineRenderer::start(Graph& g, const Preferences* livePrefs, const Render
     progress_.outPath      = s.outPath;
     startTime_ = captureStartTime_ = now();
     loadWaitStart_ = -1.0;
-    active_ = true;
-    std::fprintf(stderr, "[Render] %s: bars %.2f-%.2f, %ld frames at %d fps, %dx%d, pre-roll %ld\n",
+    std::fprintf(stderr, "[Render] %s: bars %.2f-%.2f, %lld frames at %d fps, %dx%d, pre-roll %lld\n",
                  s.outPath.c_str(), s.startBar, s.endBar, totalFrames_, s.fps, s.width, s.height, prerollFrames_);
     return true;
 }
 
-void OfflineRenderer::finish(Phase outcome, const std::string& status) {
-    if (!active_) return;
-    if (enc_) { std::string e; enc_->close(e); enc_.reset(); }
+void OfflineRenderer::finish(Phase outcome, std::string status) {
+    if (!active()) return;                  // also guards graph_ == nullptr on a never-started renderer
+    // A failed close() means an unfinalised, unplayable mp4. Reporting Done would give the CLI
+    // exit code 0 for a broken file, so it downgrades the outcome.
+    if (enc_) {
+        std::string e;
+        if (!enc_->close(e) && outcome == Phase::Done) {
+            outcome = Phase::Failed;
+            status  = "could not finalise " + settings_.outPath + ": " + e;
+        }
+        enc_.reset();
+    }
     graph_->setOffline(false);
     graph_->setPreferences(livePrefs_);
     graph_->transport() = savedTransport_;
-    active_ = false;
+    graph_ = nullptr;                       // stale from here: any post-job use crashes loudly
     progress_.phase          = outcome;
     progress_.status         = status;
     progress_.elapsedSeconds = now() - startTime_;
@@ -1071,7 +1104,7 @@ void OfflineRenderer::finish(Phase outcome, const std::string& status) {
 }
 
 void OfflineRenderer::cancel() {
-    if (!active_) return;
+    if (!active()) return;
     finish(Phase::Cancelled, "cancelled after " + std::to_string(progress_.framesDone) + " frames");
 }
 
@@ -1081,7 +1114,7 @@ bool OfflineRenderer::anyNodeLoading(std::string& who) const {
     return false;
 }
 
-void OfflineRenderer::evaluateFrame(long k) {
+void OfflineRenderer::evaluateFrame(long long k) {
     Transport& t = graph_->transport();
     t.externalClock = true;   // re-assert: nothing else should touch the clock mid-render
     t.playing       = true;
@@ -1090,7 +1123,7 @@ void OfflineRenderer::evaluateFrame(long k) {
 }
 
 bool OfflineRenderer::openEncoder() { return false; }   // Task 7
-bool OfflineRenderer::capture(long) { return false; }   // Task 7
+bool OfflineRenderer::capture(long long) { return false; }   // Task 7
 bool OfflineRenderer::step(double)  { return false; }   // Task 7
 
 } // namespace oss
@@ -1113,6 +1146,20 @@ Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
 ---
 
 ### Task 7: `OfflineRenderer::step` — evaluate, capture, encode (end to end)
+
+> **Two gaps inherited from Task 6 become testable here; close them rather than assuming coverage.**
+> 1. `finish()` downgrades a `Done` outcome to `Failed` when `VideoEncoder::close()` fails, so an
+>    unfinalised mp4 cannot exit 0. Until now `enc_` was never non-null, so that branch has never
+>    run. If you can provoke a close failure cheaply, assert it; if you cannot without contriving
+>    something fragile, say so explicitly in your report rather than leaving it implied.
+> 2. `outputId_` / `audioOutId_` are written by `start()` but never read, because `capture()` was a
+>    stub. This task is the first reader. Ids are never reused (`Graph::addNode` counts up and
+>    `clear()` keeps `nextId_` monotonic), so a `findNode` hit can only be the original node — the
+>    `dynamic_cast` cannot be fooled by a recycled id.
+>
+> Also note `start()`'s signature lost its `livePrefs` parameter in review: it is now
+> `start(Graph&, const RenderSettings&, std::string&)`, sourcing both the render copy and the
+> restore target from `Graph::preferences()`.
 
 **Files:**
 - Modify: `src/app/OfflineRenderer.cpp`
@@ -1151,7 +1198,7 @@ Insert before the final `glfwDestroyWindow(win);` (after the Task 6 scenario):
         s.width = 160; s.height = 120; s.outPath = "build/_offline.mp4";
         std::remove("build/_offline.mp4");
         OfflineRenderer r; std::string err;
-        if (!r.start(g, &live, s, err)) { glfwTerminate(); return fail(("offline e2e: start: " + err).c_str()); }
+        if (!r.start(g, s, err)) { glfwTerminate(); return fail(("offline e2e: start: " + err).c_str()); }
         int steps = 0;
         while (r.step(0.02)) { if (++steps > 100000) { glfwTerminate(); return fail("offline e2e: never finished"); } }
         const OfflineRenderer::Progress& p = r.progress();
@@ -1161,6 +1208,12 @@ Insert before the final `glfwDestroyWindow(win);` (after the Task 6 scenario):
         if (p.blackFrames != 0 || p.resizedAudioFrames != 0) { glfwTerminate(); return fail("offline e2e: unexpected black frames or resized audio blocks"); }
         if (p.status.rfind("rendered _offline.mp4 (60 frames, 2.0 s)", 0) != 0) { glfwTerminate(); return fail(("offline e2e: status line: " + p.status).c_str()); }
         if (rn->statusLine() != "saved build/_offline_live_rec.mp4") { glfwTerminate(); return fail("offline e2e: the live recording should have stopped + saved during the render"); }
+        // finish() must run exactly once per job. A stray cancel() after a completed render must
+        // not overwrite the outcome -- this is the assertion that makes cancel()'s active() guard
+        // observable in the Done direction (Task 6 covers the never-started null-graph direction).
+        r.cancel();
+        if (r.progress().phase != OfflineRenderer::Phase::Done) { glfwTerminate(); return fail("offline e2e: a cancel() after the job finished overwrote the outcome"); }
+        if (r.progress().framesDone != 60) { glfwTerminate(); return fail("offline e2e: a cancel() after the job finished disturbed the counts"); }
 
         // The file: exactly 60 frames, 160x120, 2-channel non-silent audio, the Colour at the centre.
         VideoDecoder dec; std::string derr;
@@ -1189,7 +1242,13 @@ Insert before the final `glfwDestroyWindow(win);` (after the Task 6 scenario):
         if (g.offline()) { glfwTerminate(); return fail("offline e2e: graph still offline"); }
         g.evaluate(1.0f / 60.0f);
         if (on->current().w != 320 || on->current().h != 240) { glfwTerminate(); return fail("offline e2e: live texture size not restored"); }
-        rn->inputDefault(3) = false; g.evaluate(1.0f / 60.0f);   // stop the live recorder cleanly
+        // The interrupted live recording must NOT restart on its own: `record` is still true, so
+        // without the Recorder's re-arm latch this frame reopens the same path and truncates the
+        // file the render just saved. Assert the saved file survives, byte size and all.
+        if (rn->statusLine() != "saved build/_offline_live_rec.mp4") { glfwTerminate(); return fail("offline e2e: the live recorder restarted and overwrote its saved file"); }
+        std::ifstream liveRec("build/_offline_live_rec.mp4", std::ios::binary | std::ios::ate);
+        if (!liveRec.good() || liveRec.tellg() <= 0) { glfwTerminate(); return fail("offline e2e: the interrupted live recording was truncated"); }
+        rn->inputDefault(3) = false; g.evaluate(1.0f / 60.0f);   // re-arm cleared; still not recording
         std::fprintf(stderr, "gl_smoke OK: offline render wrote 60 sample-locked 160x120 frames with stereo audio and restored state\n");
     }
 ```
@@ -1203,9 +1262,21 @@ Expected: `gl_smoke FAIL: offline e2e: cancelled after 0 frames` (the stub `step
 
 In `src/app/OfflineRenderer.cpp`, replace the three stub lines at the bottom with:
 ```cpp
+const std::vector<float> OfflineRenderer::kNoAudio;
+
+// Re-resolve the sinks by id each time rather than caching a Node*: Graph::clear() (a project
+// load) destroys every node, so a pointer held across frames could dangle.
+OutputNode* OfflineRenderer::outputNode() const {
+    return graph_ ? dynamic_cast<OutputNode*>(graph_->findNode(outputId_)) : nullptr;
+}
+AudioOutputNode* OfflineRenderer::audioOutNode() const {
+    return (graph_ && audioOutId_) ? dynamic_cast<AudioOutputNode*>(graph_->findNode(audioOutId_)) : nullptr;
+}
+
 bool OfflineRenderer::openEncoder() {
     // Audio is recorded only if it is connected at the first captured frame (the Recorder's rule).
-    audioRate_ = (audioOut_ && !audioOut_->lastBlock().empty()) ? audioOut_->lastSampleRate() : 0;
+    AudioOutputNode* aout = audioOutNode();
+    audioRate_ = (aout && !aout->lastBlock().empty()) ? aout->lastSampleRate() : 0;
     enc_ = std::make_unique<VideoEncoder>();
     std::string err;
     if (!enc_->open(settings_.outPath, settings_.width, settings_.height, settings_.fps,
@@ -1218,10 +1289,15 @@ bool OfflineRenderer::openEncoder() {
     return true;
 }
 
-bool OfflineRenderer::capture(long k) {
+bool OfflineRenderer::capture(long long k) {
     // 1. Blit the Output node's texture into the render-sized FBO (stretched, like the Output
     //    window). No texture -> black, counted, never skipped.
-    TexRef src = output_->current();
+    OutputNode* out = outputNode();          // re-resolved by id every frame: Graph::clear() can
+    if (!out) {                              // destroy nodes under us, and a stale Node* would dangle
+        finish(Phase::Failed, "the Output node disappeared mid-render");
+        return false;
+    }
+    TexRef src = out->current();
     fbo_.bind();                                          // FBO + viewport
     glDisable(GL_BLEND); glDisable(GL_DEPTH_TEST); glDisable(GL_SCISSOR_TEST);
     if (src.id) {
@@ -1250,7 +1326,8 @@ bool OfflineRenderer::capture(long k) {
     // 4. Audio: pad with silence / trim to exactly sampleRate/fps frames so the audio clock
     //    (sample count) can never drift from the video clock.
     if (progress_.audio) {
-        const std::vector<float>& blk = audioOut_->lastBlock();
+        AudioOutputNode* aout = audioOutNode();
+        const std::vector<float>& blk = aout ? aout->lastBlock() : kNoAudio;
         const std::size_t want = (std::size_t)audioSamplesPerFrame(audioRate_, settings_.fps);
         const std::size_t have = blk.size() / 2;
         if (have != want) ++progress_.resizedAudioFrames;
@@ -1263,9 +1340,15 @@ bool OfflineRenderer::capture(long k) {
 }
 
 bool OfflineRenderer::step(double budgetSeconds) {
-    if (!active_) return false;
+    if (!active()) return false;
+    // INVARIANT: the phase (which active() derives from) and the graph's offline flag are set
+    // together in start() and cleared together in finish(), the ONLY place the phase leaves a
+    // running state. Do not add an early
+    // return from step() that bypasses finish(): a stuck-true offline flag silently mutes Audio
+    // Out, MIDI Out and the Recorder for the rest of the session, with no error and no way back
+    // short of restarting. Every failure path here funnels through finish(Phase::Failed, ...).
     const double t0 = now();
-    while (active_) {
+    while (active()) {
         // Loader gate: yield while any node is still loading (re-checked on the next call).
         std::string who;
         if (anyNodeLoading(who)) {
@@ -1297,7 +1380,7 @@ bool OfflineRenderer::step(double budgetSeconds) {
 
         if (k_ >= totalFrames_) {
             char buf[256];
-            std::snprintf(buf, sizeof(buf), "rendered %s (%ld frames, %.1f s%s)",
+            std::snprintf(buf, sizeof(buf), "rendered %s (%lld frames, %.1f s%s)",
                           fileBaseName(settings_.outPath).c_str(), totalFrames_,
                           (double)totalFrames_ / settings_.fps, progress_.audio ? "" : ", video only");
             std::string msg = buf;
@@ -1308,7 +1391,7 @@ bool OfflineRenderer::step(double budgetSeconds) {
         }
         if (n - t0 >= budgetSeconds) break;             // budget spent; at least one frame was rendered
     }
-    return active_;
+    return active();
 }
 ```
 
@@ -1365,7 +1448,7 @@ Insert before the final `glfwDestroyWindow(win);`:
             Graph g; build(g, 5);
             s.outPath = "build/_offline_gate.mp4"; std::remove(s.outPath.c_str());
             OfflineRenderer r; std::string err;
-            if (!r.start(g, nullptr, s, err)) { glfwTerminate(); return fail(("offline gate: start: " + err).c_str()); }
+            if (!r.start(g, s, err)) { glfwTerminate(); return fail(("offline gate: start: " + err).c_str()); }
             for (int i = 0; i < 5; ++i) {
                 if (!r.step(0.0)) { glfwTerminate(); return fail("offline gate: step should stay active while waiting"); }
                 if (r.progress().framesDone != 0) { glfwTerminate(); return fail("offline gate: rendered a frame while a node was loading"); }
@@ -1387,7 +1470,7 @@ Insert before the final `glfwDestroyWindow(win);`:
             s.outPath = "build/_offline_timeout.mp4"; std::remove(s.outPath.c_str());
             OfflineRenderer r; std::string err;
             r.setLoadTimeoutSeconds(0.05);
-            if (!r.start(g, nullptr, s, err)) { glfwTerminate(); return fail(("offline timeout: start: " + err).c_str()); }
+            if (!r.start(g, s, err)) { glfwTerminate(); return fail(("offline timeout: start: " + err).c_str()); }
             int steps = 0;
             while (r.step(0.0)) {
                 std::this_thread::sleep_for(std::chrono::milliseconds(5));
@@ -1404,7 +1487,7 @@ Insert before the final `glfwDestroyWindow(win);`:
             g.transport().seconds = 3.0;
             s.outPath = "build/_offline_cancel2.mp4"; std::remove(s.outPath.c_str());
             OfflineRenderer r; std::string err;
-            if (!r.start(g, nullptr, s, err)) { glfwTerminate(); return fail(("offline cancel: start: " + err).c_str()); }
+            if (!r.start(g, s, err)) { glfwTerminate(); return fail(("offline cancel: start: " + err).c_str()); }
             r.step(0.0);                                                   // exactly one frame
             if (r.progress().framesDone != 1) { glfwTerminate(); return fail("offline cancel: step(0) should render exactly one frame"); }
             r.cancel();
@@ -1579,8 +1662,8 @@ void RenderDialog::draw(Graph& g, const Preferences& prefs, OfflineRenderer& r, 
             }
 
             const double spb = t.secondsPerBar();
-            const long frames = renderFrameCount(settings_, spb);
-            ImGui::Text("%.2f bars -> %ld frames (%.1f s at %.2f bpm)",
+            const long long frames = renderFrameCount(settings_, spb);
+            ImGui::Text("%.2f bars -> %lld frames (%.1f s at %.2f bpm)",
                         settings_.endBar - settings_.startBar, frames, (double)frames / settings_.fps, t.bpm);
 
             bool hasOutput = false;
@@ -1591,7 +1674,7 @@ void RenderDialog::draw(Graph& g, const Preferences& prefs, OfflineRenderer& r, 
             ImGui::BeginDisabled(!valid || r.active());
             if (ImGui::Button("Render")) {
                 error_.clear(); outcome_.clear();
-                if (!r.start(g, &prefs, settings_, error_)) status = "render failed: " + error_;
+                if (!r.start(g, settings_, error_)) status = "render failed: " + error_;
             }
             ImGui::EndDisabled();
             ImGui::SameLine();
@@ -1612,10 +1695,10 @@ void RenderDialog::draw(Graph& g, const Preferences& prefs, OfflineRenderer& r, 
         } else {
             const OfflineRenderer::Progress& p = r.progress();
             if (p.phase == OfflineRenderer::Phase::Preroll) {
-                ImGui::Text("Pre-roll %ld / %ld", p.prerollDone, p.prerollTotal);
+                ImGui::Text("Pre-roll %lld / %lld", p.prerollDone, p.prerollTotal);
                 ImGui::ProgressBar(p.prerollTotal ? (float)p.prerollDone / (float)p.prerollTotal : 0.0f, ImVec2(380.0f, 0.0f));
             }
-            ImGui::Text("Frame %ld / %ld", p.framesDone, p.framesTotal);
+            ImGui::Text("Frame %lld / %lld", p.framesDone, p.framesTotal);
             ImGui::ProgressBar(p.framesTotal ? (float)p.framesDone / (float)p.framesTotal : 0.0f, ImVec2(380.0f, 0.0f));
             const double remaining = p.speed > 0.0 ? (double)(p.framesTotal - p.framesDone) / p.speed : 0.0;
             ImGui::Text("Elapsed %.0f s   remaining ~%.0f s   %.2fx real time",
@@ -1672,6 +1755,11 @@ with:
         // would fight the renderer for the clock) and the wall-clock evaluate is skipped.
         renderer_.step(kRenderStepBudget);
     } else {
+        // Self-heal: the offline flag is bracketed by the renderer's start()/finish(), so a
+        // future early return that skipped finish() would silently mute Audio Out, MIDI Out and
+        // the Recorder for the rest of the session with no error. One line makes that
+        // unrecoverable-without-restart failure impossible. It should never fire.
+        if (graph_.offline()) graph_.setOffline(false);
         syncEngine_.update(graph_.transport(), prefs_, dt);   // MIDI clock sync in/out
         graph_.evaluate(dt);                                  // advances the transport by dt
     }
@@ -1780,24 +1868,24 @@ static int runRender(const std::vector<std::string>& args) {
             std::fprintf(stderr, "could not load project %s\n", cli.projectPath.c_str());
         } else {
             oss::RenderSettings s = cli.settings;
-            if (s.endBar < 0.0) s.endBar = app.graph().automation().lengthBars();      // sentinel -> song length
-            if (s.width <= 0 || s.height <= 0) {                                       // sentinel -> live size
+            if (s.endBar == kRenderEndBarFromProject) s.endBar = app.graph().automation().lengthBars();
+            if (s.width == kRenderSizeFromPreferences || s.height == kRenderSizeFromPreferences) {
                 s.width = app.preferences().textureWidth; s.height = app.preferences().textureHeight;
             }
             oss::OfflineRenderer& r = app.renderer();
-            if (!r.start(app.graph(), &app.preferences(), s, err)) {
+            if (!r.start(app.graph(), s, err)) {
                 std::fprintf(stderr, "render failed: %s\n", err.c_str());
             } else {
                 double lastPrint = glfwGetTime();
                 while (r.step(1.0)) {
                     glfwPollEvents();
-                    if (r.progress().status.rfind("waiting", 0) == 0)                 // loader wait: don't spin
+                    if (r.progress().waitingForLoad)                                  // loader wait: don't spin
                         std::this_thread::sleep_for(std::chrono::milliseconds(1));
                     double t = glfwGetTime();
                     if (t - lastPrint >= 1.0) {
                         lastPrint = t;
                         const oss::OfflineRenderer::Progress& p = r.progress();
-                        std::fprintf(stderr, "  %ld / %ld frames (%.1fx real time)\n",
+                        std::fprintf(stderr, "  %lld / %lld frames (%.1fx real time)\n",
                                      p.framesDone, p.framesTotal, p.speed / (double)s.fps);
                     }
                 }
