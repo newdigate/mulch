@@ -1,7 +1,11 @@
 #include "app/OfflineRenderer.h"
 #include <algorithm>
+#include <cerrno>
 #include <chrono>
 #include <cstdio>
+#include <cstring>
+#include <filesystem>
+#include <system_error>
 #include "core/Graph.h"
 #include "core/PathUtil.h"
 #include "gfx/GLUtil.h"
@@ -74,11 +78,36 @@ bool OfflineRenderer::start(Graph& g, const RenderSettings& s, std::string& err)
     const long long total         = renderFrameCount(s, secondsPerBar);
     // renderFramesOver returns 0 for a range that is empty or whose frame count is not a finite,
     // representable number -- `--end 1e18` is finite and passes every rule above, then overflows
-    // the count -- and a hand-edited beatsPerBar = 0 makes secondsPerBar 0. This has to be a
+    // the count -- and a hand-edited beatsPerBar = 0 makes secondsPerBar 0. The message covers
+    // BOTH: an overflowing range is the opposite of empty, and reporting it as empty sent the
+    // user looking for a typo in the wrong direction. This has to be a
     // reject, not a completion check hoisted to the top of step()'s loop: that would get the
     // count right but then finish(Done) with no encoder ever opened, reporting success and
     // writing no file at all.
-    if (total < 1) return reject("the render range is empty at this tempo");
+    if (total < 1) return reject("the render range is empty or too long at this tempo");
+
+    // Reject a destination that cannot be written BEFORE anything renders. openEncoder() runs at
+    // the FIRST CAPTURED frame, so an extension FFmpeg has no muxer for, a missing directory or a
+    // path with no write permission was only discovered after the whole pre-roll had rendered --
+    // measured 1.5 s for a trivial graph at 1920x1080 with a 1-bar 60 fps pre-roll, minutes for a
+    // heavy one. This is an OPTIMISATION, not a guarantee (the path can still vanish, fill up or
+    // lose permission between here and openEncoder()), so the late check stays exactly as it was.
+    if (!videoFormatSupported(s.outPath))
+        return reject("no video format matches " + fileBaseName(s.outPath) + " -- try .mp4");
+    {
+        // Append, never truncate: the probe must not damage a file the user is about to
+        // overwrite (or any other file they mistyped the path of), and it removes only a file it
+        // created itself.
+        std::error_code ec;
+        const bool existed = std::filesystem::exists(s.outPath, ec);
+        std::FILE* f = std::fopen(s.outPath.c_str(), "ab");
+        if (!f) {
+            const std::string why = std::strerror(errno);
+            return reject("cannot write " + s.outPath + ": " + why);
+        }
+        std::fclose(f);
+        if (!existed) std::filesystem::remove(s.outPath, ec);
+    }
 
     // GL objects live in the editor context (current on the graph thread). The FBO is
     // re-created per job at the render size; Framebuffer::create reports completeness itself.
@@ -146,6 +175,11 @@ void OfflineRenderer::finish(Phase outcome, std::string status) {
         }
         enc_.reset();
     }
+    // Release the render-sized framebuffer (shrink, not destroy -- Framebuffer::create is
+    // re-creation-safe and start() sizes it per job anyway). An 8192x8192 render otherwise holds
+    // ~268 MB of texture for the rest of the session. The editor context is current here: every
+    // route into finish() runs on the graph thread, and the destructor already deletes blitProg_.
+    fbo_.create(16, 16);
     graph_->setOffline(false);
     graph_->setPreferences(livePrefs_);
     graph_->transport() = savedTransport_;

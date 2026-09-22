@@ -14,6 +14,7 @@
 #include "gfx/GLUtil.h"
 #include "app/OfflineRenderer.h"
 #include "core/OfflineRender.h"
+#include "gfx/VideoEncoder.h"
 #include <chrono>
 #include <thread>
 #define STB_IMAGE_WRITE_IMPLEMENTATION
@@ -228,6 +229,11 @@ static int runRender(const std::vector<std::string>& args) {
 }
 
 int main(int argc, char** argv) {
+    // Once, covering all three entry points below. av_log_set_level is process-wide, so doing
+    // it from VideoEncoder::open() made the decoders' diagnostics depend on whether a recording
+    // had been started earlier in the session.
+    oss::quietFFmpegLog();
+
     for (int i = 1; i < argc; ++i) {
         if (std::strcmp(argv[i], "--render") == 0)
             return runRender(std::vector<std::string>(argv + i + 1, argv + argc));

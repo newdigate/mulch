@@ -252,6 +252,11 @@ static bool writeSolidPNG(const std::string& path, unsigned char r, unsigned cha
 }
 
 int main() {
+    // Once at startup, like the app's own main(): VideoEncoder::open() no longer does it (it is
+    // process-wide, so it used to silence the decoders too), and without this the ~20 lines of
+    // libx264/aac statistics per encoder open bury the scenario log.
+    quietFFmpegLog();
+
     // Phase 2: the six media file inputs are asset-backed with the matching AssetType.
     // Pure CPU (node constructors don't touch GL), so it runs before any GL setup --
     // a bare `return fail(...)` is correct here (no context to clean up).
@@ -2505,7 +2510,7 @@ int main() {
         s.width = 64; s.height = 64; s.outPath = "build/_offline_empty.mp4";
         OfflineRenderer r; std::string err;
         if (r.start(g, s, err)) { glfwTerminate(); return fail("offline empty range: an overflowing range should be refused"); }
-        if (err != "the render range is empty at this tempo") { glfwTerminate(); return fail(("offline empty range: wrong error: " + err).c_str()); }
+        if (err != "the render range is empty or too long at this tempo") { glfwTerminate(); return fail(("offline empty range: wrong error: " + err).c_str()); }
         // The reject must leave the graph exactly as it found it -- this is what makes the
         // ordering in start() (counts before the offline flag and the prefs swap) observable.
         if (g.offline()) { glfwTerminate(); return fail("offline empty range: a rejected start left the graph offline"); }
@@ -2515,15 +2520,19 @@ int main() {
 
         s.endBar = 8.0; g.transport().beatsPerBar = 0;   // a hand-edited project: no seconds in a bar
         if (r.start(g, s, err)) { glfwTerminate(); return fail("offline empty range: a zero-length bar should be refused"); }
-        if (err != "the render range is empty at this tempo") { glfwTerminate(); return fail("offline empty range: wrong error for a zero-length bar"); }
+        if (err != "the render range is empty or too long at this tempo") { glfwTerminate(); return fail("offline empty range: wrong error for a zero-length bar"); }
         if (g.offline()) { glfwTerminate(); return fail("offline empty range: a zero-tempo reject left the graph offline"); }
         std::fprintf(stderr, "gl_smoke OK: an empty render range is rejected without disturbing the graph\n");
     }
 
-    // --- Scenario: an encoder that cannot be opened fails the render (exit 1), never Done ---
+    // --- Scenario: a destination that cannot be written is rejected by start(), and one that
+    //     goes bad AFTER start() still fails the render (exit 1), never Done ---
     // The CLI's exit code is `phase == Done ? 0 : 1`, so this is the whole signal a batch
-    // pipeline gets. This is the one encode failure provokable without fault injection; the
-    // write/flush/trailer returns are now propagated the same way (see VideoEncoder).
+    // pipeline gets. start() now probes the destination up front, because openEncoder() runs at
+    // the FIRST CAPTURED frame -- the whole pre-roll (1.5 s for a trivial graph at 1920x1080
+    // with a 1-bar 60 fps pre-roll, minutes for a heavy one) used to render before a typo in the
+    // path was reported. The late check stays and is what (b) below covers: the probe is an
+    // optimisation, and a path can always go bad between the two.
     {
         Graph g;
         auto col = std::make_unique<ColourNode>(); col->initGL();
@@ -2531,18 +2540,50 @@ int main() {
         int cId = g.addNode(std::move(col));
         int oId = g.addNode(std::move(out));
         if (!g.connect(cId, 0, oId, 0)) { glfwTerminate(); return fail("offline enc fail: connect"); }
+        Preferences live; live.textureWidth = 320; live.textureHeight = 240;
+        g.setPreferences(&live);
 
         RenderSettings s; s.startBar = 0.0; s.endBar = 1.0; s.prerollBars = 0.0; s.fps = 30;
         s.width = 64; s.height = 64;
-        s.outPath = "build/_no_such_dir_offline/out.mp4";       // the directory does not exist
-        OfflineRenderer r; std::string err;
-        if (!r.start(g, s, err)) { glfwTerminate(); return fail(("offline enc fail: start: " + err).c_str()); }
-        int guard = 0;
-        while (r.step(0.05)) { if (++guard > 100000) { glfwTerminate(); return fail("offline enc fail: never finished"); } }
-        if (r.progress().phase != OfflineRenderer::Phase::Failed) { glfwTerminate(); return fail("offline enc fail: an unopenable encoder must fail the render, not complete it"); }
-        if (r.progress().status.rfind("could not open ", 0) != 0) { glfwTerminate(); return fail(("offline enc fail: wrong status: " + r.progress().status).c_str()); }
-        if (g.offline()) { glfwTerminate(); return fail("offline enc fail: the failure must still clear the offline flag"); }
-        std::fprintf(stderr, "gl_smoke OK: an encoder that will not open fails the render instead of reporting Done\n");
+
+        // (a) Up front: a missing directory, and an extension no muxer claims. Both must leave
+        //     the graph untouched -- a reject after the offline flag was set would strand it.
+        {
+            s.outPath = "build/_no_such_dir_offline/out.mp4";   // the directory does not exist
+            OfflineRenderer r; std::string err;
+            if (r.start(g, s, err)) { glfwTerminate(); return fail("offline enc fail: a path in a missing directory should be rejected before rendering"); }
+            if (err.rfind("cannot write ", 0) != 0) { glfwTerminate(); return fail(("offline enc fail: wrong error for a missing directory: " + err).c_str()); }
+            if (g.offline() || g.transport().externalClock) { glfwTerminate(); return fail("offline enc fail: a rejected start left the graph armed"); }
+            if (g.preferences() != &live) { glfwTerminate(); return fail("offline enc fail: a rejected start swapped the preferences"); }
+
+            s.outPath = "build/_offline_probe.xyzzy";           // no muxer for this extension
+            std::remove(s.outPath.c_str());
+            if (r.start(g, s, err)) { glfwTerminate(); return fail("offline enc fail: an unmuxable extension should be rejected before rendering"); }
+            if (err.rfind("no video format matches ", 0) != 0) { glfwTerminate(); return fail(("offline enc fail: wrong error for a bad extension: " + err).c_str()); }
+            // The probe must not leave a file behind for a path it only tested.
+            if (std::ifstream(s.outPath).good()) { glfwTerminate(); return fail("offline enc fail: the destination probe left a file behind"); }
+        }
+
+        // (b) After start(): the path turns into a DIRECTORY between the probe and the first
+        //     captured frame, so openEncoder() is the one that has to catch it. This is the late
+        //     route the probe deliberately does not replace.
+        {
+            s.outPath = "build/_offline_enc_fail_late.mp4";
+            std::remove(s.outPath.c_str());
+            std::filesystem::remove_all(s.outPath);
+            OfflineRenderer r; std::string err;
+            if (!r.start(g, s, err)) { glfwTerminate(); return fail(("offline enc fail: start: " + err).c_str()); }
+            std::error_code ec;
+            std::filesystem::create_directory(s.outPath, ec);   // now nothing can open it for writing
+            if (ec) { glfwTerminate(); return fail("offline enc fail: could not stage the late failure"); }
+            int guard = 0;
+            while (r.step(0.05)) { if (++guard > 100000) { glfwTerminate(); return fail("offline enc fail: never finished"); } }
+            std::filesystem::remove_all(s.outPath, ec);
+            if (r.progress().phase != OfflineRenderer::Phase::Failed) { glfwTerminate(); return fail("offline enc fail: an unopenable encoder must fail the render, not complete it"); }
+            if (r.progress().status.rfind("could not open ", 0) != 0) { glfwTerminate(); return fail(("offline enc fail: wrong status: " + r.progress().status).c_str()); }
+            if (g.offline()) { glfwTerminate(); return fail("offline enc fail: the failure must still clear the offline flag"); }
+        }
+        std::fprintf(stderr, "gl_smoke OK: an unwritable destination is rejected before the pre-roll, and one that goes bad after start still fails the render\n");
     }
 
     // --- Scenario: the loader gate yields without losing frames; the load timeout fails naming

@@ -53,7 +53,9 @@ TEST_CASE("renderFrameCount: a non-finite or absurd range yields no frames, neve
 
 // Documented where the math lives, because the consequence is in OfflineRenderer::start(): a
 // zero frame count is reachable through settings that pass EVERY validation rule, so start() has
-// to reject it separately (`if (total < 1) ... "the render range is empty at this tempo"`).
+// to reject it separately (`if (total < 1) ... "the render range is empty or too long at this tempo"`
+// -- worded for both, since `--end 1e18` reaches the same guard with a range that is the
+// OPPOSITE of empty: too large for the frame count to be represented at all).
 // Without that, step() would capture one frame and then immediately finish(Done) -- a success
 // reporting "0 frames" -- or, if the completion check were hoisted above the first frame instead,
 // a Done outcome with no encoder ever opened and no file on disk at all.
@@ -187,6 +189,28 @@ TEST_CASE("validateRenderSettings: a good set passes and each fault has its own 
     err = "stale";   // a success must clear a leftover message from a prior failed call
     CHECK(validateRenderSettings(validSettings(), true, err));
     CHECK(err.empty());
+}
+
+// The two messages that name a rule's constants used to spell them out by hand next to the
+// arrays enforcing them, so changing kRenderFrameRates or kRenderMinSize/kRenderMaxSize left the
+// rejection quietly asserting the old rule. They are generated now; this pins the DERIVATION
+// (which keeps holding whatever the arrays say), while the case above pins today's exact prose.
+TEST_CASE("validateRenderSettings: the size/frame-rate messages are built from their constants") {
+    std::string err;
+    RenderSettings s = validSettings(); s.fps = 29;
+    CHECK_FALSE(validateRenderSettings(s, true, err));
+    CHECK(err == "frame rate must be " + renderFrameRateList());
+    for (int r : kRenderFrameRates) CHECK(err.find(std::to_string(r)) != std::string::npos);
+    CHECK(renderFrameRateList() == "24, 25, 30, 50 or 60");     // prose, not a raw dump
+
+    s = validSettings(); s.width = kRenderMinSize - 2;          // even, so the even rule cannot win
+    CHECK_FALSE(validateRenderSettings(s, true, err));
+    CHECK(err.find(std::to_string(kRenderMinSize)) != std::string::npos);
+    CHECK(err.find(std::to_string(kRenderMaxSize)) != std::string::npos);
+
+    s = validSettings(); s.height = kRenderMaxSize + 2;
+    CHECK_FALSE(validateRenderSettings(s, true, err));
+    CHECK(err.find(std::to_string(kRenderMaxSize)) != std::string::npos);
 }
 
 TEST_CASE("parseRenderArgs: full option set") {

@@ -21,6 +21,14 @@ static std::string avErr(int code) {
     return buf;
 }
 
+void quietFFmpegLog() { av_log_set_level(AV_LOG_ERROR); }
+
+bool videoFormatSupported(const std::string& path) {
+    // The same call avformat_alloc_output_context2(&oc, nullptr, nullptr, path) makes to choose
+    // a muxer from the filename, so the two can never disagree about a path.
+    return av_guess_format(nullptr, path.c_str(), nullptr) != nullptr;
+}
+
 VideoEncoder::~VideoEncoder() {
     if (opened_) { std::string e; close(e); }
     freeAll();
@@ -43,10 +51,9 @@ void VideoEncoder::freeAll() {
 
 bool VideoEncoder::open(const std::string& path, int width, int height, int fps,
                         int audioRate, int audioChannels, std::string& err) {
-    // Both consumers (the Recorder and the offline --render CLI) otherwise get ~20 lines of
-    // libx264/aac per-frame statistics dumped to stderr on every open -- harmless in the app's
-    // own log but noise on the scripted path this CLI exists for. Process-wide and idempotent.
-    av_log_set_level(AV_LOG_ERROR);
+    // NOTE: the ~20 lines of libx264/aac statistics an open dumps to stderr are quietened by
+    // quietFFmpegLog(), called once at startup. It is NOT done here: av_log_set_level is
+    // process-wide, so opening an encoder would otherwise silence the decoders too.
     width_ = width; height_ = height;
     writeErr_.clear(); writeFailed_ = false;   // no stale failure from an earlier attempt
     if (fps <= 0) fps = 60;

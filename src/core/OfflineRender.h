@@ -39,6 +39,18 @@ inline bool isRenderFrameRate(int fps) {
     return false;
 }
 
+// The supported rates as prose ("24, 25, 30, 50 or 60"), BUILT FROM kRenderFrameRates rather
+// than spelled out beside it: a rate added to (or dropped from) the array used to leave the
+// rejection message behind, quietly telling the user something the validator does not enforce.
+inline std::string renderFrameRateList() {
+    std::string s;
+    for (int i = 0; i < kRenderFrameRateCount; ++i) {
+        if (i) s += (i + 1 == kRenderFrameRateCount) ? " or " : ", ";
+        s += std::to_string(kRenderFrameRates[i]);
+    }
+    return s;
+}
+
 // Frames whose start time lies in [0, durationSeconds): the half-open interval makes this
 // ceil(dur*fps), with a small epsilon so float noise (0.2 s * 60 = 12.000000000000002) never
 // adds a frame. That definition already yields >= 1 for any 0 < dur*fps <= 1e-6, so the clamp
@@ -87,10 +99,14 @@ inline bool validateRenderSettings(const RenderSettings& s, bool hasOutputNode, 
     if (!(s.endBar > s.startBar))  { err = "finish bar must be after start bar"; return false; }
     if (s.startBar < 0.0)          { err = "start bar must be 0 or later"; return false; }
     if (s.prerollBars < 0.0)       { err = "pre-roll must be 0 or more bars"; return false; }
-    if (!isRenderFrameRate(s.fps)) { err = "frame rate must be 24, 25, 30, 50 or 60"; return false; }
+    if (!isRenderFrameRate(s.fps)) { err = "frame rate must be " + renderFrameRateList(); return false; }
     if (s.width  < kRenderMinSize || s.width  > kRenderMaxSize ||
         s.height < kRenderMinSize || s.height > kRenderMaxSize) {
-        err = "width and height must be between 16 and 8192"; return false;
+        // Same rule as the frame rates above: the bounds are named by the constants that enforce
+        // them, so changing one cannot leave the message asserting the old pair.
+        err = "width and height must be between " + std::to_string(kRenderMinSize) +
+              " and " + std::to_string(kRenderMaxSize);
+        return false;
     }
     if ((s.width % 2) || (s.height % 2)) { err = "width and height must be even"; return false; }
     if (s.outPath.empty())         { err = "choose an output file"; return false; }

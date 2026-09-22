@@ -171,7 +171,11 @@ starts, the file is video-only and the outcome line says so.
   render, every render-to-texture node recreates its framebuffer at the render size, so shader,
   Wireframe and Shaded Render nodes genuinely draw at that size instead of being upscaled to it.
 - **Output file** — the project's name with `.mp4`, editable, or picked with **Browse…**; the
-  `.mp4` extension is added if you leave it off.
+  `.mp4` extension is added if you leave it off. The folder is shown above the field and the field
+  itself holds the filename (so a long path can't hide the name you are about to overwrite); type a
+  path with a `/` in it to point somewhere else. A destination that cannot be written — a folder
+  that does not exist, no permission, an extension no container matches — is reported when you
+  press **Render**, before any frame is rendered.
 
 While the job runs, a modal **Rendering** popup shows the pre-roll and frame counters, elapsed and
 estimated remaining time, and the speed as a multiple of real time; the Output window shows the

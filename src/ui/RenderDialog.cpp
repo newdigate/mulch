@@ -1,7 +1,9 @@
 #include "ui/RenderDialog.h"
 #include <algorithm>
 #include <cctype>
+#include <cstddef>
 #include <cstdio>
+#include <string>
 #include <imgui.h>
 #include "app/OfflineRenderer.h"
 #include "core/Graph.h"
@@ -11,6 +13,23 @@
 #include "ui/FileDialog.h"
 
 namespace oss {
+
+// InputText over a std::string, growing the buffer through ImGui's resize callback (what
+// misc/cpp/imgui_stdlib.cpp does; that file is not in the build). A fixed char[1024] silently
+// TRUNCATED a seeded path longer than that and committed the truncation on the first keystroke
+// -- an overwrite of whatever the shortened path happened to name.
+static int growString(ImGuiInputTextCallbackData* d) {
+    if (d->EventFlag == ImGuiInputTextFlags_CallbackResize) {
+        auto* s = static_cast<std::string*>(d->UserData);
+        s->resize((std::size_t)d->BufTextLen);   // BufTextLen excludes the NUL; resize keeps one spare
+        d->Buf = s->data();
+    }
+    return 0;
+}
+static bool inputText(const char* label, std::string& s) {
+    return ImGui::InputText(label, s.data(), s.capacity() + 1,
+                            ImGuiInputTextFlags_CallbackResize, growString, &s);
+}
 
 void RenderDialog::seed(Graph& g, const Preferences& prefs, const std::string& projectPath) {
     settings_ = RenderSettings{};
@@ -78,10 +97,21 @@ void RenderDialog::draw(Graph& g, const Preferences& prefs, OfflineRenderer& r, 
             ImGui::SameLine();
             if (ImGui::Button("Use live size")) { settings_.width = prefs.textureWidth; settings_.height = prefs.textureHeight; }
 
-            char pathBuf[1024];
-            std::snprintf(pathBuf, sizeof(pathBuf), "%s", settings_.outPath.c_str());
+            // Directory on its own line, FILENAME in the field. A fixed-width field shows the
+            // START of the string, so a long directory pushed the filename -- the part you check
+            // before overwriting something -- off the right edge where nothing could reveal it.
+            // (The field still accepts a full path: a typed separator means "use this as-is".)
+            const std::string outDir = parentDir(settings_.outPath);
+            if (!outDir.empty()) {
+                ImGui::TextDisabled("in %s", outDir.c_str());
+                if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", settings_.outPath.c_str());
+            }
+            std::string outName = fileBaseName(settings_.outPath);
             ImGui::SetNextItemWidth(-180.0f);
-            if (ImGui::InputText("Output file", pathBuf, sizeof(pathBuf))) settings_.outPath = pathBuf;
+            if (inputText("Output file", outName)) {
+                settings_.outPath = (outDir.empty() || outName.find_first_of("/\\") != std::string::npos)
+                                  ? outName : outDir + "/" + outName;
+            }
             ImGui::SameLine();
             if (ImGui::Button("Browse...")) {
                 std::string defName = fileBaseName(settings_.outPath);

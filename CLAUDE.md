@@ -435,19 +435,30 @@ shaders by CWD-relative path, each package launches the app with `shaders/` as t
   pointer, the `Transport` snapshot and the offline flag exactly once per job (success / failure /
   cancel / destructor), which is why an `OfflineRenderer` member is declared AFTER the `Graph` it
   borrows and why no `step()` path may return without funnelling through `finish()` (a stuck offline
-  flag would mute the three sinks for the rest of the session). **Node-internal state is NOT
-  restored.** The GL-free settings, frame-count (`renderFramesOver`, `long long`) / fixed-clock math,
+  flag would mute the three sinks for the rest of the session); `finish()` also shrinks the render
+  FBO back to 16x16, so an 8192x8192 job does not hold ~268 MB of texture for the rest of the
+  session. **Node-internal state is NOT restored.** The GL-free settings, frame-count (`renderFramesOver`, `long long`) / fixed-clock math,
   validation and `--render` parsing live in `core/OfflineRender.h` (unit-tested): validation also
-  requires **even** width and height (the H.264 yuv420p encode), and `start()` separately rejects a
-  range that yields < 1 frame ("empty at this tempo") rather than finishing `Done` with no file;
+  requires **even** width and height (the H.264 yuv420p encode) and builds the frame-rate / size
+  messages FROM `kRenderFrameRates` and `kRenderMinSize`/`kRenderMaxSize`, so a changed constant
+  cannot leave the message behind; `start()` separately rejects a range that yields < 1 frame
+  ("empty or too long at this tempo" — `--end 1e18` reaches the same guard from the other side)
+  rather than finishing `Done` with no file, and **probes the destination before rendering
+  anything** (`videoFormatSupported` + an append-open it removes if it created it), because
+  otherwise a typo'd path costs the whole pre-roll before `openEncoder()` reports it — an
+  optimisation, not a guarantee, so the late check stays;
   `RenderCliArgs::endGiven`/`sizeGiven` are the structural "not given" signal, so someone who types
   the sentinel itself (`--end -1`, `--size 0x100`) is rejected instead of silently defaulted. Drivers:
   `ui/RenderDialog` (File → Render Video…; `Application::frame` calls `step(0.1 s)` while `active()`
   in place of the sync update + wall-clock `evaluate`, behind a modal progress popup with Cancel) and
-  `main.cpp --render` (hidden window, same class, `while (r.step(1.0))`). `gl_smoke` covers the
+  `main.cpp --render` (hidden window, same class, `while (r.step(1.0))`; it refuses to run where
+  there is no `shaders/`, since `ShaderNode`'s CWD-relative load would otherwise fill a valid mp4
+  with undefined framebuffer memory at exit 0). `gl_smoke` covers the
   offline sinks, the end-to-end decode, the fixed clock, sample-locked audio, the no-flip blit, the
-  loader gate + timeout, cancel, an unopenable encoder, mid-encode and at-close write failures, and
-  the state restore; `render_cli` is a best-effort ctest over `tests/assets/render_smoke.oss` guarded
+  loader gate + timeout (including a loader that only reports `loading()` AFTER its first
+  `evaluate()`, the real `AsyncLoader` shape, which is what pins the forced pre-roll frame), cancel,
+  a destination rejected up front and an encoder that cannot be opened later, mid-encode and
+  at-close write failures, and the state restore; `render_cli` is a best-effort ctest over `tests/assets/render_smoke.oss` guarded
   by `FAIL_REGULAR_EXPRESSION "black frames|video only"` so a silently empty render can't pass, and
   `--screenshot` opens the Render dialog so the capture exercises it.
 - **Texture nodes** derive from `ShaderNode` (`src/gfx/ShaderNode.h`): render a
