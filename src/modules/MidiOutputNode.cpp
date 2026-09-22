@@ -62,6 +62,7 @@ void MidiOutputNode::syncPorts(const Preferences* prefs) {
 
 void MidiOutputNode::evaluate(EvalContext& ctx) {
     syncPorts(ctx.prefs);
+    if (ctx.offline) return;   // offline render: never spray events at hardware off the real-time clock
     MidiRef in = ctx.in<MidiRef>(0);
     std::vector<unsigned char> m(3);
     for (std::size_t i = 0; i < in.count; ++i) {

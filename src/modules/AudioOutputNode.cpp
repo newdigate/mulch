@@ -20,26 +20,30 @@ AudioOutputNode::~AudioOutputNode() {
 }
 
 void AudioOutputNode::evaluate(EvalContext& ctx) {
-    std::string want = ctx.prefs ? ctx.prefs->audioOutputDeviceId : std::string();
-    int wantMs       = ctx.prefs ? ctx.prefs->audioBufferMs : 150;
-    if (!ensureDevice(want, wantMs)) return;   // no device -> silent no-op
-    soundio_flush_events(soundio_);        // pump device events (non-blocking)
-
     AudioRef l = ctx.in<AudioRef>(0);
     AudioRef r = ctx.in<AudioRef>(1);
     // Symmetric mirror: a single connected side feeds both speakers, so a lone
-    // mono wire just works. The ring carries interleaved stereo (L,R,L,R).
+    // mono wire just works. The ring carries interleaved stereo (L,R,L,R). The
+    // block is built BEFORE any device work so it exists with or without a device
+    // and while offline (the offline renderer reads it via lastBlock()).
     const AudioRef& effL = (l.samples && l.count > 0) ? l : r;
     const AudioRef& effR = (r.samples && r.count > 0) ? r : l;
     std::size_t nL = effL.samples ? effL.count : 0;
     std::size_t nR = effR.samples ? effR.count : 0;
     std::size_t n  = std::max(nL, nR);
-    if (n == 0) return;                                  // nothing connected -> silence
     stereoScratch_.resize(n * 2);
     for (std::size_t i = 0; i < n; ++i) {
         stereoScratch_[i * 2]     = (i < nL) ? effL.samples[i] : 0.0f;
         stereoScratch_[i * 2 + 1] = (i < nR) ? effR.samples[i] : 0.0f;
     }
+    lastSampleRate_ = n > 0 ? effL.sampleRate : 0;
+    if (ctx.offline) return;               // offline render: tapped, never touches the device or ring
+
+    std::string want = ctx.prefs ? ctx.prefs->audioOutputDeviceId : std::string();
+    int wantMs       = ctx.prefs ? ctx.prefs->audioBufferMs : 150;
+    if (!ensureDevice(want, wantMs)) return;   // no device -> silent no-op
+    soundio_flush_events(soundio_);        // pump device events (non-blocking)
+    if (n == 0) return;                                  // nothing connected -> silence
     if (ring_) ring_->push(stereoScratch_.data(), n * 2);   // overflow dropped, never blocks
 }
 

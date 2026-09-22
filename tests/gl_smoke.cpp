@@ -50,6 +50,8 @@
 #include "gfx/GLStateGuard.h"
 #include "gfx/GLUtil.h"
 #include "modules/ProjectMNode.h"
+#include "modules/AudioOutputNode.h"
+#include "core/Preferences.h"
 #include <cstdlib>
 #include <fstream>
 #include <filesystem>
@@ -1971,6 +1973,46 @@ int main() {
         glBindVertexArray(0); glBindBuffer(GL_ARRAY_BUFFER, 0);
         glDeleteSamplers(1, &probeSampler); glDeleteBuffers(1, &probeBuf); glDeleteVertexArrays(1, &probeVao);
         std::fprintf(stderr, "gl_smoke OK: GLStateGuard restores framebuffers/viewport/VAO/buffer/texture/enables and clears samplers\n");
+    }
+
+    // --- Scenario: offline mode -- Audio Out taps its block without a device, Recorder stays idle ---
+    {
+        Graph g;
+        auto sine = std::make_unique<SineWaveNode>();
+        auto aout = std::make_unique<AudioOutputNode>();
+        auto col  = std::make_unique<ColourNode>(); col->initGL();
+        auto rec  = std::make_unique<RecorderNode>();
+        rec->inputDefault(3) = true;                                            // record on
+        rec->inputDefault(4) = std::string("build/_offline_should_not_exist.mp4");
+        auto out  = std::make_unique<OutputNode>(); out->initGL();
+        int sId = g.addNode(std::move(sine)); int aId = g.addNode(std::move(aout));
+        int cId = g.addNode(std::move(col));  int rId = g.addNode(std::move(rec));
+        int oId = g.addNode(std::move(out));
+        if (!g.connect(sId, 0, aId, 0) || !g.connect(cId, 0, rId, 0) || !g.connect(rId, 0, oId, 0)) {
+            glfwTerminate(); return fail("offline sinks: connect");
+        }
+        std::remove("build/_offline_should_not_exist.mp4");
+        auto* an = dynamic_cast<AudioOutputNode*>(g.findNode(aId));
+        auto* rn = dynamic_cast<RecorderNode*>(g.findNode(rId));
+
+        g.setOffline(true);
+        for (int f = 0; f < 3; ++f) g.evaluate(1.0f / 60.0f);
+        // Audio Out: a lone left wire mirrors to both channels; 800 frames at 48 kHz / 60 fps.
+        if (an->lastSampleRate() != 48000) { glfwTerminate(); return fail("offline sinks: Audio Out sample rate not tapped"); }
+        if (an->lastBlock().size() != 800 * 2) { glfwTerminate(); return fail("offline sinks: Audio Out block should be 800 stereo frames"); }
+        bool mirrored = true;
+        for (std::size_t i = 0; i < an->lastBlock().size(); i += 2)
+            if (an->lastBlock()[i] != an->lastBlock()[i + 1]) { mirrored = false; break; }
+        if (!mirrored) { glfwTerminate(); return fail("offline sinks: lone mono wire should mirror to both channels"); }
+        // Recorder: `record` is ignored while offline -> no file, status still idle.
+        if (rn->statusLine() != "idle") { glfwTerminate(); return fail("offline sinks: Recorder should stay idle while offline"); }
+        if (std::ifstream("build/_offline_should_not_exist.mp4").good()) { glfwTerminate(); return fail("offline sinks: Recorder wrote a file while offline"); }
+        // Nothing connected -> empty block, rate 0.
+        g.disconnect(aId, 0);
+        g.evaluate(1.0f / 60.0f);
+        if (!an->lastBlock().empty() || an->lastSampleRate() != 0) { glfwTerminate(); return fail("offline sinks: disconnected Audio Out should tap an empty block"); }
+        g.setOffline(false);
+        std::fprintf(stderr, "gl_smoke OK: offline mode taps the Audio Out block and keeps the Recorder idle\n");
     }
 
     glfwDestroyWindow(win);

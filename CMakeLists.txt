@@ -434,16 +434,17 @@ add_executable(gl_smoke
   src/modules/WireframeNode.cpp
   src/modules/ProjectMNode.cpp
   src/modules/AudioPlayerNode.cpp
+  src/modules/AudioOutputNode.cpp
   src/audio/FFT.cpp
   src/audio/SignalGenerator.cpp
   src/audio/AudioFile.cpp
 )
 target_include_directories(gl_smoke PRIVATE src ${tinygltf_SOURCE_DIR}
   ${meshoptimizer_SOURCE_DIR}/src ${draco_SOURCE_DIR}/src
-  ${stb_SOURCE_DIR} ${earcut_SOURCE_DIR}/include ${CMAKE_BINARY_DIR})
+  ${stb_SOURCE_DIR} ${earcut_SOURCE_DIR}/include ${CMAKE_BINARY_DIR} ${libsoundio_SOURCE_DIR})
 target_compile_definitions(gl_smoke PRIVATE GLFW_INCLUDE_NONE TINYGLTF_ENABLE_DRACO
   OSS_DEFAULT_FONT="${OSS_DEFAULT_FONT}")
-target_link_libraries(gl_smoke PRIVATE glad_gl41 glfw glm::glm OpenGL::GL tinyobjloader meshoptimizer draco::draco PkgConfig::FFMPEG ${CMAKE_DL_LIBS})
+target_link_libraries(gl_smoke PRIVATE glad_gl41 glfw glm::glm OpenGL::GL tinyobjloader meshoptimizer draco::draco PkgConfig::FFMPEG libsoundio_static ${CMAKE_DL_LIBS})
 add_test(NAME gl_smoke COMMAND gl_smoke WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
 
 # Copy shaders next to the executable so the app can be run from the build dir too

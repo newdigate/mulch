@@ -26,6 +26,12 @@ public:
     ~AudioOutputNode() override;
     void evaluate(EvalContext& ctx) override;
 
+    // The interleaved-stereo block (L,R,L,R,...) built by the last evaluate(), empty when nothing
+    // was connected, and its sample rate (0 when empty). Built on EVERY evaluate -- with or
+    // without a device, live or offline -- so the offline renderer can tap "what you hear".
+    const std::vector<float>& lastBlock() const { return stereoScratch_; }
+    int lastSampleRate() const { return lastSampleRate_; }
+
 private:
     bool ensureDevice(const std::string& wantId, int wantBufferMs);   // open context (once) + ensure the right stream
     bool openContext();
@@ -43,6 +49,7 @@ private:
     std::vector<float>    scratch_;
     std::vector<float>    stereoScratch_;
     int  sampleRate_ = 48000;
+    int  lastSampleRate_ = 0;           // rate of the block in stereoScratch_ (0 = empty)
     std::string currentDeviceId_;       // id the stream is currently open on ("" = default)
     int  currentBufferMs_ = -1;          // buffer ms the stream is currently open with
     bool streamOpen_    = false;

@@ -24,7 +24,7 @@ void RecorderNode::evaluate(EvalContext& ctx) {
     TexRef   vin   = ctx.in<TexRef>(0);
     AudioRef lin   = ctx.in<AudioRef>(1);
     AudioRef rin   = ctx.in<AudioRef>(2);
-    bool     rec   = ctx.in<bool>(3);
+    bool     rec   = ctx.in<bool>(3) && !ctx.offline;   // an offline render owns the encoder: a live recording stops + saves
     const std::string& file = ctx.in<std::string>(4);
 
     // Pass video + audio straight through so the node is transparent in the graph.
