@@ -43,7 +43,7 @@ void VideoEncoder::freeAll() {
 bool VideoEncoder::open(const std::string& path, int width, int height, int fps,
                         int audioRate, int audioChannels, std::string& err) {
     width_ = width; height_ = height;
-    writeErr_.clear();                // no stale reason from an earlier attempt
+    writeErr_.clear(); writeFailed_ = false;   // no stale failure from an earlier attempt
     if (fps <= 0) fps = 60;
     if (audioChannels < 1) audioChannels = 1;
     if (audioChannels > 2) audioChannels = 2;
@@ -132,12 +132,15 @@ bool VideoEncoder::open(const std::string& path, int width, int height, int fps,
 }
 
 bool VideoEncoder::encodeWrite(AVCodecContext* ctx, AVStream* st, AVFrame* frame) {
+    // Every failure below latches writeFailed_ as well as writeErr_: callers that drop the
+    // per-call bool (RecorderNode::evaluate does, per frame) would otherwise finalise a file
+    // that quietly lost frames and report it as saved. close() consults the latch.
     int s = avcodec_send_frame(ctx, frame);
-    if (s < 0) { writeErr_ = avErr(s); return false; }
+    if (s < 0) { writeErr_ = avErr(s); writeFailed_ = true; return false; }
     for (;;) {
         int r = avcodec_receive_packet(ctx, pkt_);
         if (r == AVERROR(EAGAIN) || r == AVERROR_EOF) break;
-        if (r < 0) { writeErr_ = avErr(r); return false; }
+        if (r < 0) { writeErr_ = avErr(r); writeFailed_ = true; return false; }
         av_packet_rescale_ts(pkt_, ctx->time_base, st->time_base);
         pkt_->stream_index = st->index;
         // The muxer takes the packet's reference on success and blanks it, so the unref below is
@@ -146,7 +149,7 @@ bool VideoEncoder::encodeWrite(AVCodecContext* ctx, AVStream* st, AVFrame* frame
         // truncated file comes back reported as a clean one.
         int w = av_interleaved_write_frame(oc_, pkt_);
         av_packet_unref(pkt_);
-        if (w < 0) { writeErr_ = avErr(w); return false; }
+        if (w < 0) { writeErr_ = avErr(w); writeFailed_ = true; return false; }
     }
     return true;
 }
@@ -199,6 +202,7 @@ bool VideoEncoder::close(std::string& err) {
     auto note = [&](const char* what) {
         if (ok) { ok = false; err = std::string(what) + (writeErr_.empty() ? "" : ": " + writeErr_); }
     };
+    if (writeFailed_)                                  note("frames were lost during encoding");
     if (!encodeWrite(vctx_, vst_, nullptr))            note("flushing the video encoder failed");
     if (actx_ && !encodeWrite(actx_, ast_, nullptr))   note("flushing the audio encoder failed");
     int t = av_write_trailer(oc_);

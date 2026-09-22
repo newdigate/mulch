@@ -180,7 +180,10 @@ static AudioOutputNode* audioOutNodeOf(Graph* g, int id) {
 // A frame the encoder refused: finish(Failed) so the CLI's `phase == Done ? 0 : 1` exit code
 // actually reports it, naming FFmpeg's reason (ENOSPC is the realistic one).
 bool OfflineRenderer::encodeFailed(long long k) {
-    const std::string& why = enc_->lastError();
+    // BY VALUE, not a reference: finish() below resets enc_, which destroys the string this
+    // would otherwise alias. It happens to be safe as one expression today; a local must not
+    // be a use-after-free waiting for someone to hoist it.
+    const std::string why = enc_->lastError();
     finish(Phase::Failed, "encode failed at frame " + std::to_string(k) + (why.empty() ? "" : ": " + why));
     return false;
 }

@@ -46,6 +46,10 @@ public:
     // Flush the encoders, write the trailer, and close the file. Idempotent.
     // FALSE with `err` set means the file was NOT finalised -- an mp4 without its
     // trailer is unplayable, so a caller must report that rather than "saved".
+    // It also returns false if ANY earlier addVideoFrame()/addAudio() failed, even
+    // when the trailer itself writes: a file that silently lost frames mid-take is
+    // not a successful recording either, and a caller that ignored those per-call
+    // bools still finds out here.
     bool close(std::string& err);
 
     // FFmpeg's message for the most recent write/encode failure ("" if none). Lets a caller
@@ -72,6 +76,7 @@ private:
     int64_t aCount_   = 0;           // audio samples written (audio pts)
     std::vector<float> afifo_;       // pending mono float samples
     std::string writeErr_;           // FFmpeg's message for the last write/encode failure
+    bool    writeFailed_ = false;    // STICKY: any write/encode failure since open()
     bool    opened_ = false;
 };
 

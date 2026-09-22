@@ -230,6 +230,19 @@ public:
     std::vector<double> secs; std::vector<float> dts; std::vector<char> ext;
 };
 
+// Write a deterministic high-entropy PNG: frames built from it barely compress, so an encoder
+// writing them overflows AVIOContext's ~32 KiB buffer and actually reaches the file mid-stream.
+static bool writeNoisePNG(const char* path, int W, int H) {
+    std::vector<unsigned char> px((std::size_t)W * H * 4);
+    std::uint32_t seed = 12345u;                                  // fixed seed: reproducible
+    for (std::size_t i = 0; i < px.size(); i += 4) {
+        seed = seed * 1664525u + 1013904223u;
+        px[i] = (unsigned char)(seed >> 24); px[i+1] = (unsigned char)(seed >> 16);
+        px[i+2] = (unsigned char)(seed >> 8); px[i+3] = 255;
+    }
+    return stbi_write_png(path, W, H, 4, px.data(), W * 4) != 0;
+}
+
 // Write a 16x16 solid-colour PNG at `path`. Returns true on success.
 static bool writeSolidPNG(const std::string& path, unsigned char r, unsigned char g, unsigned char b) {
     const int W = 16, H = 16;
@@ -2536,13 +2549,19 @@ int main() {
     // The realistic encode failure is running out of disk, and it is the one that used to be
     // swallowed at four separate call sites -- so a batch pipeline got exit 0 and a truncated
     // file. RLIMIT_FSIZE is the portable stand-in: with SIGXFSZ ignored, a write past the limit
-    // returns EFBIG exactly as a full disk returns ENOSPC. The failure may surface at the frame
-    // that overflows or be buffered until close(); BOTH are correct outcomes and both must end
-    // in a non-Done phase. In practice AVIOContext buffers ~32 KiB, so a file this small reaches
-    // the fd only on the final flush and it is close() that fails -- which means this scenario is
-    // what finally exercises finish()'s Done->Failed downgrade, a branch that had never once
-    // executed. The assertion accepts either route so a different FFmpeg buffer size cannot
-    // silently turn the test vacuous.
+    // returns EFBIG exactly as a full disk returns ENOSPC. This scenario pins the failure to the
+    // close() route, because that is the one that exercises finish()'s Done->Failed downgrade --
+    // a branch that had never once executed. That needs a TWO-SIDED constraint on the output, and
+    // both sides are held by the render being only 0.5 s long:
+    //   lower -- the output must EXCEED the limit, or nothing fails. Measured 2003 bytes with
+    //            libx264; the limit below is 512, about 4x under it.
+    //   upper -- the output must stay UNDER FFmpeg's ~32 KiB AVIOContext buffer, or it flushes
+    //            mid-render and fails at a frame instead. This is the side that a longer render
+    //            quietly breaks: with no libx264, VideoEncoder::open falls back to MPEG-4 and
+    //            never sets bit_rate, so the ~200 kbps default applies -- ~12.5 KB over 0.5 s
+    //            (still under the buffer), but ~200 KB over the 8 s this scenario first used,
+    //            which would flush and fail the assertion with a misleading message.
+    // The mid-render write route is covered by its own scenario below, not by relaxing this one.
     {
         struct rlimit oldLim{};
         if (getrlimit(RLIMIT_FSIZE, &oldLim) != 0) { glfwTerminate(); return fail("offline enc write fail: getrlimit"); }
@@ -2550,7 +2569,7 @@ int main() {
         // 2 KiB against a ~8 KiB output: a 4x margin, so an x264 that compresses this flat colour
         // rather better or worse than the one measured still overshoots. Creating the file writes
         // nothing, so the limit cannot turn this into an open failure instead.
-        struct rlimit lim = oldLim; lim.rlim_cur = 2 * 1024;
+        struct rlimit lim = oldLim; lim.rlim_cur = 512;
         if (setrlimit(RLIMIT_FSIZE, &lim) != 0) {
             std::signal(SIGXFSZ, oldXfsz); glfwTerminate(); return fail("offline enc write fail: setrlimit");
         }
@@ -2562,7 +2581,7 @@ int main() {
         int oId = g.addNode(std::move(out));
         bool wired = g.connect(cId, 0, oId, 0);
 
-        RenderSettings s; s.startBar = 0.0; s.endBar = 4.0; s.prerollBars = 0.0; s.fps = 30;
+        RenderSettings s; s.startBar = 0.0; s.endBar = 0.25; s.prerollBars = 0.0; s.fps = 30;
         s.width = 320; s.height = 240; s.outPath = "build/_offline_enospc.mp4";
         std::remove(s.outPath.c_str());
         OfflineRenderer r; std::string err;
@@ -2596,22 +2615,27 @@ int main() {
             }
         }
 
-        setrlimit(RLIMIT_FSIZE, &oldLim);                // restore BEFORE any further file writes
-        std::signal(SIGXFSZ, oldXfsz);
+        bool restored = setrlimit(RLIMIT_FSIZE, &oldLim) == 0;   // BEFORE any further file write
+        bool sigBack  = std::signal(SIGXFSZ, oldXfsz) != SIG_ERR;
+        // stderr is POISONED at this point: its own writes hit EFBIG too, which latches
+        // ferror(stderr) so every later fprintf returns -1 and writes NOTHING -- even now the
+        // limit is lifted (macOS libc; glibc retries). Without this, running gl_smoke with
+        // stderr on a regular file silently loses the rest of the log, including any later
+        // gl_smoke FAIL line. ctest pipes stderr, so CI never showed it.
+        clearerr(stderr);
 
+        if (!restored) { glfwTerminate(); return fail("offline enc write fail: could not restore RLIMIT_FSIZE -- every later scenario would fail confusingly"); }
+        if (!sigBack)  { glfwTerminate(); return fail("offline enc write fail: could not restore the SIGXFSZ handler"); }
         if (!wired)   { glfwTerminate(); return fail("offline enc write fail: connect"); }
         if (!started) { glfwTerminate(); return fail(("offline enc write fail: start: " + err).c_str()); }
         if (!spun)    { glfwTerminate(); return fail("offline enc write fail: never finished"); }
         std::fprintf(stderr, "[enospc] phase=%d status=%s\n", (int)p.phase, p.status.c_str());
         if (p.phase == OfflineRenderer::Phase::Done) { glfwTerminate(); return fail("offline enc write fail: a truncated file was reported as a completed render"); }
         if (p.phase != OfflineRenderer::Phase::Failed) { glfwTerminate(); return fail("offline enc write fail: expected Failed"); }
-        // It must be an ENCODE failure, not the encoder failing to open -- otherwise this
-        // scenario would pass without ever reaching a write.
-        if (p.status.rfind("encode failed at frame ", 0) != 0 && p.status.rfind("could not finalise ", 0) != 0) {
-            glfwTerminate(); return fail(("offline enc write fail: wrong failure: " + p.status).c_str());
-        }
         if (stillOffline) { glfwTerminate(); return fail("offline enc write fail: the failure must still clear the offline flag"); }
-        if (p.status.rfind("could not finalise ", 0) != 0) { glfwTerminate(); return fail("offline enc write fail: the small-file case should fail at close(), exercising finish()'s Done->Failed downgrade"); }
+        // Specifically the close() route -- an encode failure at a frame would mean the output
+        // outgrew the avio buffer and this scenario stopped covering the Done->Failed downgrade.
+        if (p.status.rfind("could not finalise ", 0) != 0) { glfwTerminate(); return fail(("offline enc write fail: expected a close()-route failure (see the two-sided constraint above), got: " + p.status).c_str()); }
         std::fprintf(stderr, "[enospc] recorder status=%s\n", recStatus.c_str());
         if (recStatus.rfind("save failed: ", 0) != 0) { glfwTerminate(); return fail(("offline enc write fail: the Recorder claimed a file it could not finalise: " + recStatus).c_str()); }
         std::fprintf(stderr, "gl_smoke OK: a render and an inline recording that cannot write their file both fail instead of reporting success\n");
@@ -2624,15 +2648,8 @@ int main() {
     // entropy frames force flushes mid-render, so the limit is crossed by a write, not a trailer.
     {
         const int W = 640, H = 480;
-        std::vector<unsigned char> px((std::size_t)W * H * 4);
-        std::uint32_t seed = 12345u;                                  // deterministic LCG noise
-        for (std::size_t i = 0; i < px.size(); i += 4) {
-            seed = seed * 1664525u + 1013904223u;
-            px[i] = (unsigned char)(seed >> 24); px[i+1] = (unsigned char)(seed >> 16);
-            px[i+2] = (unsigned char)(seed >> 8); px[i+3] = 255;
-        }
         const char* fixture = "gl_smoke_enospc_noise.png";
-        if (!stbi_write_png(fixture, W, H, 4, px.data(), W * 4)) { glfwTerminate(); return fail("offline enc mid-write: write fixture"); }
+        if (!writeNoisePNG(fixture, W, H)) { glfwTerminate(); return fail("offline enc mid-write: write fixture"); }
 
         struct rlimit oldLim{};
         if (getrlimit(RLIMIT_FSIZE, &oldLim) != 0) { std::remove(fixture); glfwTerminate(); return fail("offline enc mid-write: getrlimit"); }
@@ -2665,10 +2682,13 @@ int main() {
         OfflineRenderer::Progress p = r.progress();
         bool stillOffline = g.offline();
 
-        setrlimit(RLIMIT_FSIZE, &oldLim);
-        std::signal(SIGXFSZ, oldXfsz);
+        bool restored = setrlimit(RLIMIT_FSIZE, &oldLim) == 0;
+        bool sigBack  = std::signal(SIGXFSZ, oldXfsz) != SIG_ERR;
+        clearerr(stderr);            // see the note in the scenario above: stderr is latched in error
         std::remove(fixture);
 
+        if (!restored) { glfwTerminate(); return fail("offline enc mid-write: could not restore RLIMIT_FSIZE -- every later scenario would fail confusingly"); }
+        if (!sigBack)  { glfwTerminate(); return fail("offline enc mid-write: could not restore the SIGXFSZ handler"); }
         if (!wired)   { glfwTerminate(); return fail("offline enc mid-write: connect"); }
         if (!started) { glfwTerminate(); return fail(("offline enc mid-write: start: " + err).c_str()); }
         if (!spun)    { glfwTerminate(); return fail("offline enc mid-write: never finished"); }
@@ -2681,6 +2701,86 @@ int main() {
         if (stillOffline) { glfwTerminate(); return fail("offline enc mid-write: the failure must still clear the offline flag"); }
         std::fprintf(stderr, "gl_smoke OK: a write failure mid-render stops the render and reports the frame it failed on\n");
     }
+
+    // --- Scenario: a recording that LOST FRAMES is not reported as saved ---
+    // The fifth swallow: RecorderNode::evaluate drops addVideoFrame()/addAudio()'s bool on every
+    // frame, so a take whose writes failed mid-way but whose trailer still wrote came back
+    // "saved" -- a file quietly missing frames, reported as a good one. VideoEncoder now latches
+    // writeFailed_ on any write/encode failure and close() consults it, so the per-call bools no
+    // longer have to be checked for the file to be judged honestly.
+    // Isolating that needs the writes to fail DURING the take and SUCCEED at the end, so the
+    // limit is lifted before the recording is stopped -- otherwise the trailer fails too and the
+    // latch is not what produced the verdict (which is why the scenarios above do not cover it).
+    //
+    // What this does and does not prove, precisely: FFmpeg's AVIOContext latches its OWN write
+    // error, so in this reproduction close()'s flush fails as well and the take would be judged
+    // badly even without writeFailed_ -- what the latch changes HERE is that the verdict names
+    // the lost frames instead of the flush. The latch's unique ground is a CODEC-level refusal
+    // (avcodec_send_frame/avcodec_receive_packet failing), where avio never sees an error and
+    // the trailer writes cleanly; that is not provokable from a test, so this scenario pins the
+    // message rather than claiming to be the only thing standing between "saved" and not.
+    {
+        const int W = 640, H = 480;
+        const char* fixture = "gl_smoke_lostframes_noise.png";
+        if (!writeNoisePNG(fixture, W, H)) { glfwTerminate(); return fail("lost frames: write fixture"); }
+
+        struct rlimit oldLim{};
+        if (getrlimit(RLIMIT_FSIZE, &oldLim) != 0) { std::remove(fixture); glfwTerminate(); return fail("lost frames: getrlimit"); }
+        void (*oldXfsz)(int) = std::signal(SIGXFSZ, SIG_IGN);
+        // 16 KiB and a 120-frame take. x264's lookahead and B-frame delay mean a frame's packet
+        // reaches the muxer well after the Recorder handed it over, so the crossing lands late
+        // (the sibling scenario above measures frame 54 of 60 at this limit) -- the take has to
+        // be long enough to get there BEFORE the limit is lifted, or nothing fails and this
+        // scenario silently stops testing the latch. The second assertion below catches that.
+        struct rlimit lim = oldLim; lim.rlim_cur = 16 * 1024;
+        if (setrlimit(RLIMIT_FSIZE, &lim) != 0) {
+            std::signal(SIGXFSZ, oldXfsz); std::remove(fixture); glfwTerminate(); return fail("lost frames: setrlimit");
+        }
+
+        std::string recStatus = "(not run)";
+        bool wired = false;
+        {
+            Graph g;
+            Preferences big; big.textureWidth = W; big.textureHeight = H;
+            g.setPreferences(&big);
+            auto img = std::make_unique<ImageStreamerNode>(); img->initGL();
+            img->inputDefault(0) = Value(std::string(fixture));
+            auto rec = std::make_unique<RecorderNode>();
+            rec->inputDefault(3) = true;
+            rec->inputDefault(4) = std::string("build/_rec_lostframes.mp4");
+            auto out = std::make_unique<OutputNode>(); out->initGL();
+            int iId = g.addNode(std::move(img)); int rId = g.addNode(std::move(rec));
+            int oId = g.addNode(std::move(out));
+            wired = g.connect(iId, 0, rId, 0) && g.connect(rId, 0, oId, 0);
+            if (wired) {
+                std::remove("build/_rec_lostframes.mp4");
+                for (int i = 0; i < 120; ++i) g.evaluate(1.0f / 30.0f);  // writes fail in here
+                setrlimit(RLIMIT_FSIZE, &oldLim);                        // ...but not at the end
+                auto* rn = dynamic_cast<RecorderNode*>(g.findNode(rId));
+                rn->inputDefault(3) = false;
+                g.evaluate(1.0f / 30.0f);                                // stop() -> close()
+                recStatus = rn->statusLine();
+            }
+        }
+
+        bool restored = setrlimit(RLIMIT_FSIZE, &oldLim) == 0;
+        bool sigBack  = std::signal(SIGXFSZ, oldXfsz) != SIG_ERR;
+        clearerr(stderr);            // see the note two scenarios above: stderr is latched in error
+        std::remove(fixture);
+
+        if (!restored) { glfwTerminate(); return fail("lost frames: could not restore RLIMIT_FSIZE"); }
+        if (!sigBack)  { glfwTerminate(); return fail("lost frames: could not restore the SIGXFSZ handler"); }
+        if (!wired)    { glfwTerminate(); return fail("lost frames: connect"); }
+        std::fprintf(stderr, "[lost frames] recorder status=%s\n", recStatus.c_str());
+        if (recStatus.rfind("save failed: ", 0) != 0) { glfwTerminate(); return fail(("lost frames: a take that lost frames was reported as saved: " + recStatus).c_str()); }
+        // Specifically the latch, not the trailer: the trailer wrote fine once the limit was
+        // lifted, so anything else here means this scenario stopped testing writeFailed_.
+        if (recStatus.find("frames were lost during encoding") == std::string::npos)
+            { glfwTerminate(); return fail(("lost frames: expected the sticky write-failure verdict, got: " + recStatus).c_str()); }
+        std::fprintf(stderr, "gl_smoke OK: a recording whose writes failed mid-take is not reported as saved, even though its trailer wrote\n");
+    }
+#else
+    std::fprintf(stderr, "gl_smoke SKIP: the three encode-write-failure scenarios (RLIMIT_FSIZE is POSIX-only)\n");
 #endif
 
     glfwDestroyWindow(win);
