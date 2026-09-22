@@ -1,9 +1,7 @@
 #include "app/OfflineRenderer.h"
-#include <algorithm>
 #include <chrono>
 #include <cstdio>
 #include "core/Graph.h"
-#include "core/PathUtil.h"
 #include "gfx/GLUtil.h"
 #include "modules/AudioOutputNode.h"
 #include "modules/OutputNode.h"
@@ -39,29 +37,44 @@ OfflineRenderer::~OfflineRenderer() {
 }
 
 bool OfflineRenderer::start(Graph& g, const Preferences* livePrefs, const RenderSettings& s, std::string& err) {
-    if (active_) { err = "a render is already running"; return false; }
+    // A second start() while a job is running is rejected without disturbing THAT job's
+    // progress()/active() -- unlike the failures below, there is no stale "previous job" for
+    // progress_ to describe here; it is already reporting the live one. (Routing this through
+    // the same reset-progress_ path as the failures below would set phase = Failed on a job
+    // that is still genuinely running, which -- now that active() is derived from phase --
+    // would make active() false out from under it while nothing had actually stopped it.)
+    if (active()) { err = "a render is already running"; return false; }
+
+    // Any failure from here on means no earlier attempt's progress_ should linger: reset it to
+    // Failed so progress() and `err` never disagree about the latest attempt.
+    auto reject = [&](const std::string& why) {
+        progress_ = Progress{};
+        progress_.phase  = Phase::Failed;
+        progress_.status = why;
+        err = why;
+        return false;
+    };
+
     OutputNode* out = nullptr; AudioOutputNode* aout = nullptr;
     for (const auto& n : g.nodes()) {
         if (!out)  out  = dynamic_cast<OutputNode*>(n.get());
         if (!aout) aout = dynamic_cast<AudioOutputNode*>(n.get());
     }
-    if (!validateRenderSettings(s, out != nullptr, err)) return false;
+    if (!validateRenderSettings(s, out != nullptr, err)) return reject(err);
 
     // GL objects live in the editor context (current on the graph thread). The FBO is
-    // re-created per job at the render size; Framebuffer::create only prints on failure,
-    // so check completeness ourselves.
+    // re-created per job at the render size; Framebuffer::create reports completeness itself.
     if (!blitProg_) { blitProg_ = linkProgram(kBlitVS, kBlitFS); fsq_.create(); }
-    fbo_.create(s.width, s.height);
-    glBindFramebuffer(GL_FRAMEBUFFER, fbo_.id());
-    GLenum status = glCheckFramebufferStatus(GL_FRAMEBUFFER);
-    glBindFramebuffer(GL_FRAMEBUFFER, 0);
-    if (status != GL_FRAMEBUFFER_COMPLETE) {
-        err = "could not create a " + std::to_string(s.width) + "x" + std::to_string(s.height)
-            + " framebuffer (GL status " + std::to_string(status) + ")";
-        return false;
+    if (!fbo_.create(s.width, s.height)) {
+        return reject("could not create a " + std::to_string(s.width) + "x" + std::to_string(s.height)
+                     + " framebuffer");
     }
 
-    graph_ = &g; livePrefs_ = livePrefs; settings_ = s; output_ = out; audioOut_ = aout;
+    graph_      = &g;
+    livePrefs_  = g.preferences();     // the graph's ACTUAL current prefs pointer, not just the argument
+    settings_   = s;
+    outputId_   = out->id();           // validated non-null above
+    audioOutId_ = aout ? aout->id() : 0;
     savedTransport_ = g.transport();
     renderPrefs_ = livePrefs ? *livePrefs : Preferences{};
     renderPrefs_.textureWidth  = s.width;
@@ -73,6 +86,7 @@ bool OfflineRenderer::start(Graph& g, const Preferences* livePrefs, const Render
     t.externalClock = true;          // advance() becomes a no-op; we place the position ourselves
     t.playing       = true;          // synced nodes run
     t.looping       = false;         // linear start -> finish
+    renderClock_    = t;             // pin the WHOLE armed clock; evaluateFrame re-asserts it verbatim
     secondsPerBar_  = t.secondsPerBar();
     prerollFrames_  = prerollFrameCount(s, secondsPerBar_);
     totalFrames_    = renderFrameCount(s, secondsPerBar_);
@@ -87,19 +101,28 @@ bool OfflineRenderer::start(Graph& g, const Preferences* livePrefs, const Render
     progress_.outPath      = s.outPath;
     startTime_ = captureStartTime_ = now();
     loadWaitStart_ = -1.0;
-    active_ = true;
     std::fprintf(stderr, "[Render] %s: bars %.2f-%.2f, %lld frames at %d fps, %dx%d, pre-roll %lld\n",
                  s.outPath.c_str(), s.startBar, s.endBar, totalFrames_, s.fps, s.width, s.height, prerollFrames_);
     return true;
 }
 
-void OfflineRenderer::finish(Phase outcome, const std::string& status) {
-    if (!active_) return;
-    if (enc_) { std::string e; enc_->close(e); enc_.reset(); }
+void OfflineRenderer::finish(Phase outcome, std::string status) {
+    if (!active()) return;
+    if (enc_) {
+        std::string e;
+        if (!enc_->close(e) && outcome == Phase::Done) {
+            // A file that failed to finalise is not a success, however many frames were
+            // captured -- an unflushed/untrailered mp4 is unplayable, and the CLI's exit code
+            // (phase == Done ? 0 : 1) is the only signal a batch pipeline gets.
+            outcome = Phase::Failed;
+            status  = "could not finalise " + settings_.outPath + ": " + e;
+        }
+        enc_.reset();
+    }
     graph_->setOffline(false);
     graph_->setPreferences(livePrefs_);
     graph_->transport() = savedTransport_;
-    active_ = false;
+    graph_ = nullptr;                  // guard against any accidental post-job use
     progress_.phase          = outcome;
     progress_.status         = status;
     progress_.elapsedSeconds = now() - startTime_;
@@ -107,21 +130,20 @@ void OfflineRenderer::finish(Phase outcome, const std::string& status) {
 }
 
 void OfflineRenderer::cancel() {
-    if (!active_) return;
+    if (!active()) return;
     finish(Phase::Cancelled, "cancelled after " + std::to_string(progress_.framesDone) + " frames");
 }
 
 bool OfflineRenderer::anyNodeLoading(std::string& who) const {
     for (const auto& n : graph_->nodes())
-        if (n->loading()) { who = n->name(); return true; }
+        if (n->loading()) { who = n->name() + " #" + std::to_string(n->id()); return true; }
     return false;
 }
 
 void OfflineRenderer::evaluateFrame(long long k) {
     Transport& t = graph_->transport();
-    t.externalClock = true;   // re-assert: nothing else should touch the clock mid-render
-    t.playing       = true;
-    t.seconds       = renderFrameSeconds(settings_, secondsPerBar_, k);
+    t = renderClock_;                                  // re-assert the WHOLE armed clock verbatim
+    t.seconds = renderFrameSeconds(settings_, secondsPerBar_, k);
     graph_->evaluate(1.0f / (float)settings_.fps);
 }
 

@@ -11,7 +11,7 @@ public:
     Framebuffer(const Framebuffer&) = delete;
     Framebuffer& operator=(const Framebuffer&) = delete;
 
-    void create(int w, int h, bool depth = false);   // optional depth attachment
+    bool create(int w, int h, bool depth = false);   // optional depth attachment; false = incomplete (also prints)
     void bind() const;            // bind FBO + set viewport to its size
     static void unbind();         // bind default framebuffer (0)
 

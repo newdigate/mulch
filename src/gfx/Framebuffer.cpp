@@ -9,7 +9,7 @@ Framebuffer::~Framebuffer() {
     if (fbo_)   glDeleteFramebuffers(1, &fbo_);
 }
 
-void Framebuffer::create(int w, int h, bool depth) {
+bool Framebuffer::create(int w, int h, bool depth) {
     if (tex_)   { glDeleteTextures(1, &tex_);        tex_   = 0; }
     if (depth_) { glDeleteRenderbuffers(1, &depth_); depth_ = 0; }
     if (fbo_)   { glDeleteFramebuffers(1, &fbo_);    fbo_   = 0; }
@@ -32,9 +32,11 @@ void Framebuffer::create(int w, int h, bool depth) {
         glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_RENDERBUFFER, depth_);
         glBindRenderbuffer(GL_RENDERBUFFER, 0);
     }
-    if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE)
+    bool complete = glCheckFramebufferStatus(GL_FRAMEBUFFER) == GL_FRAMEBUFFER_COMPLETE;
+    if (!complete)
         std::fprintf(stderr, "[Framebuffer] incomplete\n");
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    return complete;
 }
 
 void Framebuffer::bind() const {

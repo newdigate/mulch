@@ -14,8 +14,6 @@
 namespace oss {
 
 class Graph;
-class OutputNode;
-class AudioOutputNode;
 
 // The offline render job. It poses as the transport's EXTERNAL CLOCK (the mechanism MIDI sync
 // uses): every frame it places the transport at startBar*secondsPerBar + k/fps, evaluates the
@@ -32,6 +30,10 @@ class AudioOutputNode;
 // Driven incrementally: Application::frame calls step(budget) while active() so ImGui can draw
 // progress; the --render CLI calls step() in a plain loop. Runs on the graph thread with the
 // editor GL context current (its FBO/VAO/program live there).
+//
+// TODO(Task 7): step()/capture()/openEncoder() are inert stubs here -- nothing is rendered yet.
+// step() always returns false, so a caller writing the documented `while (active()) step(...)`
+// loop would spin forever (active() stays true from start() until an explicit cancel()).
 class OfflineRenderer {
 public:
     enum class Phase { Idle, Preroll, Rendering, Done, Failed, Cancelled };
@@ -51,6 +53,13 @@ public:
 
     OfflineRenderer() = default;
     ~OfflineRenderer();                                // cancel() if active (a valid partial file remains)
+
+    // While a job is running, the graph's Preferences pointer points INTO this object
+    // (renderPrefs_) -- copying would leave the graph pointing at a stale/moved-from copy, so
+    // this is address-sensitive, not just resource-owning (contrast FullscreenPass's GL handle).
+    // Whatever holds one across frames (e.g. a future Application::renderer_) must be declared
+    // AFTER its Graph member, so it is destroyed -- and cancel()'s restore runs -- before the
+    // Graph goes away.
     OfflineRenderer(const OfflineRenderer&) = delete;
     OfflineRenderer& operator=(const OfflineRenderer&) = delete;
 
@@ -66,7 +75,11 @@ public:
     bool step(double budgetSeconds);
 
     void cancel();                                     // close the encoder (partial file plays), restore state
-    bool active() const { return active_; }
+
+    // Derived from progress_.phase rather than tracked separately: a job is active exactly
+    // while it is Preroll or Rendering, and finish() (reached from cancel(), step(), or the
+    // destructor) always ends in Done/Failed/Cancelled. One flag, not two kept in sync by hand.
+    bool active() const { return progress_.phase == Phase::Preroll || progress_.phase == Phase::Rendering; }
     const Progress& progress() const { return progress_; }   // valid after the job ends too
 
     // Test seam: how long to wait on loading() nodes before failing (default kRenderLoadTimeoutSeconds).
@@ -77,16 +90,17 @@ private:
     void evaluateFrame(long long k);
     bool capture(long long k);                         // false after finish(Failed)
     bool openEncoder();
-    void finish(Phase outcome, const std::string& status);
+    void finish(Phase outcome, std::string status);
     static double now();
 
     Graph*             graph_     = nullptr;
     const Preferences* livePrefs_ = nullptr;
     Preferences        renderPrefs_;
     Transport          savedTransport_;
+    Transport          renderClock_;                   // the whole armed clock, pinned once in start()
     RenderSettings     settings_;
-    OutputNode*        output_    = nullptr;
-    AudioOutputNode*   audioOut_  = nullptr;
+    int                outputId_   = 0;                 // resolved via Graph::findNode -- never a raw Node*
+    int                audioOutId_ = 0;                 // (Graph::clear()/a project load can free nodes)
 
     std::unique_ptr<VideoEncoder> enc_;
     Framebuffer        fbo_;                           // the render-sized blit target
@@ -102,7 +116,6 @@ private:
     double startTime_ = 0.0, captureStartTime_ = 0.0;
     double loadWaitStart_ = -1.0;                      // wall time the current loader wait began (-1 = none)
     double loadTimeout_ = kRenderLoadTimeoutSeconds;
-    bool   active_ = false;
     Progress progress_;
 };
 

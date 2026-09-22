@@ -2088,6 +2088,21 @@ int main() {
         const Transport& t = g.transport();
         if (!(t.externalClock && t.playing && !t.looping)) { glfwTerminate(); return fail("offline start: transport should be an external, playing, non-looping clock"); }
 
+        // The render-size prefs swap actually reaches the graph (not just inferred later from
+        // the restore): a ColourNode is a ShaderNode and resizes its FBO from ctx.prefs.
+        g.evaluate(1.0f / 60.0f);
+        auto* onDuring = dynamic_cast<OutputNode*>(g.findNode(oId));
+        if (onDuring->current().w != s.width || onDuring->current().h != s.height)
+            { glfwTerminate(); return fail("offline start: render size did not reach the graph"); }
+
+        // Starting a second job while this one is active is refused -- and must not disturb it.
+        RenderSettings s2 = s; s2.outPath = "build/_offline_cancel2.mp4";
+        std::string err2;
+        if (r.start(g, &live, s2, err2)) { glfwTerminate(); return fail("offline start: should refuse a second job while active"); }
+        if (err2 != "a render is already running") { glfwTerminate(); return fail("offline start: wrong error for starting while active"); }
+        if (!r.active() || r.progress().framesTotal != 60)
+            { glfwTerminate(); return fail("offline start: a rejected second start must not disturb the running job"); }
+
         r.cancel();
         if (r.active()) { glfwTerminate(); return fail("offline cancel: still active"); }
         if (r.progress().phase != OfflineRenderer::Phase::Cancelled) { glfwTerminate(); return fail("offline cancel: phase should be Cancelled"); }
@@ -2096,8 +2111,45 @@ int main() {
         g.evaluate(1.0f / 60.0f);
         auto* on = dynamic_cast<OutputNode*>(g.findNode(oId));
         if (on->current().w != 320 || on->current().h != 240) { glfwTerminate(); return fail("offline cancel: live prefs (texture size) not restored"); }
+
+        {   // a renderer that never ran: cancel + destruction must be no-ops (graph_ is null)
+            OfflineRenderer idle;
+            idle.cancel();
+            if (idle.active() || idle.progress().phase != OfflineRenderer::Phase::Idle)
+                { glfwTerminate(); return fail("offline: cancel on a never-started renderer should do nothing"); }
+        }
+
+        std::string statusBeforeSecondCancel = r.progress().status;
         r.cancel();                                              // idempotent
+        if (r.active() || r.progress().phase != OfflineRenderer::Phase::Cancelled
+            || r.progress().status != statusBeforeSecondCancel)
+            { glfwTerminate(); return fail("offline cancel: second cancel should be a no-op"); }
         std::fprintf(stderr, "gl_smoke OK: OfflineRenderer start validates, swaps prefs + clock, and cancel restores them\n");
+    }
+
+    // --- Scenario: OfflineRenderer restores the graph's ACTUAL prefs pointer, not just the
+    //     start() argument -- a caller passing a mismatched pointer must not rebind the graph ---
+    {
+        Graph g;
+        auto col = std::make_unique<ColourNode>(); col->initGL();
+        int cId = g.addNode(std::move(col));
+        auto out = std::make_unique<OutputNode>(); out->initGL();
+        int oId = g.addNode(std::move(out));
+        if (!g.connect(cId, 0, oId, 0)) { glfwTerminate(); return fail("offline prefs mismatch: connect"); }
+
+        Preferences real; real.textureWidth = 400; real.textureHeight = 300;
+        g.setPreferences(&real);
+
+        Preferences argOnly; argOnly.textureWidth = 500; argOnly.textureHeight = 500;   // deliberately mismatched
+        RenderSettings s; s.startBar = 0.0; s.endBar = 1.0; s.prerollBars = 0.0; s.fps = 30;
+        s.width = 160; s.height = 120; s.outPath = "build/_offline_prefs_mismatch.mp4";
+
+        OfflineRenderer r; std::string err;
+        if (!r.start(g, &argOnly, s, err)) { glfwTerminate(); return fail(("offline prefs mismatch: start: " + err).c_str()); }
+        r.cancel();
+        if (g.preferences() != &real)
+            { glfwTerminate(); return fail("offline prefs mismatch: restore should use the graph's actual prefs pointer, not the start() argument"); }
+        std::fprintf(stderr, "gl_smoke OK: OfflineRenderer restores the graph's actual prefs pointer even when start()'s argument is a mismatched pointer\n");
     }
 
     glfwDestroyWindow(win);

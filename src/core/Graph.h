@@ -20,6 +20,7 @@ public:
     // App-global preferences (audio/MIDI device selection), passed to every node via
     // EvalContext. Not owned -- Application owns the Preferences object.
     void setPreferences(const Preferences* p) { prefs_ = p; }
+    const Preferences* preferences() const { return prefs_; }
 
     // Offline-render mode: every EvalContext carries `offline = true` so the real-time sinks
     // (Audio Out, MIDI Out, Recorder) stay quiet while the OfflineRenderer drives the graph
