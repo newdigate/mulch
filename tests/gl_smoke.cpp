@@ -51,7 +51,6 @@
 #include "gfx/GLUtil.h"
 #include "modules/ProjectMNode.h"
 #include "modules/AudioOutputNode.h"
-#include "core/Preferences.h"
 #include <cstdlib>
 #include <fstream>
 #include <filesystem>
@@ -1975,44 +1974,91 @@ int main() {
         std::fprintf(stderr, "gl_smoke OK: GLStateGuard restores framebuffers/viewport/VAO/buffer/texture/enables and clears samplers\n");
     }
 
-    // --- Scenario: offline mode -- Audio Out taps its block without a device, Recorder stays idle ---
+    // --- Scenario: offline mode -- Audio Out taps its block and never touches the device ---
+    // Split from the Recorder scenario below on purpose: Graph::evaluate() runs every node every
+    // frame regardless of connections, so an AudioOutputNode sitting in a graph that takes even
+    // one LIVE evaluate (needed to prime a real recording, below) would open the real device on a
+    // machine that has one -- deviceTouched() is monotonic (never resets outside the destructor),
+    // so that would make the "never touched while offline" check below vacuously true. Keeping
+    // Audio Out in its own graph, offline from before its first evaluate, keeps the check honest.
     {
         Graph g;
         auto sine = std::make_unique<SineWaveNode>();
         auto aout = std::make_unique<AudioOutputNode>();
-        auto col  = std::make_unique<ColourNode>(); col->initGL();
-        auto rec  = std::make_unique<RecorderNode>();
-        rec->inputDefault(3) = true;                                            // record on
-        rec->inputDefault(4) = std::string("build/_offline_should_not_exist.mp4");
-        auto out  = std::make_unique<OutputNode>(); out->initGL();
-        int sId = g.addNode(std::move(sine)); int aId = g.addNode(std::move(aout));
-        int cId = g.addNode(std::move(col));  int rId = g.addNode(std::move(rec));
-        int oId = g.addNode(std::move(out));
-        if (!g.connect(sId, 0, aId, 0) || !g.connect(cId, 0, rId, 0) || !g.connect(rId, 0, oId, 0)) {
-            glfwTerminate(); return fail("offline sinks: connect");
-        }
-        std::remove("build/_offline_should_not_exist.mp4");
+        int sId = g.addNode(std::move(sine));
+        int aId = g.addNode(std::move(aout));
+        if (!g.connect(sId, 0, aId, 0)) { glfwTerminate(); return fail("offline sinks: connect Sine->AudioOut"); }
         auto* an = dynamic_cast<AudioOutputNode*>(g.findNode(aId));
-        auto* rn = dynamic_cast<RecorderNode*>(g.findNode(rId));
 
-        g.setOffline(true);
+        g.setOffline(true);   // offline before the first evaluate: the device path is never reached
         for (int f = 0; f < 3; ++f) g.evaluate(1.0f / 60.0f);
-        // Audio Out: a lone left wire mirrors to both channels; 800 frames at 48 kHz / 60 fps.
+        // A lone left wire mirrors to both channels; 800 frames at 48 kHz / 60 fps.
         if (an->lastSampleRate() != 48000) { glfwTerminate(); return fail("offline sinks: Audio Out sample rate not tapped"); }
         if (an->lastBlock().size() != 800 * 2) { glfwTerminate(); return fail("offline sinks: Audio Out block should be 800 stereo frames"); }
         bool mirrored = true;
         for (std::size_t i = 0; i < an->lastBlock().size(); i += 2)
             if (an->lastBlock()[i] != an->lastBlock()[i + 1]) { mirrored = false; break; }
         if (!mirrored) { glfwTerminate(); return fail("offline sinks: lone mono wire should mirror to both channels"); }
-        // Recorder: `record` is ignored while offline -> no file, status still idle.
-        if (rn->statusLine() != "idle") { glfwTerminate(); return fail("offline sinks: Recorder should stay idle while offline"); }
-        if (std::ifstream("build/_offline_should_not_exist.mp4").good()) { glfwTerminate(); return fail("offline sinks: Recorder wrote a file while offline"); }
+        bool nonSilent = false;
+        for (float v : an->lastBlock()) if (v > 0.01f || v < -0.01f) { nonSilent = true; break; }
+        if (!nonSilent) { glfwTerminate(); return fail("offline sinks: tapped block should carry the sine, not silence"); }
+        if (an->deviceTouched()) { glfwTerminate(); return fail("offline sinks: Audio Out must not touch the device while offline"); }
+
         // Nothing connected -> empty block, rate 0.
         g.disconnect(aId, 0);
         g.evaluate(1.0f / 60.0f);
         if (!an->lastBlock().empty() || an->lastSampleRate() != 0) { glfwTerminate(); return fail("offline sinks: disconnected Audio Out should tap an empty block"); }
+
+        // Positive control: back live, the device path IS reached -- otherwise the negative check
+        // above could pass for the wrong reason (deviceTouched() never firing at all).
         g.setOffline(false);
-        std::fprintf(stderr, "gl_smoke OK: offline mode taps the Audio Out block and keeps the Recorder idle\n");
+        g.evaluate(1.0f / 60.0f);   // live, still disconnected: reaches the device path, pushes silence
+        if (!an->deviceTouched()) { glfwTerminate(); return fail("offline sinks: a live frame should reach the device path"); }
+        std::fprintf(stderr, "gl_smoke OK: offline mode taps the Audio Out block and never touches the device\n");
+    }
+
+    // --- Scenario: an offline render interrupts a live recording (stop + save), and the Recorder
+    //     does not restart -- and truncate the file it just saved -- once the render ends ---
+    {
+        const char* recFile = "build/_offline_interrupted.mp4";
+        Graph g;
+        auto col = std::make_unique<ColourNode>(); col->initGL();
+        auto rec = std::make_unique<RecorderNode>();
+        auto out = std::make_unique<OutputNode>(); out->initGL();
+        int cId = g.addNode(std::move(col));
+        int rId = g.addNode(std::move(rec));
+        int oId = g.addNode(std::move(out));
+        if (!g.connect(cId, 0, rId, 0) || !g.connect(rId, 0, oId, 0)) {
+            glfwTerminate(); return fail("offline sinks: connect Colour->Recorder->Output");
+        }
+        std::remove(recFile);
+        auto* rn = dynamic_cast<RecorderNode*>(g.findNode(rId));
+
+        // Start a real live recording first, so the offline render actually interrupts one -- the
+        // bug this guards (a stale `record` toggle truncating the just-saved file once the render
+        // ends) only shows up if a recording was genuinely in progress.
+        rn->inputDefault(4) = std::string(recFile);
+        rn->inputDefault(3) = true;                          // record on, live
+        g.evaluate(1.0f / 60.0f);
+        // start() sets "recording..." but the same evaluate() immediately overwrites it with the
+        // "REC <time>  <frames>" counter once encoding is under way -- check that prefix instead.
+        if (rn->statusLine().rfind("REC ", 0) != 0) { glfwTerminate(); return fail("offline sinks: Recorder should be recording live before the render"); }
+
+        g.setOffline(true);
+        g.evaluate(1.0f / 60.0f);   // render begins -> `record` reads false -> stop() + save
+        std::string savedStatus = std::string("saved ") + recFile;
+        if (rn->statusLine() != savedStatus) { glfwTerminate(); return fail("offline sinks: Recorder should stop and save when the render begins"); }
+        if (!std::ifstream(recFile).good()) { glfwTerminate(); return fail("offline sinks: Recorder did not save the interrupted recording"); }
+
+        for (int f = 0; f < 2; ++f) g.evaluate(1.0f / 60.0f);   // rest of the render: stays saved, not idle
+        if (rn->statusLine() != savedStatus) { glfwTerminate(); return fail("offline sinks: Recorder should stay saved for the rest of the render"); }
+
+        g.setOffline(false);
+        g.evaluate(1.0f / 60.0f);
+        // `record` is still armed from before the render -- the suppression latch must keep it
+        // from restarting (and truncating the file it just saved) on this first live frame.
+        if (rn->statusLine() != savedStatus) { glfwTerminate(); return fail("offline sinks: Recorder must not restart after an offline render ends"); }
+        std::fprintf(stderr, "gl_smoke OK: an offline render interrupts a live recording and it does not restart afterward\n");
     }
 
     glfwDestroyWindow(win);
