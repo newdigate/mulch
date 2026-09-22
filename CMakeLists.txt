@@ -450,6 +450,12 @@ target_compile_definitions(gl_smoke PRIVATE GLFW_INCLUDE_NONE TINYGLTF_ENABLE_DR
 target_link_libraries(gl_smoke PRIVATE glad_gl41 glfw glm::glm OpenGL::GL tinyobjloader meshoptimizer draco::draco PkgConfig::FFMPEG libsoundio_static ${CMAKE_DL_LIBS})
 add_test(NAME gl_smoke COMMAND gl_smoke WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
 
+# Headless offline render via the app binary (best-effort in CI, like gl_smoke: needs a GL context).
+add_test(NAME render_cli
+  COMMAND shader_streamer --render tests/assets/render_smoke.oss ${CMAKE_BINARY_DIR}/_cli_render.mp4
+          --end 1 --fps 24 --size 160x120 --preroll 0.25
+  WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
+
 # Copy shaders next to the executable so the app can be run from the build dir too
 # (it also resolves shaders/ when run from the repo root).
 add_custom_command(TARGET shader_streamer POST_BUILD

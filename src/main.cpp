@@ -11,6 +11,10 @@
 #include "app/Application.h"
 #include "modules/AutomationNode.h"
 #include "gfx/GLUtil.h"
+#include "app/OfflineRenderer.h"
+#include "core/OfflineRender.h"
+#include <chrono>
+#include <thread>
 #define STB_IMAGE_WRITE_IMPLEMENTATION
 #include "stb_image_write.h"
 
@@ -127,12 +131,81 @@ static int runScreenshot(const std::string& path) {
     return rc;
 }
 
+// Headless offline render: `--render <project.oss> <out.mp4> [--start B] [--end B] [--fps N]
+// [--size WxH] [--preroll B]`. Loads preferences + the project into an Application on a hidden
+// window (like --screenshot) and steps its OfflineRenderer to completion, printing progress
+// once a second. Exit 0 when the render finished, 1 otherwise (the reason is on stderr).
+static int runRender(const std::vector<std::string>& args) {
+    oss::RenderCliArgs cli; std::string err;
+    if (!oss::parseRenderArgs(args, cli, err)) { std::fprintf(stderr, "%s\n", err.c_str()); return 1; }
+
+    if (!glfwInit()) { std::fprintf(stderr, "glfwInit failed\n"); return 1; }
+    glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 4);
+    glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 1);
+    glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
+    glfwWindowHint(GLFW_OPENGL_FORWARD_COMPAT, GL_TRUE);
+    glfwWindowHint(GLFW_VISIBLE, GLFW_FALSE);
+    GLFWwindow* win = glfwCreateWindow(640, 480, "shader-streamer-render", nullptr, nullptr);
+    if (!win) { std::fprintf(stderr, "createWindow failed (no offscreen GL?)\n"); glfwTerminate(); return 1; }
+    glfwMakeContextCurrent(win);
+    if (!gladLoadGL((GLADloadfunc)glfwGetProcAddress)) { glfwDestroyWindow(win); glfwTerminate(); return 1; }
+
+    IMGUI_CHECKVERSION();                     // the Application's panels need a context even unused
+    ImGui::CreateContext();
+    ImGui::GetIO().IniFilename = nullptr;
+    ImGui_ImplGlfw_InitForOpenGL(win, false);
+    ImGui_ImplOpenGL3_Init("#version 410");
+
+    int rc = 1;
+    {
+        oss::Application app(win);
+        if (!app.loadProjectFromFile(cli.projectPath)) {
+            std::fprintf(stderr, "could not load project %s\n", cli.projectPath.c_str());
+        } else {
+            oss::RenderSettings s = cli.settings;
+            if (s.endBar == oss::kRenderEndBarFromProject) s.endBar = app.graph().automation().lengthBars();
+            if (s.width == oss::kRenderSizeFromPreferences || s.height == oss::kRenderSizeFromPreferences) {
+                s.width = app.preferences().textureWidth; s.height = app.preferences().textureHeight;
+            }
+            oss::OfflineRenderer& r = app.renderer();
+            if (!r.start(app.graph(), s, err)) {
+                std::fprintf(stderr, "render failed: %s\n", err.c_str());
+            } else {
+                double lastPrint = glfwGetTime();
+                while (r.step(1.0)) {
+                    glfwPollEvents();
+                    if (r.progress().waitingForLoad)                                  // loader wait: don't spin
+                        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+                    double t = glfwGetTime();
+                    if (t - lastPrint >= 1.0) {
+                        lastPrint = t;
+                        const oss::OfflineRenderer::Progress& p = r.progress();
+                        std::fprintf(stderr, "  %lld / %lld frames (%.1fx real time)\n",
+                                     p.framesDone, p.framesTotal, p.speed / (double)s.fps);
+                    }
+                }
+                rc = (r.progress().phase == oss::OfflineRenderer::Phase::Done) ? 0 : 1;
+            }
+        }
+    }   // app destroyed here (its context is current)
+
+    ImGui_ImplOpenGL3_Shutdown();
+    ImGui_ImplGlfw_Shutdown();
+    ImGui::DestroyContext();
+    glfwDestroyWindow(win);
+    glfwTerminate();
+    return rc;
+}
+
 int main(int argc, char** argv) {
-    for (int i = 1; i < argc; ++i)
+    for (int i = 1; i < argc; ++i) {
+        if (std::strcmp(argv[i], "--render") == 0)
+            return runRender(std::vector<std::string>(argv + i + 1, argv + argc));
         if (std::strcmp(argv[i], "--screenshot") == 0) {
             std::string path = (i + 1 < argc) ? argv[i + 1] : "screenshot.png";
             return runScreenshot(path);
         }
+    }
 
     if (!glfwInit()) { std::fprintf(stderr, "glfwInit failed\n"); return 1; }
     glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 4);
