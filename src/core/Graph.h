@@ -21,6 +21,12 @@ public:
     // EvalContext. Not owned -- Application owns the Preferences object.
     void setPreferences(const Preferences* p) { prefs_ = p; }
 
+    // Offline-render mode: every EvalContext carries `offline = true` so the real-time sinks
+    // (Audio Out, MIDI Out, Recorder) stay quiet while the OfflineRenderer drives the graph
+    // faster (or slower) than real time. Set/cleared by the renderer.
+    void setOffline(bool on) { offline_ = on; }
+    bool offline() const { return offline_; }
+
     // UI-automation channels + the global song length (the Automation window).
     AutomationStore&       automation()       { return automation_; }
     const AutomationStore& automation() const { return automation_; }
@@ -68,6 +74,7 @@ private:
 
     Transport transport_;
     const Preferences* prefs_ = nullptr;
+    bool offline_ = false;
     AutomationStore automation_;
     AssetLibrary assets_;
     std::unordered_map<int, std::vector<Value>> outputs_;  // per-frame node outputs

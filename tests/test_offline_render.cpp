@@ -1,5 +1,8 @@
 #include <doctest/doctest.h>
 #include <limits>
+#include <memory>
+#include "core/Graph.h"
+#include "core/Node.h"
 #include "core/OfflineRender.h"
 
 using namespace oss;
@@ -212,4 +215,29 @@ TEST_CASE("parseRenderArgs: bad input is rejected with a message") {
     CHECK(err == "--end needs a value");
     CHECK_FALSE(parseRenderArgs({"song.oss", "out.mp4", "--bogus", "1"}, a, err));
     CHECK(err == "unknown option --bogus");
+}
+
+namespace {
+struct OfflineProbe : Node {
+    bool seen = false;
+    OfflineProbe() : Node("probe") {}
+    void evaluate(EvalContext& ctx) override { seen = ctx.offline; }
+};
+}
+
+TEST_CASE("Graph::setOffline reaches every node through EvalContext::offline") {
+    Graph g;
+    auto p = std::make_unique<OfflineProbe>();
+    OfflineProbe* probe = p.get();
+    g.addNode(std::move(p));
+    CHECK_FALSE(g.offline());
+    g.evaluate(1.0f / 60.0f);
+    CHECK_FALSE(probe->seen);
+    g.setOffline(true);
+    CHECK(g.offline());
+    g.evaluate(1.0f / 60.0f);
+    CHECK(probe->seen);
+    g.setOffline(false);
+    g.evaluate(1.0f / 60.0f);
+    CHECK_FALSE(probe->seen);
 }

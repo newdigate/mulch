@@ -19,6 +19,8 @@ struct EvalContext {
     float                     dt;        // seconds since previous frame
     const Transport*          transport = nullptr;  // global clock (set by Graph::evaluate)
     const Preferences*        prefs     = nullptr;   // app settings (set by Graph::evaluate)
+    bool                      offline   = false;    // an offline render drives the graph (set by Graph::evaluate):
+                                                    // real-time sinks (Audio Out, MIDI Out, Recorder) must stay quiet
 
     template <class T> const T& in(std::size_t i) const { return std::get<T>(inputs[i]); }
     template <class T> void out(std::size_t i, T v) { outputs[i] = Value(std::move(v)); }
