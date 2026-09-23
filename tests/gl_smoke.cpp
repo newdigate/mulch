@@ -68,6 +68,10 @@
 using namespace oss;
 
 static int fail(const char* msg) { std::fprintf(stderr, "gl_smoke FAIL: %s\n", msg); return 1; }
+// The scenarios below return false on failure; main() does the one GLFW teardown.
+static bool failed(const char* msg) { fail(msg); return false; }
+
+static bool near(int v, int t) { return v >= t - 3 && v <= t + 3; }
 
 // 2D point-in-triangle (sign-of-cross-products).
 static bool pointInTri(float px, float py, float ax, float ay,
@@ -251,46 +255,31 @@ static bool writeSolidPNG(const std::string& path, unsigned char r, unsigned cha
     return stbi_write_png(path.c_str(), W, H, 4, px.data(), W * 4) != 0;
 }
 
-int main() {
-    // Once at startup, like the app's own main(): VideoEncoder::open() no longer does it (it is
-    // process-wide, so it used to silence the decoders too), and without this the ~20 lines of
-    // libx264/aac statistics per encoder open bury the scenario log.
-    quietFFmpegLog();
 
-    // Phase 2: the six media file inputs are asset-backed with the matching AssetType.
-    // Pure CPU (node constructors don't touch GL), so it runs before any GL setup --
-    // a bare `return fail(...)` is correct here (no context to clean up).
+// Phase 2: the six media file inputs are asset-backed with the matching AssetType.
+// Pure CPU (node constructors don't touch GL), so it runs before any GL setup --
+// a bare `return fail(...)` is correct here (no context to clean up).
+static bool scenario_asset_backed_inputs() {
     {
         auto bad = [](const Node& n, int port, AssetType want) {
             if (port < 0 || port >= (int)n.inputs().size()) return true;
             const Port& p = n.inputs()[(std::size_t)port];
             return p.type != PortType::String || !p.assetBacked || p.assetType != want;
         };
-        AudioPlayerNode    ap; if (bad(ap, 0, AssetType::Audio)) return fail("AudioPlayer.file not asset-backed Audio");
-        VideoPlayerNode    vp; if (bad(vp, 0, AssetType::Video)) return fail("VideoPlayer.file not asset-backed Video");
-        MeshLoaderNode     ml; if (bad(ml, 0, AssetType::Mesh))  return fail("MeshLoader.file not asset-backed Mesh");
-        MidiFilePlayerNode mf; if (bad(mf, 0, AssetType::Midi))  return fail("MidiFile.file not asset-backed Midi");
+        AudioPlayerNode    ap; if (bad(ap, 0, AssetType::Audio)) return failed("AudioPlayer.file not asset-backed Audio");
+        VideoPlayerNode    vp; if (bad(vp, 0, AssetType::Video)) return failed("VideoPlayer.file not asset-backed Video");
+        MeshLoaderNode     ml; if (bad(ml, 0, AssetType::Mesh))  return failed("MeshLoader.file not asset-backed Mesh");
+        MidiFilePlayerNode mf; if (bad(mf, 0, AssetType::Midi))  return failed("MidiFile.file not asset-backed Midi");
         DrumMachineNode    dm;
         for (int v = 0; v < DrumMachineNode::kVoices; ++v)
-            if (bad(dm, 4 * v, AssetType::Audio)) return fail("DrumMachine.file voice not asset-backed Audio");
-        ProjectMNode       pmn; if (bad(pmn, ProjectMNode::kPreset, AssetType::Preset)) return fail("projectM.preset not asset-backed Preset");
+            if (bad(dm, 4 * v, AssetType::Audio)) return failed("DrumMachine.file voice not asset-backed Audio");
+        ProjectMNode       pmn; if (bad(pmn, ProjectMNode::kPreset, AssetType::Preset)) return failed("projectM.preset not asset-backed Preset");
         std::fprintf(stderr, "gl_smoke OK: 6 media nodes expose asset-backed file inputs\n");
     }
-
-    if (!glfwInit()) return fail("glfwInit");
-    glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 4);
-    glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 1);
-    glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
-    glfwWindowHint(GLFW_OPENGL_FORWARD_COMPAT, GL_TRUE);
-    glfwWindowHint(GLFW_VISIBLE, GLFW_FALSE);
-    GLFWwindow* win = glfwCreateWindow(64, 64, "gl_smoke", nullptr, nullptr);
-    if (!win) { glfwTerminate(); return fail("createWindow (no offscreen GL context)"); }
-    glfwMakeContextCurrent(win);
-    if (!gladLoadGL((GLADloadfunc)glfwGetProcAddress)) { glfwTerminate(); return fail("gladLoadGL"); }
-
-    auto near = [](int v, int t){ return v >= t - 3 && v <= t + 3; };
-
-    // --- Scenario 1: Colour -> Output (orange) ---
+    return true;
+}
+// --- Scenario 1: Colour -> Output (orange) ---
+static bool scenario_colour_output() {
     {
         Graph g;
         auto colour = std::make_unique<ColourNode>();
@@ -299,29 +288,31 @@ int main() {
         output->initGL();
         int cId = g.addNode(std::move(colour));
         int oId = g.addNode(std::move(output));
-        if (!g.connect(cId, 0, oId, 0)) { glfwTerminate(); return fail("connect Colour->Output"); }
+        if (!g.connect(cId, 0, oId, 0)) { return failed("connect Colour->Output"); }
 
         g.evaluate(1.0f / 60.0f);
 
         auto* out = dynamic_cast<OutputNode*>(g.findNode(oId));
-        if (!out) { glfwTerminate(); return fail("findNode Output"); }
+        if (!out) { return failed("findNode Output"); }
         TexRef tex = out->current();
-        if (tex.id == 0 || tex.w <= 0 || tex.h <= 0) { glfwTerminate(); return fail("output texture not produced"); }
+        if (tex.id == 0 || tex.w <= 0 || tex.h <= 0) { return failed("output texture not produced"); }
 
         int r, gg, b, a;
         readCentre(tex, r, gg, b, a);
         std::fprintf(stderr, "gl_smoke centre pixel = (%d,%d,%d,%d), expected ~(255,128,25,255)\n", r, gg, b, a);
 
         if (!(near(r,255) && near(gg,128) && near(b,25) && near(a,255))) {
-            glfwTerminate(); return fail("centre pixel not orange");
+            return failed("centre pixel not orange");
         }
         std::fprintf(stderr, "gl_smoke OK: Colour->Output pipeline rendered orange\n");
     }
-
-    // --- Scenario: Image Streamer loads a split image ---
+    return true;
+}
+// --- Scenario: Image Streamer loads a split image ---
+static bool scenario_image_streamer() {
     {
         std::string fixture = writeSplitFixture();
-        if (fixture.empty()) { glfwTerminate(); return fail("write image fixture"); }
+        if (fixture.empty()) { return failed("write image fixture"); }
 
         Graph g;
         auto img = std::make_unique<ImageStreamerNode>();
@@ -330,25 +321,27 @@ int main() {
         img->inputDefault(0) = Value(fixture);          // set the "file" path
         int iId = g.addNode(std::move(img));
         int oId = g.addNode(std::move(out));
-        if (!g.connect(iId, 0, oId, 0)) { std::remove(fixture.c_str()); glfwTerminate(); return fail("connect ImageStreamer->Output"); }
+        if (!g.connect(iId, 0, oId, 0)) { std::remove(fixture.c_str()); return failed("connect ImageStreamer->Output"); }
 
         g.evaluate(1.0f / 60.0f);
         TexRef tex = dynamic_cast<OutputNode*>(g.findNode(oId))->current();
         std::remove(fixture.c_str());
-        if (tex.id == 0 || tex.w <= 0 || tex.h <= 0) { glfwTerminate(); return fail("image output texture not produced"); }
+        if (tex.id == 0 || tex.w <= 0 || tex.h <= 0) { return failed("image output texture not produced"); }
 
         int r, gg, b, a;
         readAtUV(tex, 0.25f, 0.5f, r, gg, b, a);   // left quarter -> red
-        if (!(r > 200 && gg < 60)) { glfwTerminate(); return fail("image left half not red"); }
+        if (!(r > 200 && gg < 60)) { return failed("image left half not red"); }
         readAtUV(tex, 0.75f, 0.5f, r, gg, b, a);   // right quarter -> green
-        if (!(gg > 200 && r < 60)) { glfwTerminate(); return fail("image right half not green"); }
+        if (!(gg > 200 && r < 60)) { return failed("image right half not green"); }
         std::fprintf(stderr, "gl_smoke OK: Image Streamer loaded a split image\n");
     }
-
-    // --- Scenario: Kaleidoscope folds an image (segments=4) ---
+    return true;
+}
+// --- Scenario: Kaleidoscope folds an image (segments=4) ---
+static bool scenario_kaleidoscope_fold() {
     {
         std::string fixture = writeSplitFixture();   // left red, right green
-        if (fixture.empty()) { glfwTerminate(); return fail("write kaleidoscope fixture"); }
+        if (fixture.empty()) { return failed("write kaleidoscope fixture"); }
 
         Graph g;
         auto img = std::make_unique<ImageStreamerNode>();
@@ -361,29 +354,31 @@ int main() {
         int kId = g.addNode(std::move(kal));
         int oId = g.addNode(std::move(out));
         bool wired = g.connect(iId, 0, kId, 0) && g.connect(kId, 0, oId, 0);
-        if (!wired) { std::remove(fixture.c_str()); glfwTerminate(); return fail("wire ImageStreamer->Kaleidoscope->Output"); }
+        if (!wired) { std::remove(fixture.c_str()); return failed("wire ImageStreamer->Kaleidoscope->Output"); }
 
         g.evaluate(1.0f / 60.0f);
         TexRef tex = dynamic_cast<OutputNode*>(g.findNode(oId))->current();
         std::remove(fixture.c_str());
-        if (tex.id == 0) { glfwTerminate(); return fail("kaleidoscope output not produced"); }
+        if (tex.id == 0) { return failed("kaleidoscope output not produced"); }
 
         // (1) 4-fold rotational symmetry: UV (0.7,0.5) [angle 0] == UV (0.5,0.7) [angle 90deg].
         int r0, g0, b0, a0, r1, g1, b1, a1;
         readAtUV(tex, 0.7f, 0.5f, r0, g0, b0, a0);
         readAtUV(tex, 0.5f, 0.7f, r1, g1, b1, a1);
         if (!(near(r0, r1) && near(g0, g1) && near(b0, b1)))
-            { glfwTerminate(); return fail("kaleidoscope not 4-fold rotationally symmetric"); }
+            { return failed("kaleidoscope not 4-fold rotationally symmetric"); }
 
         // (2) It actually folds: a point on the (red) left half samples the (green) right
         // half after folding. Raw input at UV (0.3,0.5) is red; kaleidoscope output is green.
         int r2, g2, b2, a2;
         readAtUV(tex, 0.3f, 0.5f, r2, g2, b2, a2);
-        if (!(g2 > 200 && r2 < 60)) { glfwTerminate(); return fail("kaleidoscope did not fold the left half"); }
+        if (!(g2 > 200 && r2 < 60)) { return failed("kaleidoscope did not fold the left half"); }
         std::fprintf(stderr, "gl_smoke OK: Kaleidoscope folds (symmetric + wedge-folded)\n");
     }
-
-    // --- Scenario: Image Sequencer cycles a folder (async prefetch, split inputs) ---
+    return true;
+}
+// --- Scenario: Image Sequencer cycles a folder (async prefetch, split inputs) ---
+static bool scenario_image_sequencer_cycle() {
     {
         namespace fs = std::filesystem;
         fs::path dir = fs::temp_directory_path() / "oss_imgseq_smoke";
@@ -392,15 +387,15 @@ int main() {
         bool wrote = writeSolidPNG((dir / "0.png").string(), 255, 0, 0)     // red
                   && writeSolidPNG((dir / "1.png").string(), 0, 255, 0)     // green
                   && writeSolidPNG((dir / "2.png").string(), 0, 0, 255);    // blue
-        if (!wrote) { fs::remove_all(dir); glfwTerminate(); return fail("write sequencer fixtures"); }
+        if (!wrote) { fs::remove_all(dir); return failed("write sequencer fixtures"); }
 
         // Port-flag check (pure CPU; the ctor doesn't touch GL). folder=0, duration=1, beat length=2, sync=3.
         { ImageSequencerNode probe;
           const Port& pf = probe.inputs()[0];
           if (!(pf.type == PortType::String && pf.assetBacked && pf.folderPicker && pf.assetType == AssetType::Image))
-            { fs::remove_all(dir); glfwTerminate(); return fail("Sequencer.folder not a folder picker"); }
+            { fs::remove_all(dir); return failed("Sequencer.folder not a folder picker"); }
           if (probe.inputs().size() != 5 || !probe.inputs()[2].integer)
-            { fs::remove_all(dir); glfwTerminate(); return fail("Sequencer 'beat length' not an int input at port 2"); } }
+            { fs::remove_all(dir); return failed("Sequencer 'beat length' not an int input at port 2"); } }
 
         Graph g;
         auto seq = std::make_unique<ImageSequencerNode>();
@@ -412,7 +407,7 @@ int main() {
         seq->inputDefault(3) = Value(false);          // sync off
         int sId = g.addNode(std::move(seq));
         int oId = g.addNode(std::move(out));
-        if (!g.connect(sId, 0, oId, 0)) { fs::remove_all(dir); glfwTerminate(); return fail("connect Sequencer->Output"); }
+        if (!g.connect(sId, 0, oId, 0)) { fs::remove_all(dir); return failed("connect Sequencer->Output"); }
 
         auto centreIs = [&](int R, int G, int B)->bool {
             TexRef t = dynamic_cast<OutputNode*>(g.findNode(oId))->current();
@@ -432,10 +427,10 @@ int main() {
         };
 
         g.evaluate(1.0f / 60.0f);                              // image 0 loads synchronously -> red
-        if (!centreIs(255, 0, 0)) { fs::remove_all(dir); glfwTerminate(); return fail("sequencer frame 0 not red"); }
-        if (!advanceUntil(0, 255, 0)) { fs::remove_all(dir); glfwTerminate(); return fail("sequencer did not reach green"); }
-        if (!advanceUntil(0, 0, 255)) { fs::remove_all(dir); glfwTerminate(); return fail("sequencer did not reach blue"); }
-        if (!advanceUntil(255, 0, 0)) { fs::remove_all(dir); glfwTerminate(); return fail("sequencer did not wrap to red"); }
+        if (!centreIs(255, 0, 0)) { fs::remove_all(dir); return failed("sequencer frame 0 not red"); }
+        if (!advanceUntil(0, 255, 0)) { fs::remove_all(dir); return failed("sequencer did not reach green"); }
+        if (!advanceUntil(0, 0, 255)) { fs::remove_all(dir); return failed("sequencer did not reach blue"); }
+        if (!advanceUntil(255, 0, 0)) { fs::remove_all(dir); return failed("sequencer did not wrap to red"); }
 
         // Synced mode: index derives from transport beats (120 bpm -> 0.5 s/beat), beat length = 1.
         g.findNode(sId)->inputDefault(3) = Value(true);        // sync on
@@ -443,13 +438,15 @@ int main() {
         g.transport().seconds = 1.0;                           // beats = 2.0 -> image 2 (blue)
         bool syncedBlue = false;
         for (int f = 0; f < 400 && !syncedBlue; ++f) { g.evaluate(0.001f); syncedBlue = centreIs(0, 0, 255); }
-        if (!syncedBlue) { fs::remove_all(dir); glfwTerminate(); return fail("sequencer sync beats=2 not blue"); }
+        if (!syncedBlue) { fs::remove_all(dir); return failed("sequencer sync beats=2 not blue"); }
 
         fs::remove_all(dir);
         std::fprintf(stderr, "gl_smoke OK: Image Sequencer cycled a folder (async prefetch, free-run + sync)\n");
     }
-
-    // --- Scenario: Image Sequencer cross-fades between images ---
+    return true;
+}
+// --- Scenario: Image Sequencer cross-fades between images ---
+static bool scenario_image_sequencer_crossfade() {
     {
         namespace fs = std::filesystem;
         fs::path dir = fs::temp_directory_path() / "oss_imgseq_fade";
@@ -457,7 +454,7 @@ int main() {
         fs::create_directories(dir);
         bool wrote = writeSolidPNG((dir / "0.png").string(), 255, 0, 0)     // red
                   && writeSolidPNG((dir / "1.png").string(), 0, 255, 0);    // green
-        if (!wrote) { fs::remove_all(dir); glfwTerminate(); return fail("write fade fixtures"); }
+        if (!wrote) { fs::remove_all(dir); return failed("write fade fixtures"); }
 
         Graph g;
         auto seq = std::make_unique<ImageSequencerNode>();
@@ -470,7 +467,7 @@ int main() {
         seq->inputDefault(4) = Value(0.5f);           // fade duration = 0.5s
         int sId = g.addNode(std::move(seq));
         int oId = g.addNode(std::move(out));
-        if (!g.connect(sId, 0, oId, 0)) { fs::remove_all(dir); glfwTerminate(); return fail("connect fade Sequencer->Output"); }
+        if (!g.connect(sId, 0, oId, 0)) { fs::remove_all(dir); return failed("connect fade Sequencer->Output"); }
 
         // Step in 20 ms frames: red is shown, image 1 (green) prefetches, then at ~1 s the fade
         // starts and mix(red, green, m) is on the output for ~0.5 s before it resolves to green.
@@ -484,12 +481,14 @@ int main() {
             if (gg > 200 && r < 60)          reachedGreen = true;  // resolved to the incoming image
         }
         fs::remove_all(dir);
-        if (!sawBlend)     { glfwTerminate(); return fail("cross-fade produced no red/green blend"); }
-        if (!reachedGreen) { glfwTerminate(); return fail("cross-fade did not resolve to green"); }
+        if (!sawBlend)     { return failed("cross-fade produced no red/green blend"); }
+        if (!reachedGreen) { return failed("cross-fade did not resolve to green"); }
         std::fprintf(stderr, "gl_smoke OK: Image Sequencer cross-fade blends red->green\n");
     }
-
-    // --- Scenario 2: Colour(red) + Colour(blue) -> Mix(0.5) -> Output ---
+    return true;
+}
+// --- Scenario 2: Colour(red) + Colour(blue) -> Mix(0.5) -> Output ---
+static bool scenario_colour_mix() {
     {
         Graph g2;
         auto red  = std::make_unique<ColourNode>();  red->inputDefault(0)  = glm::vec4(1,0,0,1);
@@ -501,22 +500,24 @@ int main() {
         int bId = g2.addNode(std::move(blue));
         int mId = g2.addNode(std::move(mix));
         int oId2 = g2.addNode(std::move(out2));
-        if (!g2.connect(rId, 0, mId, 0)) { glfwTerminate(); return fail("connect red->mix.a"); }
-        if (!g2.connect(bId, 0, mId, 1)) { glfwTerminate(); return fail("connect blue->mix.b"); }
-        if (!g2.connect(mId, 0, oId2, 0)) { glfwTerminate(); return fail("connect mix->output"); }
+        if (!g2.connect(rId, 0, mId, 0)) { return failed("connect red->mix.a"); }
+        if (!g2.connect(bId, 0, mId, 1)) { return failed("connect blue->mix.b"); }
+        if (!g2.connect(mId, 0, oId2, 0)) { return failed("connect mix->output"); }
         g2.evaluate(1.0f/60.0f);
         auto* o2 = dynamic_cast<OutputNode*>(g2.findNode(oId2));
         TexRef t2 = o2->current();
-        if (!t2.id) { glfwTerminate(); return fail("mix output texture not produced"); }
+        if (!t2.id) { return failed("mix output texture not produced"); }
         int r,gg,b,a; readCentre(t2, r, gg, b, a);
         std::fprintf(stderr, "gl_smoke mix pixel = (%d,%d,%d,%d), expected ~(128,0,128,255)\n", r,gg,b,a);
         if (!(near(r,128) && near(gg,0) && near(b,128) && near(a,255))) {
-            glfwTerminate(); return fail("mix pixel wrong");
+            return failed("mix pixel wrong");
         }
         std::fprintf(stderr, "gl_smoke OK: Mix blends red+blue correctly\n");
     }
-
-    // --- Scenario 3: Spectrograph -> Output (synth audio -> FFT -> bars) ---
+    return true;
+}
+// --- Scenario 3: Spectrograph -> Output (synth audio -> FFT -> bars) ---
+static bool scenario_spectrograph_output() {
     {
         Graph g3;
         auto spec = std::make_unique<SpectrographNode>();
@@ -524,11 +525,11 @@ int main() {
         spec->initGL(); out3->initGL();
         int sId  = g3.addNode(std::move(spec));
         int oId3 = g3.addNode(std::move(out3));
-        if (!g3.connect(sId, 0, oId3, 0)) { glfwTerminate(); return fail("connect spectrograph->output"); }
+        if (!g3.connect(sId, 0, oId3, 0)) { return failed("connect spectrograph->output"); }
         for (int f = 0; f < 8; ++f) g3.evaluate(1.0f / 60.0f);   // fill the rolling window
         auto* o3 = dynamic_cast<OutputNode*>(g3.findNode(oId3));
         TexRef t3 = o3->current();
-        if (!t3.id) { glfwTerminate(); return fail("spectrograph output texture not produced"); }
+        if (!t3.id) { return failed("spectrograph output texture not produced"); }
         std::vector<unsigned char> px((size_t)t3.w * t3.h * 4);
         glBindTexture(GL_TEXTURE_2D, t3.id);
         glGetTexImage(GL_TEXTURE_2D, 0, GL_RGBA, GL_UNSIGNED_BYTE, px.data());
@@ -540,16 +541,18 @@ int main() {
             if (sawBg && sawBar) break;
         }
         std::fprintf(stderr, "gl_smoke spectrograph: sawBg=%d sawBar=%d\n", (int)sawBg, (int)sawBar);
-        if (!(sawBg && sawBar)) { glfwTerminate(); return fail("spectrograph did not render bars"); }
+        if (!(sawBg && sawBar)) { return failed("spectrograph did not render bars"); }
         std::fprintf(stderr, "gl_smoke OK: Spectrograph rendered FFT bars\n");
     }
-
-    // --- Scenario 4: SineWave -> Spectrograph -> Output (audio crosses an edge) ---
-    // A connected sine must drive the spectrum. To prove the edge actually
-    // carries audio (rather than the spectrograph silently using its internal
-    // synth), render a second spectrograph with NO input and assert the two
-    // spectra differ -- a single 4 kHz tone has a different shape than the
-    // 220 Hz synth + harmonics.
+    return true;
+}
+// --- Scenario 4: SineWave -> Spectrograph -> Output (audio crosses an edge) ---
+// A connected sine must drive the spectrum. To prove the edge actually
+// carries audio (rather than the spectrograph silently using its internal
+// synth), render a second spectrograph with NO input and assert the two
+// spectra differ -- a single 4 kHz tone has a different shape than the
+// 220 Hz synth + harmonics.
+static bool scenario_sine_drives_spectrograph() {
     {
         Graph gc;  // connected: sine -> spectrograph -> output
         auto sine  = std::make_unique<SineWaveNode>();
@@ -560,8 +563,8 @@ int main() {
         int siId = gc.addNode(std::move(sine));
         int spId = gc.addNode(std::move(specC));
         int ocId = gc.addNode(std::move(outC));
-        if (!gc.connect(siId, 0, spId, 0)) { glfwTerminate(); return fail("connect sine->spectrograph"); }
-        if (!gc.connect(spId, 0, ocId, 0)) { glfwTerminate(); return fail("connect spectrograph->output"); }
+        if (!gc.connect(siId, 0, spId, 0)) { return failed("connect sine->spectrograph"); }
+        if (!gc.connect(spId, 0, ocId, 0)) { return failed("connect spectrograph->output"); }
 
         Graph gu;  // unconnected control: spectrograph(synth) -> output
         auto specU = std::make_unique<SpectrographNode>();
@@ -569,13 +572,13 @@ int main() {
         specU->initGL(); outU->initGL();
         int spuId = gu.addNode(std::move(specU));
         int ouId  = gu.addNode(std::move(outU));
-        if (!gu.connect(spuId, 0, ouId, 0)) { glfwTerminate(); return fail("connect synth-spectrograph->output"); }
+        if (!gu.connect(spuId, 0, ouId, 0)) { return failed("connect synth-spectrograph->output"); }
 
         for (int f = 0; f < 8; ++f) { gc.evaluate(1.0f / 60.0f); gu.evaluate(1.0f / 60.0f); }
 
         TexRef tc = dynamic_cast<OutputNode*>(gc.findNode(ocId))->current();
         TexRef tu = dynamic_cast<OutputNode*>(gu.findNode(ouId))->current();
-        if (!tc.id || !tu.id) { glfwTerminate(); return fail("sine/spectrograph textures not produced"); }
+        if (!tc.id || !tu.id) { return failed("sine/spectrograph textures not produced"); }
 
         std::vector<unsigned char> pc((size_t)tc.w * tc.h * 4), pu((size_t)tu.w * tu.h * 4);
         glBindTexture(GL_TEXTURE_2D, tc.id);
@@ -590,16 +593,18 @@ int main() {
         }
         std::fprintf(stderr, "gl_smoke sine->spectrograph: sawBar=%d differsFromSynth=%d\n",
                      (int)sawBar, (int)differ);
-        if (!sawBar)  { glfwTerminate(); return fail("sine->spectrograph rendered no bars"); }
-        if (!differ)  { glfwTerminate(); return fail("connected sine produced same spectrum as synth (edge not carrying audio)"); }
+        if (!sawBar)  { return failed("sine->spectrograph rendered no bars"); }
+        if (!differ)  { return failed("connected sine produced same spectrum as synth (edge not carrying audio)"); }
         std::fprintf(stderr, "gl_smoke OK: SineWave drives Spectrograph through a connection\n");
     }
-
-    // --- Scenario 5: Spectrograph geometry -> Wireframe -> Output (vertex stream) ---
-    // The spectrograph's 2nd output is a VBO of the spectrum as a 3D line strip;
-    // the Wireframe node binds that buffer and draws it. Asserts the rendered
-    // texture has both the dark background and bright-green line pixels, proving
-    // the vertex buffer streamed across the edge and was drawn.
+    return true;
+}
+// --- Scenario 5: Spectrograph geometry -> Wireframe -> Output (vertex stream) ---
+// The spectrograph's 2nd output is a VBO of the spectrum as a 3D line strip;
+// the Wireframe node binds that buffer and draws it. Asserts the rendered
+// texture has both the dark background and bright-green line pixels, proving
+// the vertex buffer streamed across the edge and was drawn.
+static bool scenario_spectrograph_geometry_wireframe() {
     {
         Graph g5;
         auto spec = std::make_unique<SpectrographNode>();
@@ -609,13 +614,13 @@ int main() {
         int spId = g5.addNode(std::move(spec));
         int wiId = g5.addNode(std::move(wire));
         int oId5 = g5.addNode(std::move(out5));
-        if (!g5.connect(spId, 1, wiId, 0)) { glfwTerminate(); return fail("connect spectrograph.geometry->wireframe"); }
-        if (!g5.connect(wiId, 0, oId5, 0)) { glfwTerminate(); return fail("connect wireframe->output"); }
+        if (!g5.connect(spId, 1, wiId, 0)) { return failed("connect spectrograph.geometry->wireframe"); }
+        if (!g5.connect(wiId, 0, oId5, 0)) { return failed("connect wireframe->output"); }
 
         for (int f = 0; f < 8; ++f) g5.evaluate(1.0f / 60.0f);
 
         TexRef t5 = dynamic_cast<OutputNode*>(g5.findNode(oId5))->current();
-        if (!t5.id) { glfwTerminate(); return fail("wireframe texture not produced"); }
+        if (!t5.id) { return failed("wireframe texture not produced"); }
         std::vector<unsigned char> px((size_t)t5.w * t5.h * 4);
         glBindTexture(GL_TEXTURE_2D, t5.id);
         glGetTexImage(GL_TEXTURE_2D, 0, GL_RGBA, GL_UNSIGNED_BYTE, px.data());
@@ -626,15 +631,17 @@ int main() {
             if (g > 200 && r < 120 && b < 170)         sawLine = true;   // bright green line
         }
         std::fprintf(stderr, "gl_smoke wireframe: sawBg=%d sawLine=%d\n", (int)sawBg, (int)sawLine);
-        if (!sawBg)   { glfwTerminate(); return fail("wireframe background not rendered"); }
-        if (!sawLine) { glfwTerminate(); return fail("wireframe line strip not rendered"); }
+        if (!sawBg)   { return failed("wireframe background not rendered"); }
+        if (!sawLine) { return failed("wireframe line strip not rendered"); }
         std::fprintf(stderr, "gl_smoke OK: Spectrograph geometry streamed to Wireframe and rendered\n");
     }
-
-    // --- Scenario 6: Mesh Loader -> Wireframe -> Output (.obj and .gltf) ---
-    // Loads a mesh file, streams its triangle edges as a GL_LINES vertex buffer,
-    // and renders it through the Wireframe node. Asserts bright-green line pixels
-    // appear, proving the file parsed, the buffer streamed, and it drew.
+    return true;
+}
+// --- Scenario 6: Mesh Loader -> Wireframe -> Output (.obj and .gltf) ---
+// Loads a mesh file, streams its triangle edges as a GL_LINES vertex buffer,
+// and renders it through the Wireframe node. Asserts bright-green line pixels
+// appear, proving the file parsed, the buffer streamed, and it drew.
+static bool scenario_mesh_loader_wireframe() {
     {
         // The loader parses on a worker thread, so the geometry appears a few
         // frames after the first evaluate -- poll until it renders (or time out).
@@ -675,11 +682,11 @@ int main() {
             }
             return false;
         };
-        if (!renderMesh("tests/assets/tetra.obj", false))     { glfwTerminate(); return fail(".obj mesh did not render a wireframe"); }
+        if (!renderMesh("tests/assets/tetra.obj", false))     { return failed(".obj mesh did not render a wireframe"); }
         std::fprintf(stderr, "gl_smoke OK: .obj mesh loaded (worker thread) and rendered as wireframe\n");
-        if (!renderMesh("tests/assets/triangle.gltf", false)) { glfwTerminate(); return fail(".gltf mesh did not render a wireframe"); }
+        if (!renderMesh("tests/assets/triangle.gltf", false)) { return failed(".gltf mesh did not render a wireframe"); }
         std::fprintf(stderr, "gl_smoke OK: .gltf mesh loaded (worker thread) and rendered as wireframe\n");
-        if (!renderMesh("tests/assets/tetra.obj", true))      { glfwTerminate(); return fail(".obj mesh did not render shaded"); }
+        if (!renderMesh("tests/assets/tetra.obj", true))      { return failed(".obj mesh did not render shaded"); }
         std::fprintf(stderr, "gl_smoke OK: mesh shaded output rendered as a lit surface\n");
 
         // A scale of exactly -1 must still upload. The upload is gated on `scale != appliedScale_`,
@@ -690,8 +697,7 @@ int main() {
         // range is exactly [-1, 1], so a square LFO wired into `scale` with `min` dragged to its
         // endpoint emits exactly -1.0f for half of every cycle.
         if (!renderMesh("tests/assets/tetra.obj", false, -1.0f)) {
-            glfwTerminate();
-            return fail("mesh at scale -1 rendered nothing -- the upload sentinel collided with a real scale");
+            return failed("mesh at scale -1 rendered nothing -- the upload sentinel collided with a real scale");
         }
 
         // The mechanics behind that, asserted directly. The force-upload signal is a separate
@@ -714,44 +720,48 @@ int main() {
                 }
                 return false;
             };
-            if (!settle()) { glfwTerminate(); return fail("mesh at scale -1 never uploaded"); }
+            if (!settle()) { return failed("mesh at scale -1 never uploaded"); }
             int afterFirst = mn->uploadCount();
 
             // Steady state: nothing changed, so nothing should re-upload. Without clearing the
             // flag this would re-upload the whole mesh every frame, forever.
             for (int f = 0; f < 10; ++f) gm.evaluate(1.0f / 60.0f);
             if (mn->uploadCount() != afterFirst) {
-                glfwTerminate(); return fail("Mesh Loader re-uploaded with nothing changed");
+                return failed("Mesh Loader re-uploaded with nothing changed");
             }
 
             // A different mesh at the SAME scale must upload: this is the case the old sentinel
             // existed to cover, and the case a plain `scale != appliedScale_` guard cannot see.
             mn->inputDefault(0) = std::string("tests/assets/triangle.gltf");
             if (!settle() || mn->uploadCount() <= afterFirst) {
-                glfwTerminate(); return fail("a new mesh loaded at an unchanged scale never uploaded");
+                return failed("a new mesh loaded at an unchanged scale never uploaded");
             }
             std::fprintf(stderr, "gl_smoke OK: Mesh Loader uploads at scale -1, does not re-upload idle, and reloads at an unchanged scale\n");
         }
     }
-
-    // --- Scenario 7: loadMeshData reports success / failure for diagnostics ---
+    return true;
+}
+// --- Scenario 7: loadMeshData reports success / failure for diagnostics ---
+static bool scenario_load_mesh_data_diagnostics() {
     {
         MeshData good = loadMeshData("tests/assets/tetra.obj", 1.0f);
-        if (!good.ok || good.tris.empty()) { glfwTerminate(); return fail("loadMeshData should succeed for tetra.obj"); }
+        if (!good.ok || good.tris.empty()) { return failed("loadMeshData should succeed for tetra.obj"); }
         MeshData missing = loadMeshData("tests/assets/does_not_exist.obj", 1.0f);
-        if (missing.ok || missing.error.empty()) { glfwTerminate(); return fail("loadMeshData should fail with an error for a missing file"); }
+        if (missing.ok || missing.error.empty()) { return failed("loadMeshData should fail with an error for a missing file"); }
         MeshData badType = loadMeshData("tests/assets/tetra.png", 1.0f);
-        if (badType.ok || badType.error.empty()) { glfwTerminate(); return fail("loadMeshData should reject an unsupported extension"); }
+        if (badType.ok || badType.error.empty()) { return failed("loadMeshData should reject an unsupported extension"); }
         MeshData strip = loadMeshData("tests/assets/strip.gltf", 1.0f);   // TRIANGLE_STRIP -> 2 tris
-        if (!strip.ok || strip.tris.size() != 2 * 18) { glfwTerminate(); return fail("loadMeshData should expand a TRIANGLE_STRIP gltf to 2 triangles"); }
+        if (!strip.ok || strip.tris.size() != 2 * 18) { return failed("loadMeshData should expand a TRIANGLE_STRIP gltf to 2 triangles"); }
         MeshData v1 = loadMeshData("tests/assets/v1.gltf", 1.0f);         // glTF 1.0 -> clear error
-        if (v1.ok || v1.error.find("1.0") == std::string::npos) { glfwTerminate(); return fail("loadMeshData should flag glTF 1.0 with a clear message"); }
+        if (v1.ok || v1.error.find("1.0") == std::string::npos) { return failed("loadMeshData should flag glTF 1.0 with a clear message"); }
         std::fprintf(stderr, "gl_smoke OK: loadMeshData reports errors (missing: \"%s\"), and expands strips\n", missing.error.c_str());
     }
-
-    // --- Scenario 8: a meshopt-compressed gltf decodes (EXT_meshopt_compression) ---
-    // Encode the tetra with meshopt, author a gltf that references the compressed
-    // data via EXT_meshopt_compression, and confirm loadMeshData decodes it.
+    return true;
+}
+// --- Scenario 8: a meshopt-compressed gltf decodes (EXT_meshopt_compression) ---
+// Encode the tetra with meshopt, author a gltf that references the compressed
+// data via EXT_meshopt_compression, and confirm loadMeshData decodes it.
+static bool scenario_meshopt_compressed_gltf() {
     {
         const float pos[12] = { 0,1,0,  -1,-1,1,  1,-1,1,  0,-1,-1 };
         const unsigned int ind[12] = { 0,1,2,  0,2,3,  0,3,1,  1,3,2 };
@@ -785,44 +795,48 @@ int main() {
         if (FILE* f = std::fopen("build/_meshopt.gltf", "wb")) { std::fwrite(g.data(), 1, g.size(), f); std::fclose(f); }
 
         MeshData m = loadMeshData("build/_meshopt.gltf", 1.0f);
-        if (!m.ok || m.tris.size() != 4 * 18) { glfwTerminate(); return fail("meshopt-compressed gltf did not decode to 4 triangles"); }
+        if (!m.ok || m.tris.size() != 4 * 18) { return failed("meshopt-compressed gltf did not decode to 4 triangles"); }
         std::fprintf(stderr, "gl_smoke OK: EXT_meshopt_compression gltf decoded to %d triangles\n", (int)(m.tris.size() / 18));
     }
-
-    // --- Scenario 9: a Draco-compressed gltf decodes (KHR_draco_mesh_compression) ---
-    // tetra.drc was produced by draco_encoder from tetra.obj; tinygltf decodes it
-    // via the linked draco library (TINYGLTF_ENABLE_DRACO).
+    return true;
+}
+// --- Scenario 9: a Draco-compressed gltf decodes (KHR_draco_mesh_compression) ---
+// tetra.drc was produced by draco_encoder from tetra.obj; tinygltf decodes it
+// via the linked draco library (TINYGLTF_ENABLE_DRACO).
+static bool scenario_draco_compressed_gltf() {
     {
         MeshData d = loadMeshData("tests/assets/tetra_draco.gltf", 1.0f);
-        if (!d.ok || d.tris.size() != 4 * 18) { glfwTerminate(); return fail("Draco-compressed gltf did not decode to 4 triangles"); }
+        if (!d.ok || d.tris.size() != 4 * 18) { return failed("Draco-compressed gltf did not decode to 4 triangles"); }
         std::fprintf(stderr, "gl_smoke OK: KHR_draco_mesh_compression gltf decoded to %d triangles\n",
                      (int)(d.tris.size() / 18));
     }
-
-    // --- Scenario 10: Video Player decodes a file to texture + audio ---
-    // Decodes tests/assets/test.mp4 (a 128x96 colour pattern with a 330 Hz tone),
-    // first through the bare VideoDecoder, then through the VideoPlayerNode wired
-    // to an Output -- checking the picture becomes a non-black texture, the node
-    // emits non-silent audio, the playhead advances forward, and a negative rate
-    // walks it backwards (reverse playback).
+    return true;
+}
+// --- Scenario 10: Video Player decodes a file to texture + audio ---
+// Decodes tests/assets/test.mp4 (a 128x96 colour pattern with a 330 Hz tone),
+// first through the bare VideoDecoder, then through the VideoPlayerNode wired
+// to an Output -- checking the picture becomes a non-black texture, the node
+// emits non-silent audio, the playhead advances forward, and a negative rate
+// walks it backwards (reverse playback).
+static bool scenario_video_player_decode() {
     {
         // (a) VideoDecoder produces video frames and resampled audio directly.
         VideoDecoder dec;
         std::string err;
         if (!dec.open("tests/assets/test.mp4", err)) {
-            glfwTerminate(); return fail(("video open failed: " + err).c_str());
+            return failed(("video open failed: " + err).c_str());
         }
-        if (dec.width() != 128 || dec.height() != 96) { glfwTerminate(); return fail("video dimensions wrong"); }
-        if (!dec.hasAudio()) { glfwTerminate(); return fail("test video should have an audio track"); }
+        if (dec.width() != 128 || dec.height() != 96) { return failed("video dimensions wrong"); }
+        if (!dec.hasAudio()) { return failed("test video should have an audio track"); }
 
         VideoFrame vf;
         std::vector<float> audio; double aStart = 0.0; bool aValid = false;
         int frames = 0;
         while (frames < 8 && dec.decodeFrame(vf, audio, aStart, aValid)) ++frames;
-        if (frames == 0) { glfwTerminate(); return fail("decoded no video frames"); }
+        if (frames == 0) { return failed("decoded no video frames"); }
         bool audioNonZero = false;
         for (float s : audio) if (s > 0.01f || s < -0.01f) { audioNonZero = true; break; }
-        if (audio.empty() || !audioNonZero) { glfwTerminate(); return fail("decoded no (non-silent) audio"); }
+        if (audio.empty() || !audioNonZero) { return failed("decoded no (non-silent) audio"); }
         std::fprintf(stderr, "gl_smoke OK: VideoDecoder decoded %d frames + %zu audio samples\n",
                      frames, audio.size());
 
@@ -835,7 +849,7 @@ int main() {
         vid->initGL(); out->initGL();
         int vId = g.addNode(std::move(vid));
         int oId = g.addNode(std::move(out));
-        if (!g.connect(vId, 0, oId, 0)) { glfwTerminate(); return fail("connect Video->Output"); }
+        if (!g.connect(vId, 0, oId, 0)) { return failed("connect Video->Output"); }
         auto* outNode = dynamic_cast<OutputNode*>(g.findNode(oId));
         auto* vidNode = dynamic_cast<VideoPlayerNode*>(g.findNode(vId));
 
@@ -856,11 +870,11 @@ int main() {
                     if (px[i] > 30 || px[i+1] > 30 || px[i+2] > 30) { sawColour = true; break; }
             }
         }
-        if (!sawColour)    { glfwTerminate(); return fail("video produced no visible texture"); }
-        if (!sawNodeAudio) { glfwTerminate(); return fail("video node emitted no audio"); }
+        if (!sawColour)    { return failed("video produced no visible texture"); }
+        if (!sawNodeAudio) { return failed("video node emitted no audio"); }
 
         double fwd = vidNode->playhead();
-        if (!(fwd > 0.5)) { glfwTerminate(); return fail("playhead did not advance through the clip on forward play"); }
+        if (!(fwd > 0.5)) { return failed("playhead did not advance through the clip on forward play"); }
 
         // (c) reverse: a negative rate walks the playhead backwards, forcing the
         // window to re-seek to an earlier keyframe and rebuild.
@@ -868,36 +882,38 @@ int main() {
         double before = vidNode->playhead();
         for (int f = 0; f < 5; ++f) g.evaluate(1.0f / 10.0f);
         double after = vidNode->playhead();
-        if (!(after < before)) { glfwTerminate(); return fail("playhead did not move backwards on reverse play"); }
+        if (!(after < before)) { return failed("playhead did not move backwards on reverse play"); }
         std::fprintf(stderr, "gl_smoke OK: VideoPlayer rendered + audio, advanced to %.2fs, reversed %.2f->%.2f\n",
                      fwd, before, after);
     }
-
-    // --- Scenario 11: Text 2D / Text 3D -> geometry -> renderers ---
-    // buildTextGeometry turns a string into filled glyph triangles (+ outline
-    // lines); flat text faces +Z, extruded text adds back/side faces with other
-    // normals. Then the Text nodes stream those buffers into Shaded Render and
-    // Wireframe, which must produce lit and green-line pixels respectively.
+    return true;
+}
+// --- Scenario 11: Text 2D / Text 3D -> geometry -> renderers ---
+// buildTextGeometry turns a string into filled glyph triangles (+ outline
+// lines); flat text faces +Z, extruded text adds back/side faces with other
+// normals. Then the Text nodes stream those buffers into Shaded Render and
+// Wireframe, which must produce lit and green-line pixels respectively.
+static bool scenario_text_geometry_renderers() {
     {
         TextGeometry flat = buildTextGeometry("A", OSS_DEFAULT_FONT, 1.0f, 0.0f);
         if (!flat.ok || flat.tris.empty() || flat.lines.empty()) {
-            glfwTerminate(); return fail("flat text geometry is empty");
+            return failed("flat text geometry is empty");
         }
         bool flatAllFront = true;
         for (size_t i = 0; i + 5 < flat.tris.size(); i += 6)
             if (flat.tris[i + 5] < 0.9f) { flatAllFront = false; break; }   // normal.z
-        if (!flatAllFront) { glfwTerminate(); return fail("flat text normals should all face +Z"); }
+        if (!flatAllFront) { return failed("flat text normals should all face +Z"); }
 
         TextGeometry solid = buildTextGeometry("A", OSS_DEFAULT_FONT, 1.0f, 0.3f);
         if (!solid.ok || solid.tris.size() <= flat.tris.size()) {
-            glfwTerminate(); return fail("extruded text should add geometry over flat");
+            return failed("extruded text should add geometry over flat");
         }
         bool sawBackOrSide = false;
         for (size_t i = 0; i + 5 < solid.tris.size(); i += 6) {
             float nx = solid.tris[i + 3], ny = solid.tris[i + 4], nz = solid.tris[i + 5];
             if (nz < -0.5f || std::fabs(nx) + std::fabs(ny) > 0.5f) { sawBackOrSide = true; break; }
         }
-        if (!sawBackOrSide) { glfwTerminate(); return fail("extruded text has no back/side faces"); }
+        if (!sawBackOrSide) { return failed("extruded text has no back/side faces"); }
         std::fprintf(stderr, "gl_smoke OK: text geometry flat=%zu tris, solid=%zu tris\n",
                      flat.tris.size() / 18, solid.tris.size() / 18);
 
@@ -906,9 +922,9 @@ int main() {
         // origin, so (0,0) is the glyph centre.
         TextGeometry o = buildTextGeometry("o", OSS_DEFAULT_FONT, 1.0f, 0.0f);
         TextGeometry bar = buildTextGeometry("I", OSS_DEFAULT_FONT, 1.0f, 0.0f);
-        if (!o.ok || !bar.ok) { glfwTerminate(); return fail("text geometry for o/I failed"); }
-        if (coveredByFront(o, 0.0f, 0.0f))   { glfwTerminate(); return fail("'o' centre should be a hole, not filled"); }
-        if (!coveredByFront(bar, 0.0f, 0.0f)) { glfwTerminate(); return fail("'I' centre should be filled"); }
+        if (!o.ok || !bar.ok) { return failed("text geometry for o/I failed"); }
+        if (coveredByFront(o, 0.0f, 0.0f))   { return failed("'o' centre should be a hole, not filled"); }
+        if (!coveredByFront(bar, 0.0f, 0.0f)) { return failed("'I' centre should be filled"); }
         std::fprintf(stderr, "gl_smoke OK: glyph holes are cut ('o' counter empty, 'I' filled)\n");
 
         // Text 3D -> Shaded Render -> Output: a lit (bluish) surface.
@@ -923,7 +939,7 @@ int main() {
             int sId = g.addNode(std::move(shade));
             int oId = g.addNode(std::move(out));
             if (!g.connect(tId, 1, sId, 0) || !g.connect(sId, 0, oId, 0)) {
-                glfwTerminate(); return fail("connect Text3D->Shaded->Output");
+                return failed("connect Text3D->Shaded->Output");
             }
             auto* on = dynamic_cast<OutputNode*>(g.findNode(oId));
             bool lit = false;
@@ -940,7 +956,7 @@ int main() {
                     }
                 }
             }
-            if (!lit) { glfwTerminate(); return fail("Text 3D did not render a lit surface"); }
+            if (!lit) { return failed("Text 3D did not render a lit surface"); }
         }
 
         // Text 2D -> Wireframe -> Output: green outline lines.
@@ -955,7 +971,7 @@ int main() {
             int wId = g.addNode(std::move(wire));
             int oId = g.addNode(std::move(out));
             if (!g.connect(tId, 0, wId, 0) || !g.connect(wId, 0, oId, 0)) {
-                glfwTerminate(); return fail("connect Text2D->Wireframe->Output");
+                return failed("connect Text2D->Wireframe->Output");
             }
             auto* on = dynamic_cast<OutputNode*>(g.findNode(oId));
             bool green = false;
@@ -972,12 +988,14 @@ int main() {
                     }
                 }
             }
-            if (!green) { glfwTerminate(); return fail("Text 2D did not render outline lines"); }
+            if (!green) { return failed("Text 2D did not render outline lines"); }
         }
         std::fprintf(stderr, "gl_smoke OK: Text 2D (wireframe) + Text 3D (shaded) rendered\n");
     }
-
-    // --- Scenario 12: Recorder / VideoEncoder write a decodable movie ---
+    return true;
+}
+// --- Scenario 12: Recorder / VideoEncoder write a decodable movie ---
+static bool scenario_recorder_video_encoder() {
     {
         // (a) VideoEncoder round-trip: encode synthetic frames + a tone, then
         // decode the file back with VideoDecoder and confirm it round-trips.
@@ -987,7 +1005,7 @@ int main() {
             VideoEncoder enc;
             std::string err;
             if (!enc.open(path, W, H, FPS, SR, 1, err)) {   // mono
-                glfwTerminate(); return fail(("encoder open failed: " + err).c_str());
+                return failed(("encoder open failed: " + err).c_str());
             }
             std::vector<unsigned char> frame((size_t)W * H * 4, 0);
             std::vector<float> aud(SR / FPS);
@@ -1008,15 +1026,15 @@ int main() {
         }
         VideoDecoder dec;
         std::string err;
-        if (!dec.open(path, err)) { glfwTerminate(); return fail(("decode encoded file failed: " + err).c_str()); }
-        if (dec.width() != W || dec.height() != H) { glfwTerminate(); return fail("encoded video has wrong dimensions"); }
-        if (!dec.hasAudio()) { glfwTerminate(); return fail("encoded file has no audio stream"); }
-        if (dec.audioChannels() != 1) { glfwTerminate(); return fail("mono encode should yield a 1-channel file"); }
+        if (!dec.open(path, err)) { return failed(("decode encoded file failed: " + err).c_str()); }
+        if (dec.width() != W || dec.height() != H) { return failed("encoded video has wrong dimensions"); }
+        if (!dec.hasAudio()) { return failed("encoded file has no audio stream"); }
+        if (dec.audioChannels() != 1) { return failed("mono encode should yield a 1-channel file"); }
         VideoFrame vf; std::vector<float> audio; double aS = 0; bool aV = false; int got = 0;
         while (got < 5 && dec.decodeFrame(vf, audio, aS, aV)) ++got;
-        if (got == 0) { glfwTerminate(); return fail("encoded file decoded no frames"); }
+        if (got == 0) { return failed("encoded file decoded no frames"); }
         bool nz = false; for (float s : audio) if (s > 0.01f || s < -0.01f) { nz = true; break; }
-        if (!nz) { glfwTerminate(); return fail("encoded audio is silent"); }
+        if (!nz) { return failed("encoded audio is silent"); }
         std::fprintf(stderr, "gl_smoke OK: VideoEncoder mono round-trip (%d frames, audio) decodes\n", got);
 
         // Every frame handed to the encoder must come back out of the file, at every length.
@@ -1032,19 +1050,19 @@ int main() {
                 std::string p = "build/_rec_len" + std::to_string(fps) + "_" + std::to_string(n) + ".mp4";
                 {
                     VideoEncoder e2; std::string er;
-                    if (!e2.open(p, W, H, fps, 0, 0, er)) { glfwTerminate(); return fail(("length encoder open: " + er).c_str()); }
+                    if (!e2.open(p, W, H, fps, 0, 0, er)) { return failed(("length encoder open: " + er).c_str()); }
                     std::vector<unsigned char> fr((size_t)W * H * 4, 0);
                     for (int f = 0; f < n; ++f) {
                         for (size_t i = 0; i < fr.size(); i += 4) {
                             fr[i] = (unsigned char)(f * 7); fr[i+1] = 60; fr[i+2] = 120; fr[i+3] = 255;
                         }
-                        if (!e2.addVideoFrame(fr.data(), f / (double)fps)) { glfwTerminate(); return fail("length encode: addVideoFrame failed"); }
+                        if (!e2.addVideoFrame(fr.data(), f / (double)fps)) { return failed("length encode: addVideoFrame failed"); }
                     }
                     std::string ec;
-                    if (!e2.close(ec)) { glfwTerminate(); return fail(("length encode close: " + ec).c_str()); }
+                    if (!e2.close(ec)) { return failed(("length encode close: " + ec).c_str()); }
                 }
                 VideoDecoder d2; std::string de;
-                if (!d2.open(p, de)) { glfwTerminate(); return fail(("length decode open: " + de).c_str()); }
+                if (!d2.open(p, de)) { return failed(("length decode open: " + de).c_str()); }
                 VideoFrame v2; std::vector<float> a2; double s2 = 0; bool b2 = false; int back = 0;
                 while (d2.decodeFrame(v2, a2, s2, b2)) { ++back; a2.clear(); }
                 std::remove(p.c_str());
@@ -1052,7 +1070,7 @@ int main() {
                     char msg[160];
                     std::snprintf(msg, sizeof(msg),
                                   "encoded %d frames at %d fps but decoded %d -- the encoder is losing frames", n, fps, back);
-                    glfwTerminate(); return fail(msg);
+                    return failed(msg);
                 }
             }
         }
@@ -1063,7 +1081,7 @@ int main() {
             const char* sp = "build/_rec_stereo.mp4";
             {
                 VideoEncoder enc; std::string e;
-                if (!enc.open(sp, W, H, FPS, SR, 2, e)) { glfwTerminate(); return fail(("stereo encoder open: " + e).c_str()); }
+                if (!enc.open(sp, W, H, FPS, SR, 2, e)) { return failed(("stereo encoder open: " + e).c_str()); }
                 std::vector<unsigned char> frame((size_t)W * H * 4, 200);
                 std::vector<float> st((SR / FPS) * 2);
                 double pl = 0, pr = 0;
@@ -1078,8 +1096,8 @@ int main() {
                 std::string e2; enc.close(e2);
             }
             VideoDecoder ds; std::string e;
-            if (!ds.open(sp, e)) { glfwTerminate(); return fail(("decode stereo file: " + e).c_str()); }
-            if (ds.audioChannels() != 2) { glfwTerminate(); return fail("stereo encode should yield a 2-channel file"); }
+            if (!ds.open(sp, e)) { return failed(("decode stereo file: " + e).c_str()); }
+            if (ds.audioChannels() != 2) { return failed("stereo encode should yield a 2-channel file"); }
             std::fprintf(stderr, "gl_smoke OK: VideoEncoder stereo round-trip yields a 2-channel file\n");
         }
 
@@ -1094,17 +1112,17 @@ int main() {
         int rId = g.addNode(std::move(recN));
         int oId = g.addNode(std::move(out));
         if (!g.connect(cId, 0, rId, 0) || !g.connect(rId, 0, oId, 0)) {
-            glfwTerminate(); return fail("connect Colour->Recorder->Output");
+            return failed("connect Colour->Recorder->Output");
         }
         auto* on = dynamic_cast<OutputNode*>(g.findNode(oId));
         auto* rn = dynamic_cast<RecorderNode*>(g.findNode(rId));
 
         g.evaluate(1.0f / 60.0f);   // not recording -> pure pass-through
         TexRef passed = on->current();
-        if (!passed.id) { glfwTerminate(); return fail("recorder did not pass video through"); }
+        if (!passed.id) { return failed("recorder did not pass video through"); }
         int r, gg, b, a; readCentre(passed, r, gg, b, a);
         if (!(near(r,255) && near(gg,128) && near(b,25))) {
-            glfwTerminate(); return fail("passed-through texture is not the Colour output");
+            return failed("passed-through texture is not the Colour output");
         }
         int vw = passed.w, vh = passed.h;
 
@@ -1115,11 +1133,11 @@ int main() {
 
         VideoDecoder dec2;
         std::string err2;
-        if (!dec2.open("build/_rec_node.mp4", err2)) { glfwTerminate(); return fail(("recorded file did not open: " + err2).c_str()); }
-        if (dec2.width() != vw || dec2.height() != vh) { glfwTerminate(); return fail("recorded video has wrong dimensions"); }
+        if (!dec2.open("build/_rec_node.mp4", err2)) { return failed(("recorded file did not open: " + err2).c_str()); }
+        if (dec2.width() != vw || dec2.height() != vh) { return failed("recorded video has wrong dimensions"); }
         VideoFrame vf2; std::vector<float> au2; double s2 = 0; bool v2 = false; int got2 = 0;
         while (got2 < 3 && dec2.decodeFrame(vf2, au2, s2, v2)) ++got2;
-        if (got2 == 0) { glfwTerminate(); return fail("recorded file decoded no frames"); }
+        if (got2 == 0) { return failed("recorded file decoded no frames"); }
         std::fprintf(stderr, "gl_smoke OK: Recorder passed video through and wrote a decodable %dx%d mp4\n", vw, vh);
 
         // (c) Stereo end-to-end: two sines panned through the Mixer feed the
@@ -1142,7 +1160,7 @@ int main() {
             int r2Id = gs.addNode(std::move(rec2));
             if (!gs.connect(s1Id, 0, mId, 0) || !gs.connect(s2Id, 0, mId, 3) ||
                 !gs.connect(cId2, 0, r2Id, 0) || !gs.connect(mId, 0, r2Id, 1) || !gs.connect(mId, 1, r2Id, 2)) {
-                glfwTerminate(); return fail("connect stereo record graph");
+                return failed("connect stereo record graph");
             }
             auto* rn2 = dynamic_cast<RecorderNode*>(gs.findNode(r2Id));
             rn2->inputDefault(3) = true;                          // record on
@@ -1151,32 +1169,34 @@ int main() {
             gs.evaluate(1.0f / 60.0f);
 
             VideoDecoder d3; std::string e3;
-            if (!d3.open("build/_rec_stereo_node.mp4", e3)) { glfwTerminate(); return fail(("stereo recording did not open: " + e3).c_str()); }
-            if (!d3.hasAudio() || d3.audioChannels() != 2) { glfwTerminate(); return fail("graph recording should be stereo (2 channels)"); }
+            if (!d3.open("build/_rec_stereo_node.mp4", e3)) { return failed(("stereo recording did not open: " + e3).c_str()); }
+            if (!d3.hasAudio() || d3.audioChannels() != 2) { return failed("graph recording should be stereo (2 channels)"); }
             VideoFrame vf3; std::vector<float> au3; double s3 = 0; bool v3 = false; int got3 = 0;
             while (got3 < 3 && d3.decodeFrame(vf3, au3, s3, v3)) ++got3;
-            if (got3 == 0) { glfwTerminate(); return fail("stereo recording decoded no frames"); }
+            if (got3 == 0) { return failed("stereo recording decoded no frames"); }
             std::fprintf(stderr, "gl_smoke OK: Sine->Mixer(pan)->Recorder wrote a stereo movie\n");
         }
     }
-
-    // --- Scenario 13: Audio File player (stereo, forward + reverse) ---
+    return true;
+}
+// --- Scenario 13: Audio File player (stereo, forward + reverse) ---
+static bool scenario_audio_file_player_stereo() {
     {
         // (a) decode the whole file to interleaved 48 kHz stereo.
         AudioClip clip = decodeAudioFile("tests/assets/test.mp4");
         if (!clip.ok || clip.channels != 2 || clip.frames() == 0) {
-            glfwTerminate(); return fail(("decodeAudioFile failed: " + clip.error).c_str());
+            return failed(("decodeAudioFile failed: " + clip.error).c_str());
         }
         bool clipNz = false;
         for (float s : clip.samples) if (s > 0.01f || s < -0.01f) { clipNz = true; break; }
-        if (!clipNz) { glfwTerminate(); return fail("decoded audio clip is silent"); }
+        if (!clipNz) { return failed("decoded audio clip is silent"); }
         std::fprintf(stderr, "gl_smoke OK: decodeAudioFile -> %zu stereo frames\n", clip.frames());
 
         // A different container/codec (.mp3) decodes through the same path -- the
         // player inherits FFmpeg's format coverage (mp3, wav, flac, ogg, m4a, ...).
         AudioClip mp3 = decodeAudioFile("tests/assets/tone.mp3");
         if (!mp3.ok || mp3.channels != 2 || mp3.frames() == 0) {
-            glfwTerminate(); return fail(("decodeAudioFile failed for mp3: " + mp3.error).c_str());
+            return failed(("decodeAudioFile failed for mp3: " + mp3.error).c_str());
         }
         std::fprintf(stderr, "gl_smoke OK: decodeAudioFile loads .mp3 -> %zu stereo frames\n", mp3.frames());
 
@@ -1197,28 +1217,30 @@ int main() {
                     if (std::fabs(oL.samples[i]) > 0.01f || std::fabs(oR.samples[i]) > 0.01f) { sawAudio = true; break; }
             if (!sawAudio) std::this_thread::sleep_for(std::chrono::milliseconds(2));
         }
-        if (!sawAudio) { glfwTerminate(); return fail("audio player produced no audio"); }
+        if (!sawAudio) { return failed("audio player produced no audio"); }
 
         for (int f = 0; f < 10; ++f) g.evaluate(1.0f / 60.0f);   // play forward a bit
         double fwd = an->playhead();
-        if (!(fwd > 0.0)) { glfwTerminate(); return fail("audio playhead did not advance forward"); }
+        if (!(fwd > 0.0)) { return failed("audio playhead did not advance forward"); }
 
         an->inputDefault(1) = -1.0f;                     // rate: reverse
         an->inputDefault(3) = false;                     // loop off (deterministic)
         double before = an->playhead();
         for (int f = 0; f < 5; ++f) g.evaluate(1.0f / 60.0f);
         double after = an->playhead();
-        if (!(after < before)) { glfwTerminate(); return fail("audio playhead did not move backwards on reverse"); }
+        if (!(after < before)) { return failed("audio playhead did not move backwards on reverse"); }
         std::fprintf(stderr, "gl_smoke OK: Audio File played stereo, advanced %.2fs then reversed %.2f->%.2f\n",
                      fwd, before, after);
     }
-
-    // --- Scenario: Audio File `auto play` follows the transport ---
-    // With `auto play` on, the transport's play state drives the clip and the `play` input is
-    // ignored. Pause holds the position; Stop zeroes the transport, which the node sees as a
-    // BACKWARDS move and rewinds the clip, so the next Play starts the file from the beginning.
-    // A forward scrub is deliberately NOT followed -- strict position locking is what `sync` is
-    // for, and auto play is about free-running playback the transport starts and stops.
+    return true;
+}
+// --- Scenario: Audio File `auto play` follows the transport ---
+// With `auto play` on, the transport's play state drives the clip and the `play` input is
+// ignored. Pause holds the position; Stop zeroes the transport, which the node sees as a
+// BACKWARDS move and rewinds the clip, so the next Play starts the file from the beginning.
+// A forward scrub is deliberately NOT followed -- strict position locking is what `sync` is
+// for, and auto play is about free-running playback the transport starts and stops.
+static bool scenario_audio_file_auto_play() {
     {
         Graph g;
         auto ap = std::make_unique<AudioPlayerNode>();
@@ -1240,7 +1262,7 @@ int main() {
             pump(1);
         }
         pump(1);
-        if (an->loading()) { glfwTerminate(); return fail("auto play: clip never finished loading"); }
+        if (an->loading()) { return failed("auto play: clip never finished loading"); }
 
         auto blockSilent = [&]() {
             AudioRef l = an->leftOut();
@@ -1251,35 +1273,35 @@ int main() {
 
         // (1) Transport stopped -> silent, and the playhead does not move.
         pump(5);
-        if (!blockSilent()) { glfwTerminate(); return fail("auto play: clip sounded while the transport was stopped"); }
-        if (an->playhead() != 0.0) { glfwTerminate(); return fail("auto play: playhead advanced while the transport was stopped"); }
+        if (!blockSilent()) { return failed("auto play: clip sounded while the transport was stopped"); }
+        if (an->playhead() != 0.0) { return failed("auto play: playhead advanced while the transport was stopped"); }
 
         // (2) Transport playing -> audible, and the playhead advances. (Graph::evaluate advances
         // the transport itself, so nothing here moves `seconds` by hand.)
         g.transport().playing = true;
         bool heard = false;
         for (int f = 0; f < 20 && !heard; ++f) { pump(1); if (!blockSilent()) heard = true; }
-        if (!heard) { glfwTerminate(); return fail("auto play: clip stayed silent while the transport played"); }
+        if (!heard) { return failed("auto play: clip stayed silent while the transport played"); }
         double playedTo = an->playhead();
-        if (!(playedTo > 0.0)) { glfwTerminate(); return fail("auto play: playhead did not advance while the transport played"); }
+        if (!(playedTo > 0.0)) { return failed("auto play: playhead did not advance while the transport played"); }
 
         // (3) Pause -> position holds (the transport stops moving; it does not move backwards).
         g.transport().playing = false;
         pump(5);
-        if (an->playhead() != playedTo) { glfwTerminate(); return fail("auto play: a pause did not hold the playhead"); }
-        if (!blockSilent()) { glfwTerminate(); return fail("auto play: clip sounded while paused"); }
+        if (an->playhead() != playedTo) { return failed("auto play: a pause did not hold the playhead"); }
+        if (!blockSilent()) { return failed("auto play: clip sounded while paused"); }
 
         // (4) Stop -> playing false AND seconds 0, a backwards move, so the clip rewinds.
         g.transport().stop();
         pump(1);
-        if (an->playhead() != 0.0) { glfwTerminate(); return fail("auto play: a stop did not rewind the clip"); }
+        if (an->playhead() != 0.0) { return failed("auto play: a stop did not rewind the clip"); }
 
         // (5) auto play OFF -> the `play` toggle governs again, transport still stopped.
         an->inputDefault(6) = false;
         an->inputDefault(2) = true;
         bool heardManual = false;
         for (int f = 0; f < 20 && !heardManual; ++f) { pump(1); if (!blockSilent()) heardManual = true; }
-        if (!heardManual) { glfwTerminate(); return fail("auto play off: the play toggle should still work with the transport stopped"); }
+        if (!heardManual) { return failed("auto play off: the play toggle should still work with the transport stopped"); }
 
         // (6) A FORWARD scrub is not followed: the clip keeps playing at its own rate.
         an->inputDefault(6) = true;
@@ -1288,16 +1310,18 @@ int main() {
         double beforeScrub = an->playhead();
         g.transport().seconds += 5.0;
         pump(1);
-        if (an->playhead() < beforeScrub) { glfwTerminate(); return fail("auto play: a forward scrub must not rewind the clip"); }
+        if (an->playhead() < beforeScrub) { return failed("auto play: a forward scrub must not rewind the clip"); }
 
         std::fprintf(stderr, "gl_smoke OK: Audio File auto play follows the transport (stop rewinds, pause holds, forward scrub ignored)\n");
     }
-
-    // --- Scenario 14: a shared World Transform aligns two renderers ---
-    // The same triangle is streamed as lines to Wireframe and as triangles to
-    // Shaded Render, both driven by one World Transform. With a shared rotation
-    // and matching cameras the two views register: the wireframe outline's centroid
-    // lands inside the shaded fill's bounding box.
+    return true;
+}
+// --- Scenario 14: a shared World Transform aligns two renderers ---
+// The same triangle is streamed as lines to Wireframe and as triangles to
+// Shaded Render, both driven by one World Transform. With a shared rotation
+// and matching cameras the two views register: the wireframe outline's centroid
+// lands inside the shaded fill's bounding box.
+static bool scenario_world_transform_shared() {
     {
         const float tris[] = {
             -0.6f, -0.4f, 0.0f,  0,0,1,
@@ -1331,7 +1355,7 @@ int main() {
         int osId = g.addNode(std::move(outS));
         if (!g.connect(wtId, 0, wId, 2) || !g.connect(wtId, 0, sId, 3) ||   // shared transform
             !g.connect(wId, 0, owId, 0) || !g.connect(sId, 0, osId, 0)) {
-            glfwTerminate(); return fail("connect shared-transform graph");
+            return failed("connect shared-transform graph");
         }
         g.evaluate(1.0f / 60.0f);
 
@@ -1351,22 +1375,24 @@ int main() {
             if (b > 60 && b > r && gg > r) { litMinX = std::min(litMinX,x); litMaxX = std::max(litMaxX,x);
                                              litMinY = std::min(litMinY,y); litMaxY = std::max(litMaxY,y); ++ln; }
         }
-        if (gn == 0) { glfwTerminate(); return fail("shared-transform wireframe drew nothing"); }
-        if (ln == 0) { glfwTerminate(); return fail("shared-transform shaded drew nothing"); }
+        if (gn == 0) { return failed("shared-transform wireframe drew nothing"); }
+        if (ln == 0) { return failed("shared-transform shaded drew nothing"); }
         double gcx = gsx / gn, gcy = gsy / gn;
         bool aligned = gcx >= litMinX - 5 && gcx <= litMaxX + 5 && gcy >= litMinY - 5 && gcy <= litMaxY + 5;
-        if (!aligned) { glfwTerminate(); return fail("renderers not aligned: wireframe centroid outside shaded bbox"); }
+        if (!aligned) { return failed("renderers not aligned: wireframe centroid outside shaded bbox"); }
         std::fprintf(stderr, "gl_smoke OK: shared World Transform aligns Wireframe + Shaded (centroid %.0f,%.0f in bbox)\n", gcx, gcy);
 
         glDeleteBuffers(1, &trisVbo); glDeleteBuffers(1, &linesVbo);
     }
-
-    // --- Scenario 15: Compositor blends two colours; shader matches the C++ reference ---
-    // Feed two solid colours into the Compositor and assert the rendered centre pixel
-    // matches blendPixel() for one mode per code path: Multiply (separable), Hue
-    // (non-separable setSat/setLum), XOR (bitwise). The reference is computed on the
-    // 8-bit-quantised inputs (what the textures actually carry) so only output rounding
-    // can differ; the near() tolerance is +/-3.
+    return true;
+}
+// --- Scenario 15: Compositor blends two colours; shader matches the C++ reference ---
+// Feed two solid colours into the Compositor and assert the rendered centre pixel
+// matches blendPixel() for one mode per code path: Multiply (separable), Hue
+// (non-separable setSat/setLum), XOR (bitwise). The reference is computed on the
+// 8-bit-quantised inputs (what the textures actually carry) so only output rounding
+// can differ; the near() tolerance is +/-3.
+static bool scenario_compositor_blend_matches_shader() {
     {
         auto quant = [](glm::vec3 c) {
             return glm::vec3(std::round(c.x*255.0f)/255.0f,
@@ -1398,15 +1424,17 @@ int main() {
             return near(r,er) && near(gg,eg) && near(bb,eb);
         };
         glm::vec3 ca(0.2f, 0.5f, 0.8f), cb(0.9f, 0.3f, 0.1f);   // distinct channels (no setSat ties)
-        if (!check(5,  ca, cb)) { glfwTerminate(); return fail("Compositor Multiply mismatch vs reference"); }
-        if (!check(16, ca, cb)) { glfwTerminate(); return fail("Compositor Hue mismatch vs reference"); }
-        if (!check(22, ca, cb)) { glfwTerminate(); return fail("Compositor XOR mismatch vs reference"); }
+        if (!check(5,  ca, cb)) { return failed("Compositor Multiply mismatch vs reference"); }
+        if (!check(16, ca, cb)) { return failed("Compositor Hue mismatch vs reference"); }
+        if (!check(22, ca, cb)) { return failed("Compositor XOR mismatch vs reference"); }
         std::fprintf(stderr, "gl_smoke OK: Compositor shader matches blendPixel (Multiply/Hue/XOR)\n");
     }
-
-    // --- Scenario: HSV Adjust shader matches the adjustHsv reference ---
-    // Feed a solid colour through the node and assert the rendered centre pixel matches
-    // adjustHsv() computed on the 8-bit-quantised input (what the texture carries). near() +/-3.
+    return true;
+}
+// --- Scenario: HSV Adjust shader matches the adjustHsv reference ---
+// Feed a solid colour through the node and assert the rendered centre pixel matches
+// adjustHsv() computed on the 8-bit-quantised input (what the texture carries). near() +/-3.
+static bool scenario_hsv_adjust_matches_reference() {
     {
         auto quant = [](glm::vec3 c) {
             return glm::vec3(std::round(c.x*255.0f)/255.0f,
@@ -1434,15 +1462,17 @@ int main() {
                          hue, sat, bright, r, gg, bb, er, eg, eb);
             return near(r,er) && near(gg,eg) && near(bb,eb);
         };
-        if (!check(glm::vec3(1.0f,0.0f,0.0f),   1.0f/3.0f, 1.0f, 1.0f)) { glfwTerminate(); return fail("HSV Adjust hue-shift (red->green) mismatch"); }
-        if (!check(glm::vec3(0.2f,0.5f,0.8f),   0.1f,      1.0f, 0.8f)) { glfwTerminate(); return fail("HSV Adjust hue+brightness mismatch"); }
-        if (!check(glm::vec3(0.6f,0.3f,0.9f),   0.0f,      0.0f, 1.0f)) { glfwTerminate(); return fail("HSV Adjust desaturate mismatch"); }
+        if (!check(glm::vec3(1.0f,0.0f,0.0f),   1.0f/3.0f, 1.0f, 1.0f)) { return failed("HSV Adjust hue-shift (red->green) mismatch"); }
+        if (!check(glm::vec3(0.2f,0.5f,0.8f),   0.1f,      1.0f, 0.8f)) { return failed("HSV Adjust hue+brightness mismatch"); }
+        if (!check(glm::vec3(0.6f,0.3f,0.9f),   0.0f,      0.0f, 1.0f)) { return failed("HSV Adjust desaturate mismatch"); }
         std::fprintf(stderr, "gl_smoke OK: HSV Adjust shader matches adjustHsv (hue/sat/bright)\n");
     }
-
-    // --- Scenario 16: Wireframe draws a per-vertex-coloured line (Pos3Color3) ---
-    // A hand-built coloured VBO (a red horizontal line) fed to the Wireframe node must
-    // render RED, not the node's default green -- proving the Pos3Color3 colored path.
+    return true;
+}
+// --- Scenario 16: Wireframe draws a per-vertex-coloured line (Pos3Color3) ---
+// A hand-built coloured VBO (a red horizontal line) fed to the Wireframe node must
+// render RED, not the node's default green -- proving the Pos3Color3 colored path.
+static bool scenario_wireframe_vertex_colour_line() {
     {
         const float verts[] = {
             -0.5f, 0.0f, 0.0f,  1.0f, 0.0f, 0.0f,   // (x,y,z, r,g,b)
@@ -1461,10 +1491,10 @@ int main() {
         wire->initGL(); out->initGL();
         int wId = g.addNode(std::move(wire));
         int oId = g.addNode(std::move(out));
-        if (!g.connect(wId, 0, oId, 0)) { glfwTerminate(); return fail("connect colour-wire->output"); }
+        if (!g.connect(wId, 0, oId, 0)) { return failed("connect colour-wire->output"); }
         g.evaluate(1.0f/60.0f);
         TexRef t = dynamic_cast<OutputNode*>(g.findNode(oId))->current();
-        if (!t.id) { glfwTerminate(); return fail("coloured wireframe texture not produced"); }
+        if (!t.id) { return failed("coloured wireframe texture not produced"); }
         std::vector<unsigned char> px((size_t)t.w * t.h * 4);
         glBindTexture(GL_TEXTURE_2D, t.id);
         glGetTexImage(GL_TEXTURE_2D, 0, GL_RGBA, GL_UNSIGNED_BYTE, px.data());
@@ -1472,15 +1502,17 @@ int main() {
         for (size_t i = 0; i < px.size(); i += 4)
             if (px[i] > 150 && px[i+1] < 80 && px[i+2] < 80) { sawRed = true; break; }
         glDeleteBuffers(1, &vbo);
-        if (!sawRed) { glfwTerminate(); return fail("coloured wireframe did not render a red line (Pos3Color3 path)"); }
+        if (!sawRed) { return failed("coloured wireframe did not render a red line (Pos3Color3 path)"); }
         std::fprintf(stderr, "gl_smoke OK: Wireframe renders per-vertex colour (Pos3Color3)\n");
     }
-
-    // --- Scenario 17: Pitch Graph turns MIDI into a coloured pitch-vs-time graph ---
-    // Feed three note-ons (pitch classes 0/4/7) into a Pitch Graph -> Wireframe; the
-    // rendered texture must contain a RED line (note 60, pitch class 0 -> hue 0), which
-    // the default-green wireframe could never produce -- proving MIDI -> coloured geometry
-    // -> Wireframe end to end.
+    return true;
+}
+// --- Scenario 17: Pitch Graph turns MIDI into a coloured pitch-vs-time graph ---
+// Feed three note-ons (pitch classes 0/4/7) into a Pitch Graph -> Wireframe; the
+// rendered texture must contain a RED line (note 60, pitch class 0 -> hue 0), which
+// the default-green wireframe could never produce -- proving MIDI -> coloured geometry
+// -> Wireframe end to end.
+static bool scenario_pitch_graph_colour() {
     {
         std::vector<MidiEvent> on = { midiNoteOn(60, 110), midiNoteOn(64, 110), midiNoteOn(67, 110) };
         Graph g;
@@ -1492,30 +1524,32 @@ int main() {
         int pId = g.addNode(std::move(pg));
         int wId = g.addNode(std::move(wire));
         int oId = g.addNode(std::move(out));
-        if (!g.connect(pId, 0, wId, 0) || !g.connect(wId, 0, oId, 0)) { glfwTerminate(); return fail("connect pitchgraph->wire->output"); }
+        if (!g.connect(pId, 0, wId, 0) || !g.connect(wId, 0, oId, 0)) { return failed("connect pitchgraph->wire->output"); }
         auto* pn = dynamic_cast<PitchGraphNode*>(g.findNode(pId));
         pn->inputDefault(0) = MidiRef{on.data(), on.size()};   // note-ons this frame
         g.evaluate(1.0f/60.0f);                                 // ingest the notes
         pn->inputDefault(0) = MidiRef{};                        // no further events
         for (int f = 0; f < 4; ++f) g.evaluate(1.0f/60.0f);    // hold + scroll a little
         TexRef t = dynamic_cast<OutputNode*>(g.findNode(oId))->current();
-        if (!t.id) { glfwTerminate(); return fail("pitch graph texture not produced"); }
+        if (!t.id) { return failed("pitch graph texture not produced"); }
         std::vector<unsigned char> px((size_t)t.w * t.h * 4);
         glBindTexture(GL_TEXTURE_2D, t.id);
         glGetTexImage(GL_TEXTURE_2D, 0, GL_RGBA, GL_UNSIGNED_BYTE, px.data());
         bool sawRed = false;
         for (size_t i = 0; i < px.size(); i += 4)
             if (px[i] > 120 && px[i+1] < 80 && px[i+2] < 80) { sawRed = true; break; }
-        if (!sawRed) { glfwTerminate(); return fail("pitch graph did not render note 60 as a red line"); }
+        if (!sawRed) { return failed("pitch graph did not render note 60 as a red line"); }
         std::fprintf(stderr, "gl_smoke OK: Pitch Graph -> Wireframe renders MIDI as a coloured pitch graph\n");
     }
-
-    // --- Scenario 18: Skybox samples 6 face textures as a cubemap, rotated by yaw/pitch ---
-    // Six Colour nodes (distinct colours) -> the 6 Skybox face inputs -> Output. With the
-    // transform fixed, the CENTRE pixel (ray (0,0,-1) before rotation) looks at a known face:
-    //   yaw 0,    pitch 0     -> -Z (face 5, cyan)
-    //   yaw pi/2, pitch 0     -> -X (face 1, green)
-    //   yaw 0,    pitch pi/2  -> +Y (face 2, blue)
+    return true;
+}
+// --- Scenario 18: Skybox samples 6 face textures as a cubemap, rotated by yaw/pitch ---
+// Six Colour nodes (distinct colours) -> the 6 Skybox face inputs -> Output. With the
+// transform fixed, the CENTRE pixel (ray (0,0,-1) before rotation) looks at a known face:
+//   yaw 0,    pitch 0     -> -Z (face 5, cyan)
+//   yaw pi/2, pitch 0     -> -X (face 1, green)
+//   yaw 0,    pitch pi/2  -> +Y (face 2, blue)
+static bool scenario_skybox_cubemap_yaw_pitch() {
     {
         const glm::vec4 faceCols[6] = {
             {1,0,0,1}, {0,1,0,1}, {0,0,1,1}, {1,1,0,1}, {1,0,1,1}, {0,1,1,1}   // +X,-X,+Y,-Y,+Z,-Z
@@ -1545,17 +1579,19 @@ int main() {
         };
         const float HALF_PI = 1.57079633f;
         int r, g, b;
-        if (!centre(0.0f, 0.0f, r, g, b)    || !(near(r,0) && near(g,255) && near(b,255))) { glfwTerminate(); return fail("skybox centre yaw0/pitch0 not -Z (cyan)"); }
-        if (!centre(HALF_PI, 0.0f, r, g, b) || !(near(r,0) && near(g,255) && near(b,0)))   { glfwTerminate(); return fail("skybox yaw pi/2 not -X (green)"); }
-        if (!centre(0.0f, HALF_PI, r, g, b) || !(near(r,0) && near(g,0) && near(b,255)))   { glfwTerminate(); return fail("skybox pitch pi/2 not +Y (blue)"); }
-        if (!centre(0.0f,-HALF_PI, r, g, b) || !(near(r,255) && near(g,255) && near(b,0))) { glfwTerminate(); return fail("skybox pitch -pi/2 not -Y (yellow)"); }
-        if (!centre(3.14159265f,0.0f, r,g,b)|| !(near(r,255) && near(g,0) && near(b,255))) { glfwTerminate(); return fail("skybox yaw pi not +Z (magenta)"); }
+        if (!centre(0.0f, 0.0f, r, g, b)    || !(near(r,0) && near(g,255) && near(b,255))) { return failed("skybox centre yaw0/pitch0 not -Z (cyan)"); }
+        if (!centre(HALF_PI, 0.0f, r, g, b) || !(near(r,0) && near(g,255) && near(b,0)))   { return failed("skybox yaw pi/2 not -X (green)"); }
+        if (!centre(0.0f, HALF_PI, r, g, b) || !(near(r,0) && near(g,0) && near(b,255)))   { return failed("skybox pitch pi/2 not +Y (blue)"); }
+        if (!centre(0.0f,-HALF_PI, r, g, b) || !(near(r,255) && near(g,255) && near(b,0))) { return failed("skybox pitch -pi/2 not -Y (yellow)"); }
+        if (!centre(3.14159265f,0.0f, r,g,b)|| !(near(r,255) && near(g,0) && near(b,255))) { return failed("skybox yaw pi not +Z (magenta)"); }
         std::fprintf(stderr, "gl_smoke OK: Skybox samples all 6 faces with yaw/pitch rotation\n");
     }
-
-    // --- Scenario: Deform runs a vertex shader over a VBO via transform feedback ---
-    // A 1-vertex input VBO (Pos3) + a known preset shader -> Deform; read the transform-
-    // feedback output (Pos3Color3, 6 floats) back and verify the GPU transform exactly.
+    return true;
+}
+// --- Scenario: Deform runs a vertex shader over a VBO via transform feedback ---
+// A 1-vertex input VBO (Pos3) + a known preset shader -> Deform; read the transform-
+// feedback output (Pos3Color3, 6 floats) back and verify the GPU transform exactly.
+static bool scenario_deform_transform_feedback() {
     {
         const float inPos[3] = { 0.2f, 0.3f, 0.4f };
         GLuint inVbo = 0;
@@ -1584,17 +1620,17 @@ int main() {
 
         float o[6];
         // Identity: vPosition = aPos; vColor = aColor(0) + uColour.rgb = colour.
-        if (!runDeform(0, 0.5f, glm::vec4(0.6f, 0.7f, 0.8f, 1.0f), o)) { glfwTerminate(); return fail("Deform identity produced no output"); }
+        if (!runDeform(0, 0.5f, glm::vec4(0.6f, 0.7f, 0.8f, 1.0f), o)) { return failed("Deform identity produced no output"); }
         if (!(af(o[0],0.2f) && af(o[1],0.3f) && af(o[2],0.4f) && af(o[3],0.6f) && af(o[4],0.7f) && af(o[5],0.8f))) {
             std::fprintf(stderr, "Deform identity got (%.3f,%.3f,%.3f, %.3f,%.3f,%.3f)\n", o[0],o[1],o[2],o[3],o[4],o[5]);
-            glDeleteBuffers(1, &inVbo); glfwTerminate(); return fail("Deform identity transform wrong");
+            glDeleteBuffers(1, &inVbo); return failed("Deform identity transform wrong");
         }
         // Wave: y += uPos*sin(x*2pi); x=0.2, uPos=0.5 -> y = 0.3 + 0.5*sin(0.2*2pi); x,z unchanged.
-        if (!runDeform(2, 0.5f, glm::vec4(0, 0, 0, 1), o)) { glfwTerminate(); return fail("Deform wave produced no output"); }
+        if (!runDeform(2, 0.5f, glm::vec4(0, 0, 0, 1), o)) { return failed("Deform wave produced no output"); }
         float ey = 0.3f + 0.5f * std::sin(0.2f * 6.2831853f);
         if (!(af(o[0],0.2f) && af(o[1],ey) && af(o[2],0.4f))) {
             std::fprintf(stderr, "Deform wave got y=%.4f expected %.4f\n", o[1], ey);
-            glDeleteBuffers(1, &inVbo); glfwTerminate(); return fail("Deform wave transform wrong");
+            glDeleteBuffers(1, &inVbo); return failed("Deform wave transform wrong");
         }
         glDeleteBuffers(1, &inVbo);
 
@@ -1606,14 +1642,16 @@ int main() {
             def->initGL();
             int vsId = g.addNode(std::move(vs));
             int dId  = g.addNode(std::move(def));
-            if (!g.connect(vsId, 0, dId, 3)) { glfwTerminate(); return fail("Shader edge VertexShader->Deform did not connect"); }
+            if (!g.connect(vsId, 0, dId, 3)) { return failed("Shader edge VertexShader->Deform did not connect"); }
         }
         std::fprintf(stderr, "gl_smoke OK: Deform applies a vertex shader via transform feedback\n");
     }
-
-    // --- Scenario: Vertex Trail queues snapshots, offset in z + hue-rotated by age ---
-    // Push the same 1-vertex Pos3 input 3 frames; the trail holds 3 copies at z = 0.3 / 0.8 / 1.3
-    // with colours red / hue 0.1 / hue 0.2. Read the output VBO back and verify.
+    return true;
+}
+// --- Scenario: Vertex Trail queues snapshots, offset in z + hue-rotated by age ---
+// Push the same 1-vertex Pos3 input 3 frames; the trail holds 3 copies at z = 0.3 / 0.8 / 1.3
+// with colours red / hue 0.1 / hue 0.2. Read the output VBO back and verify.
+static bool scenario_vertex_trail_snapshots() {
     {
         const float inPos[3] = { 0.1f, 0.2f, 0.3f };
         GLuint inVbo = 0;
@@ -1634,7 +1672,7 @@ int main() {
 
         VertexRef out = tn->output();
         if (out.vbo == 0 || out.count != 3 || out.format != VertexFormat::Pos3Color3) {
-            glDeleteBuffers(1, &inVbo); glfwTerminate(); return fail("Vertex Trail wrong output shape");
+            glDeleteBuffers(1, &inVbo); return failed("Vertex Trail wrong output shape");
         }
         float o[18];
         glBindBuffer(GL_ARRAY_BUFFER, out.vbo);
@@ -1649,16 +1687,18 @@ int main() {
             af(o[12],0.1f) && af(o[13],0.2f)&& af(o[14],1.3f)&& af(o[15],c2.x) && af(o[16],c2.y) && af(o[17],c2.z);     // age2
         if (!ok) {
             std::fprintf(stderr, "Vertex Trail got z=(%.3f,%.3f,%.3f)\n", o[2], o[8], o[14]);
-            glDeleteBuffers(1, &inVbo); glfwTerminate(); return fail("Vertex Trail z-offset/hue wrong");
+            glDeleteBuffers(1, &inVbo); return failed("Vertex Trail z-offset/hue wrong");
         }
         glDeleteBuffers(1, &inVbo);
         std::fprintf(stderr, "gl_smoke OK: Vertex Trail queued snapshots with z-offset + hue rotation\n");
     }
-
-    // --- Scenario: Vertex Trail (LineStrip) -> Wireframe draws each snapshot via glMultiDrawArrays ---
-    // A 4-point LineStrip pushed for 3 frames builds a 3-snapshot trail kept COMPACT (strips = frame
-    // count, primitive LineStrip); Wireframe must render it with glMultiDrawArrays. Asserts the strip
-    // layout + that the rendered texture is non-blank (the multi-draw path executes and draws).
+    return true;
+}
+// --- Scenario: Vertex Trail (LineStrip) -> Wireframe draws each snapshot via glMultiDrawArrays ---
+// A 4-point LineStrip pushed for 3 frames builds a 3-snapshot trail kept COMPACT (strips = frame
+// count, primitive LineStrip); Wireframe must render it with glMultiDrawArrays. Asserts the strip
+// layout + that the rendered texture is non-blank (the multi-draw path executes and draws).
+static bool scenario_vertex_trail_linestrip_multidraw() {
     {
         const float strip[12] = {   // a 4-point Pos3 line strip (a zig-zag near origin, all distinct)
             -0.6f, -0.3f, 0.0f,   -0.2f, 0.3f, 0.0f,   0.2f, -0.3f, 0.0f,   0.6f, 0.3f, 0.0f,
@@ -1682,17 +1722,17 @@ int main() {
         int wId = g.addNode(std::move(wire));
         int oId = g.addNode(std::move(out));
         if (!g.connect(tId, 0, wId, 0) || !g.connect(wId, 0, oId, 0)) {
-            glDeleteBuffers(1, &inVbo); glfwTerminate(); return fail("connect trail->wire->output");
+            glDeleteBuffers(1, &inVbo); return failed("connect trail->wire->output");
         }
         for (int f = 0; f < 3; ++f) g.evaluate(1.0f / 60.0f);
 
         VertexRef to = dynamic_cast<VertexTrailNode*>(g.findNode(tId))->output();
         if (to.primitive != Primitive::LineStrip || to.strips != 3 || to.count != 3 * 4) {
             std::fprintf(stderr, "trail strips=%d count=%d prim=%d\n", to.strips, to.count, (int)to.primitive);
-            glDeleteBuffers(1, &inVbo); glfwTerminate(); return fail("trail did not produce 3 compact strips");
+            glDeleteBuffers(1, &inVbo); return failed("trail did not produce 3 compact strips");
         }
         TexRef t = dynamic_cast<OutputNode*>(g.findNode(oId))->current();
-        if (!t.id) { glDeleteBuffers(1, &inVbo); glfwTerminate(); return fail("multi-strip wireframe texture not produced"); }
+        if (!t.id) { glDeleteBuffers(1, &inVbo); return failed("multi-strip wireframe texture not produced"); }
         std::vector<unsigned char> px((size_t)t.w * t.h * 4);
         glBindTexture(GL_TEXTURE_2D, t.id);
         glGetTexImage(GL_TEXTURE_2D, 0, GL_RGBA, GL_UNSIGNED_BYTE, px.data());
@@ -1700,17 +1740,19 @@ int main() {
         for (size_t i = 0; i < px.size(); i += 4)
             if (px[i] > 40 || px[i+1] > 40 || px[i+2] > 40) { sawLine = true; break; }   // any foreground pixel
         glDeleteBuffers(1, &inVbo);
-        if (!sawLine) { glfwTerminate(); return fail("multi-strip wireframe (glMultiDrawArrays) rendered nothing"); }
+        if (!sawLine) { return failed("multi-strip wireframe (glMultiDrawArrays) rendered nothing"); }
         std::fprintf(stderr, "gl_smoke OK: Vertex Trail LineStrip drawn as %d separate strips via glMultiDrawArrays\n", to.strips);
     }
-
-    // --- Scenario: Vertex Trail -> Deform -> Wireframe keeps each snapshot a separate strip ---
-    // Regression for the per-snapshot `strips` hint surviving Deform's transform feedback. The trail
-    // emits a COMPACT multi-strip LineStrip (strips = frame count); Deform must forward VertexRef::strips
-    // through transform feedback, else the Wireframe draws the whole buffer as ONE LINE_STRIP and joins
-    // every snapshot with a connecting line. Asserts the strip layout reaches Deform's output intact and
-    // the multi-draw pipeline renders. (The plain Trail->Wireframe path is covered above; this is the
-    // Deform-in-the-middle path -- the real-world Oscilloscope -> Trail -> Deform -> Wireframe chain.)
+    return true;
+}
+// --- Scenario: Vertex Trail -> Deform -> Wireframe keeps each snapshot a separate strip ---
+// Regression for the per-snapshot `strips` hint surviving Deform's transform feedback. The trail
+// emits a COMPACT multi-strip LineStrip (strips = frame count); Deform must forward VertexRef::strips
+// through transform feedback, else the Wireframe draws the whole buffer as ONE LINE_STRIP and joins
+// every snapshot with a connecting line. Asserts the strip layout reaches Deform's output intact and
+// the multi-draw pipeline renders. (The plain Trail->Wireframe path is covered above; this is the
+// Deform-in-the-middle path -- the real-world Oscilloscope -> Trail -> Deform -> Wireframe chain.)
+static bool scenario_vertex_trail_deform_wireframe_strips() {
     {
         const float strip[12] = {   // a 4-point Pos3 line strip
             -0.6f, -0.3f, 0.0f,   -0.2f, 0.3f, 0.0f,   0.2f, -0.3f, 0.0f,   0.6f, 0.3f, 0.0f,
@@ -1738,7 +1780,7 @@ int main() {
         int wId = g.addNode(std::move(wire));
         int oId = g.addNode(std::move(out));
         if (!g.connect(tId, 0, dId, 0) || !g.connect(dId, 0, wId, 0) || !g.connect(wId, 0, oId, 0)) {
-            glDeleteBuffers(1, &inVbo); glfwTerminate(); return fail("connect trail->deform->wire->output");
+            glDeleteBuffers(1, &inVbo); return failed("connect trail->deform->wire->output");
         }
         for (int f = 0; f < 3; ++f) g.evaluate(1.0f / 60.0f);
 
@@ -1746,11 +1788,11 @@ int main() {
         VertexRef td = dynamic_cast<DeformNode*>(g.findNode(dId))->output();
         if (td.primitive != Primitive::LineStrip || td.strips != 3 || td.count != 3 * 4) {
             std::fprintf(stderr, "deform out strips=%d count=%d prim=%d\n", td.strips, td.count, (int)td.primitive);
-            glDeleteBuffers(1, &inVbo); glfwTerminate();
-            return fail("Deform dropped the per-snapshot strips hint (Wireframe would join the trail)");
+            glDeleteBuffers(1, &inVbo);
+            return failed("Deform dropped the per-snapshot strips hint (Wireframe would join the trail)");
         }
         TexRef t = dynamic_cast<OutputNode*>(g.findNode(oId))->current();
-        if (!t.id) { glDeleteBuffers(1, &inVbo); glfwTerminate(); return fail("trail->deform->wire texture not produced"); }
+        if (!t.id) { glDeleteBuffers(1, &inVbo); return failed("trail->deform->wire texture not produced"); }
         std::vector<unsigned char> px((size_t)t.w * t.h * 4);
         glBindTexture(GL_TEXTURE_2D, t.id);
         glGetTexImage(GL_TEXTURE_2D, 0, GL_RGBA, GL_UNSIGNED_BYTE, px.data());
@@ -1758,11 +1800,13 @@ int main() {
         for (size_t i = 0; i < px.size(); i += 4)
             if (px[i] > 40 || px[i+1] > 40 || px[i+2] > 40) { sawLine = true; break; }
         glDeleteBuffers(1, &inVbo);
-        if (!sawLine) { glfwTerminate(); return fail("trail->deform->wire (glMultiDrawArrays) rendered nothing"); }
+        if (!sawLine) { return failed("trail->deform->wire (glMultiDrawArrays) rendered nothing"); }
         std::fprintf(stderr, "gl_smoke OK: Vertex Trail strips survive Deform; drawn as %d separate strips\n", td.strips);
     }
-
-    // --- Scenario: project save/load round-trips a real graph through a factory + initGL ---
+    return true;
+}
+// --- Scenario: project save/load round-trips a real graph through a factory + initGL ---
+static bool scenario_project_save_load_roundtrip() {
     {
         auto factory = [](const std::string& t) -> std::unique_ptr<Node> {
             if (t == "Colour") return std::make_unique<ColourNode>();
@@ -1778,25 +1822,27 @@ int main() {
         auto out = std::make_unique<OutputNode>(); out->initGL();
         int cId = g.addNode(std::move(col));
         int oId = g.addNode(std::move(out));
-        if (!g.connect(cId, 0, oId, 0)) { glfwTerminate(); return fail("save/load: connect Colour->Output"); }
+        if (!g.connect(cId, 0, oId, 0)) { return failed("save/load: connect Colour->Output"); }
 
         std::string text = saveProject(g);
 
         Graph g2;
-        if (!loadProject(text, g2, factory, init)) { glfwTerminate(); return fail("save/load: loadProject returned false"); }
-        if (g2.nodes().size() != 2 || g2.connections().size() != 1) { glfwTerminate(); return fail("save/load: graph shape not restored"); }
+        if (!loadProject(text, g2, factory, init)) { return failed("save/load: loadProject returned false"); }
+        if (g2.nodes().size() != 2 || g2.connections().size() != 1) { return failed("save/load: graph shape not restored"); }
         Node* col2 = nullptr;
         for (auto& np : g2.nodes()) if (np->name() == "Colour") col2 = np.get();
-        if (!col2) { glfwTerminate(); return fail("save/load: Colour node missing after load"); }
+        if (!col2) { return failed("save/load: Colour node missing after load"); }
         glm::vec4 c = std::get<glm::vec4>(col2->inputDefault(0));
         if (!(std::fabs(c.x - 0.25f) < 1e-4f && std::fabs(c.y - 0.5f) < 1e-4f && std::fabs(c.z - 0.75f) < 1e-4f)) {
-            glfwTerminate(); return fail("save/load: Colour control value not restored");
+            return failed("save/load: Colour control value not restored");
         }
         g2.evaluate(1.0f / 60.0f);   // the restored + initGL'd graph evaluates without crashing
         std::fprintf(stderr, "gl_smoke OK: project save/load round-trips a real graph\n");
     }
-
-    // --- Scenario: Drum Machine triggers a sample on a step + applies accent / pan (GL-free) ---
+    return true;
+}
+// --- Scenario: Drum Machine triggers a sample on a step + applies accent / pan (GL-free) ---
+static bool scenario_drum_machine() {
     {
         auto ramp = [](int frames) {
             AudioClip c; c.ok = true; c.sampleRate = 48000; c.channels = 2;
@@ -1830,8 +1876,8 @@ int main() {
         EvalContext ctx{in, outs, 0.02f, nullptr, nullptr};
         dm.evaluate(ctx);
         float onPeak = peak(dm.leftOut());
-        if (onPeak <= 0.05f) { glfwTerminate(); return fail("Drum Machine: ON step produced no audio"); }
-        if (peak(dm.rightOut()) <= 0.05f) { glfwTerminate(); return fail("Drum Machine: center pan gave no right channel"); }
+        if (onPeak <= 0.05f) { return failed("Drum Machine: ON step produced no audio"); }
+        if (peak(dm.rightOut()) <= 0.05f) { return failed("Drum Machine: center pan gave no right channel"); }
 
         // (b) an ACCENT cell is louder than an ON cell.
         DrumMachineNode dmA;
@@ -1840,7 +1886,7 @@ int main() {
         std::vector<Value> inA = inputs(0.0f), outsA(2);
         EvalContext ctxA{inA, outsA, 0.02f, nullptr, nullptr};
         dmA.evaluate(ctxA);
-        if (peak(dmA.leftOut()) <= onPeak + 0.01f) { glfwTerminate(); return fail("Drum Machine: accent not louder than on"); }
+        if (peak(dmA.leftOut()) <= onPeak + 0.01f) { return failed("Drum Machine: accent not louder than on"); }
 
         // (c) hard-left pan routes to left only.
         DrumMachineNode dmP;
@@ -1850,7 +1896,7 @@ int main() {
         EvalContext ctxP{inP, outsP, 0.02f, nullptr, nullptr};
         dmP.evaluate(ctxP);
         if (peak(dmP.leftOut()) <= 0.05f || peak(dmP.rightOut()) >= 0.02f) {
-            glfwTerminate(); return fail("Drum Machine: hard-left pan did not route to left only");
+            return failed("Drum Machine: hard-left pan did not route to left only");
         }
         std::fprintf(stderr, "gl_smoke OK: Drum Machine triggers a step, accent louder, pan routes\n");
     }
@@ -1864,23 +1910,23 @@ int main() {
         EvalContext ctx{ins, outs, 1.0f / 60.0f, nullptr, nullptr};
         pm.evaluate(ctx);
         TexRef t = std::get<TexRef>(outs[0]);
-        if (t.id == 0 || t.w != kCanvasW || t.h != kCanvasH) { glfwTerminate(); return fail("projectM (inert): no canvas-sized texture"); }
+        if (t.id == 0 || t.w != kCanvasW || t.h != kCanvasH) { return failed("projectM (inert): no canvas-sized texture"); }
         int r, gg, b, a;
         readCentre(t, r, gg, b, a);
-        if (!(r == 0 && gg == 0 && b == 0 && a == 255)) { glfwTerminate(); return fail("projectM (inert): texture not opaque black"); }
-        if (pm.statusLine().empty()) { glfwTerminate(); return fail("projectM (inert): empty status line"); }
+        if (!(r == 0 && gg == 0 && b == 0 && a == 255)) { return failed("projectM (inert): texture not opaque black"); }
+        if (pm.statusLine().empty()) { return failed("projectM (inert): empty status line"); }
 
         // Playlist write-back needs no library: next from a.milk -> b.milk, written into the field.
         std::string dir = writePresetFolder();
-        if (dir.empty()) { glfwTerminate(); return fail("projectM: write preset folder"); }
+        if (dir.empty()) { return failed("projectM: write preset folder"); }
         ins[ProjectMNode::kPreset] = Value(dir + "/a.milk");
         pm.evaluate(ctx);
-        if (fileBaseName(std::get<std::string>(pm.inputDefault(ProjectMNode::kPreset))) != "a.milk") { glfwTerminate(); return fail("projectM: incoming preset not written back"); }
+        if (fileBaseName(std::get<std::string>(pm.inputDefault(ProjectMNode::kPreset))) != "a.milk") { return failed("projectM: incoming preset not written back"); }
         pm.onButtonPressed(1);   // next
         pm.evaluate(ctx);        // `ins` still says a.milk, like an unchanged edge: the step must hold
-        if (fileBaseName(std::get<std::string>(pm.inputDefault(ProjectMNode::kPreset))) != "b.milk") { glfwTerminate(); return fail("projectM: next did not step to b.milk"); }
+        if (fileBaseName(std::get<std::string>(pm.inputDefault(ProjectMNode::kPreset))) != "b.milk") { return failed("projectM: next did not step to b.milk"); }
         pm.evaluate(ctx);
-        if (fileBaseName(std::get<std::string>(pm.inputDefault(ProjectMNode::kPreset))) != "b.milk") { glfwTerminate(); return fail("projectM: step snapped back"); }
+        if (fileBaseName(std::get<std::string>(pm.inputDefault(ProjectMNode::kPreset))) != "b.milk") { return failed("projectM: step snapped back"); }
         std::fprintf(stderr, "gl_smoke OK: projectM inert path (black texture, status '%s') + playlist write-back\n", pm.statusLine().c_str());
     }
 
@@ -1892,7 +1938,7 @@ int main() {
             std::fprintf(stderr, "gl_smoke SKIP: projectM render/burn checks (%s)\n", api.statusText().c_str());
         } else {
             std::string dir = writePresetFolder();
-            if (dir.empty()) { glfwTerminate(); return fail("projectM live: write preset folder"); }
+            if (dir.empty()) { return failed("projectM live: write preset folder"); }
 
             std::vector<float> sine(800);
             for (std::size_t i = 0; i < sine.size(); ++i) sine[i] = 0.8f * std::sin(2.0f * 3.14159265f * 220.0f * (float)i / 48000.0f);
@@ -1915,7 +1961,7 @@ int main() {
             GLuint probeProg = linkProgram(
                 "#version 410 core\nvoid main() { gl_Position = vec4(0.0); }\n",
                 "#version 410 core\nout vec4 f;\nvoid main() { f = vec4(1.0, 0.0, 1.0, 1.0); }\n");
-            if (probeProg == 0) { glfwTerminate(); return fail("projectM live: could not link the GL-state probe program"); }
+            if (probeProg == 0) { return failed("projectM live: could not link the GL-state probe program"); }
             glBindFramebuffer(GL_FRAMEBUFFER, 0);
             glViewport(0, 0, 33, 44);
             glUseProgram(probeProg);
@@ -1937,7 +1983,7 @@ int main() {
             glActiveTexture(GL_TEXTURE0);
             glUseProgram(0); glBindVertexArray(0); glBindBuffer(GL_ARRAY_BUFFER, 0);
             glDeleteProgram(probeProg); glDeleteBuffers(1, &probeBuf); glDeleteVertexArrays(1, &probeVao);
-            if (!stateKept) { glfwTerminate(); return fail("projectM live: GL state leaked out of evaluate"); }
+            if (!stateKept) { return failed("projectM live: GL state leaked out of evaluate"); }
 
             // (b) it rendered something.
             TexRef t = std::get<TexRef>(outs[0]);
@@ -1946,12 +1992,12 @@ int main() {
             glGetTexImage(GL_TEXTURE_2D, 0, GL_RGBA, GL_UNSIGNED_BYTE, px.data());
             bool lit = false;
             for (size_t i = 0; i + 3 < px.size() && !lit; i += 4) lit = (px[i] + px[i + 1] + px[i + 2]) > 60;
-            if (!lit) { glfwTerminate(); return fail("projectM live: output is black (see the status line above)"); }
+            if (!lit) { return failed("projectM live: output is black (see the status line above)"); }
 
             // (c) the status shows the playlist position after a step.
             pm.onButtonPressed(1);
             pm.evaluate(ctx);
-            if (pm.statusLine().find("(2/3)") == std::string::npos) { glfwTerminate(); return fail("projectM live: status does not show (2/3) after next"); }
+            if (pm.statusLine().find("(2/3)") == std::string::npos) { return failed("projectM live: status does not show (2/3) after next"); }
 
             // (d) burn: a texture whose TOP half is red and BOTTOM half green (GL rows are bottom-up).
             const int S = 64;
@@ -1978,8 +2024,8 @@ int main() {
             std::fprintf(stderr, "gl_smoke projectM burn: upper=(%d,%d,%d) lower=(%d,%d,%d)\n", r1, g1, b1, r2, g2, b2);
             bool upperRed = r1 > g1 + 40, lowerGreen = g2 > r2 + 40;
             bool upperGreen = g1 > r1 + 40, lowerRed = r2 > g2 + 40;
-            if (upperGreen && lowerRed) { glfwTerminate(); return fail("projectM live: burn is vertically flipped (plan Task 9 Step 4)"); }
-            if (!(upperRed && lowerGreen)) { glfwTerminate(); return fail("projectM live: burned texture not visible in the output"); }
+            if (upperGreen && lowerRed) { return failed("projectM live: burn is vertically flipped (plan Task 9 Step 4)"); }
+            if (!(upperRed && lowerGreen)) { return failed("projectM live: burned texture not visible in the output"); }
 
             // (d2) burn respects alpha: a transparent region must NOT overwrite the canvas.
             // Top half opaque red, bottom half GREEN WITH ALPHA 0. With the node's straight-alpha
@@ -1996,7 +2042,7 @@ int main() {
             int r3, g3, b3, a3;
             readAtUV(t, 0.2f, 0.15f, r3, g3, b3, a3);
             std::fprintf(stderr, "gl_smoke projectM pre-alpha-burn lower=(%d,%d,%d)\n", r3, g3, b3);
-            if (g3 > r3 + 40) { glfwTerminate(); return fail("projectM live: canvas still green before the alpha burn, so it would prove nothing"); }
+            if (g3 > r3 + 40) { return failed("projectM live: canvas still green before the alpha burn, so it would prove nothing"); }
             for (int y = 0; y < S; ++y) for (int x = 0; x < S; ++x) {
                 unsigned char* p = &img[((size_t)y * S + x) * 4];
                 bool top = (y >= S / 2);
@@ -2013,8 +2059,8 @@ int main() {
             readAtUV(t, 0.2f, 0.15f, r5, g5, b5, a5);
             std::fprintf(stderr, "gl_smoke projectM alpha burn: upper=(%d,%d,%d) lower=(%d,%d,%d)\n", r4, g4, b4, r5, g5, b5);
             glDeleteTextures(1, &src);
-            if (!(r4 > g4 + 40)) { glfwTerminate(); return fail("projectM live: the opaque half of the alpha burn did not land"); }
-            if (g5 > r5 + 40)    { glfwTerminate(); return fail("projectM live: burn ignored alpha (a transparent region overwrote the canvas)"); }
+            if (!(r4 > g4 + 40)) { return failed("projectM live: the opaque half of the alpha burn did not land"); }
+            if (g5 > r5 + 40)    { return failed("projectM live: burn ignored alpha (a transparent region overwrote the canvas)"); }
 
             // (e) A MULTI-SAMPLER preset must not leak sampler objects or the read framebuffer.
             // Audited against projectM 4.2: it binds a sampler per texture unit and unbinds only
@@ -2022,7 +2068,7 @@ int main() {
             // kTestPreset) leaks nothing, so this needs a Milkdrop-2 preset whose shaders sample
             // main + blur + noise textures. GLStateGuard is what contains both.
             std::string multi = writeMultiSamplerPreset();
-            if (multi.empty()) { glfwTerminate(); return fail("projectM live: write multi-sampler preset"); }
+            if (multi.empty()) { return failed("projectM live: write multi-sampler preset"); }
             ins[ProjectMNode::kBurn]   = Value(0.0f);
             ins[ProjectMNode::kPreset] = Value(multi);
             glBindFramebuffer(GL_READ_FRAMEBUFFER, 0);
@@ -2035,7 +2081,7 @@ int main() {
             for (GLuint u = 1; u <= 5; ++u) glBindSampler(u, sentinel);
             for (int i = 0; i < 10; ++i) pm.evaluate(ctx);
             std::fprintf(stderr, "gl_smoke projectM multi-sampler status: %s\n", pm.statusLine().c_str());
-            if (pm.statusLine().rfind("failed:", 0) == 0) { glfwTerminate(); return fail("projectM live: the multi-sampler preset did not load, so the leak check would be vacuous"); }
+            if (pm.statusLine().rfind("failed:", 0) == 0) { return failed("projectM live: the multi-sampler preset did not load, so the leak check would be vacuous"); }
             GLint readFb = -1;
             glGetIntegerv(GL_READ_FRAMEBUFFER_BINDING, &readFb);
             int leaked = 0;
@@ -2047,8 +2093,8 @@ int main() {
             }
             glActiveTexture(GL_TEXTURE0);
             glDeleteSamplers(1, &sentinel);
-            if (leaked)      { glfwTerminate(); return fail("projectM live: sampler objects leaked onto texture units"); }
-            if (readFb != 0) { glfwTerminate(); return fail("projectM live: READ_FRAMEBUFFER binding leaked"); }
+            if (leaked)      { return failed("projectM live: sampler objects leaked onto texture units"); }
+            if (readFb != 0) { return failed("projectM live: READ_FRAMEBUFFER binding leaked"); }
 
             // (f) projectM must render correctly whatever GL state the previous node left, and hand it back.
             // It never touches scissor/cull/depth anywhere in its source, and sets no blend state for a
@@ -2074,7 +2120,7 @@ int main() {
             glGetIntegerv(GL_BLEND_SRC_RGB, &srcRgb); glGetIntegerv(GL_BLEND_DST_RGB, &dstRgb);
             glDisable(GL_SCISSOR_TEST); glDisable(GL_CULL_FACE); glDisable(GL_DEPTH_TEST); glDisable(GL_BLEND);
             glBlendFunc(GL_ONE, GL_ZERO);
-            if (!handedBack || srcRgb != GL_ZERO || dstRgb != GL_ONE) { glfwTerminate(); return fail("projectM live: did not hand the caller's GL state back"); }
+            if (!handedBack || srcRgb != GL_ZERO || dstRgb != GL_ONE) { return failed("projectM live: did not hand the caller's GL state back"); }
             t = std::get<TexRef>(outs[0]);
             px.assign((size_t)t.w * t.h * 4, 0);
             glBindTexture(GL_TEXTURE_2D, t.id);
@@ -2084,7 +2130,7 @@ int main() {
                 if (px[i] + px[i + 1] + px[i + 2] > 60) ++litPixels;
             std::fprintf(stderr, "gl_smoke projectM hostile state: %.1f%% of the canvas lit\n",
                          100.0 * (double)litPixels / ((double)t.w * (double)t.h));
-            if (litPixels * 100 <= (size_t)t.w * (size_t)t.h) { glfwTerminate(); return fail("projectM live: output was clipped/culled/blended away by the caller's GL state"); }
+            if (litPixels * 100 <= (size_t)t.w * (size_t)t.h) { return failed("projectM live: output was clipped/culled/blended away by the caller's GL state"); }
 
             // (g) a preset path that is not a file must be REPORTED, not handed to projectM: typing a
             // path changes the incoming value per keystroke, and a load attempt each time costs tens of
@@ -2098,7 +2144,7 @@ int main() {
             ins[ProjectMNode::kPreset] = Value(dir + "/missing.milk");
             for (int i = 0; i < 5; ++i) pm.evaluate(ctx);
             std::fprintf(stderr, "gl_smoke projectM missing preset status: %s\n", pm.statusLine().c_str());
-            if (pm.statusLine().rfind("preset not found: missing", 0) != 0) { glfwTerminate(); return fail("projectM live: a missing preset was not reported"); }
+            if (pm.statusLine().rfind("preset not found: missing", 0) != 0) { return failed("projectM live: a missing preset was not reported"); }
             t = std::get<TexRef>(outs[0]);
             px.assign((size_t)t.w * t.h * 4, 0);
             glBindTexture(GL_TEXTURE_2D, t.id);
@@ -2108,7 +2154,7 @@ int main() {
                 if (px[i] + px[i + 1] + px[i + 2] > 60) ++stillLit;
             std::fprintf(stderr, "gl_smoke projectM missing preset: %.1f%% of the canvas still lit\n",
                          100.0 * (double)stillLit / ((double)t.w * (double)t.h));
-            if (stillLit * 100 <= (size_t)t.w * (size_t)t.h) { glfwTerminate(); return fail("projectM live: the previous preset stopped rendering after a missing preset"); }
+            if (stillLit * 100 <= (size_t)t.w * (size_t)t.h) { return failed("projectM live: the previous preset stopped rendering after a missing preset"); }
 
             // (h) a bad dt must not latch the node black. projectM takes the accumulated time we hand
             // it verbatim, so a NaN would poison it permanently, and a negative one makes projectM fall
@@ -2136,7 +2182,7 @@ int main() {
                 if (px[i] + px[i + 1] + px[i + 2] > 60) ++litAfterBadDt;
             std::fprintf(stderr, "gl_smoke projectM bad dt: %.1f%% of the canvas lit after a NaN and a negative dt\n",
                          100.0 * (double)litAfterBadDt / ((double)t.w * (double)t.h));
-            if (litAfterBadDt * 100 <= (size_t)t.w * (size_t)t.h) { glfwTerminate(); return fail("projectM live: a NaN or negative dt left the node black"); }
+            if (litAfterBadDt * 100 <= (size_t)t.w * (size_t)t.h) { return failed("projectM live: a NaN or negative dt left the node black"); }
 
             std::fprintf(stderr, "gl_smoke OK: projectM live (renders, GL state + samplers contained, status, burn upright + alpha, survives hostile caller state, reports a missing preset, survives a bad dt)\n");
         }
@@ -2198,57 +2244,61 @@ int main() {
                   !glIsEnabled(GL_BLEND) && !glIsEnabled(GL_DEPTH_TEST) &&
                   !glIsEnabled(GL_SCISSOR_TEST) && !glIsEnabled(GL_CULL_FACE) &&
                   readFb == 0 && vaoNow == (GLint)probeVao && arrayBufNow == (GLint)probeBuf && sampler1 == 0;
-        if (!ok) { glfwTerminate(); return fail("GLStateGuard did not restore the GL state"); }
+        if (!ok) { return failed("GLStateGuard did not restore the GL state"); }
         glBindVertexArray(0); glBindBuffer(GL_ARRAY_BUFFER, 0);
         glDeleteSamplers(1, &probeSampler); glDeleteBuffers(1, &probeBuf); glDeleteVertexArrays(1, &probeVao);
         std::fprintf(stderr, "gl_smoke OK: GLStateGuard restores framebuffers/viewport/VAO/buffer/texture/enables and clears samplers\n");
     }
-
-    // --- Scenario: offline mode -- Audio Out taps its block and never touches the device ---
-    // Split from the Recorder scenario below on purpose: Graph::evaluate() runs every node every
-    // frame regardless of connections, so an AudioOutputNode sitting in a graph that takes even
-    // one LIVE evaluate (needed to prime a real recording, below) would open the real device on a
-    // machine that has one -- deviceTouched() is monotonic (never resets outside the destructor),
-    // so that would make the "never touched while offline" check below vacuously true. Keeping
-    // Audio Out in its own graph, offline from before its first evaluate, keeps the check honest.
+    return true;
+}
+// --- Scenario: offline mode -- Audio Out taps its block and never touches the device ---
+// Split from the Recorder scenario below on purpose: Graph::evaluate() runs every node every
+// frame regardless of connections, so an AudioOutputNode sitting in a graph that takes even
+// one LIVE evaluate (needed to prime a real recording, below) would open the real device on a
+// machine that has one -- deviceTouched() is monotonic (never resets outside the destructor),
+// so that would make the "never touched while offline" check below vacuously true. Keeping
+// Audio Out in its own graph, offline from before its first evaluate, keeps the check honest.
+static bool scenario_offline_audio_out_no_device() {
     {
         Graph g;
         auto sine = std::make_unique<SineWaveNode>();
         auto aout = std::make_unique<AudioOutputNode>();
         int sId = g.addNode(std::move(sine));
         int aId = g.addNode(std::move(aout));
-        if (!g.connect(sId, 0, aId, 0)) { glfwTerminate(); return fail("offline sinks: connect Sine->AudioOut"); }
+        if (!g.connect(sId, 0, aId, 0)) { return failed("offline sinks: connect Sine->AudioOut"); }
         auto* an = dynamic_cast<AudioOutputNode*>(g.findNode(aId));
 
         g.setOffline(true);   // offline before the first evaluate: the device path is never reached
         for (int f = 0; f < 3; ++f) g.evaluate(1.0f / 60.0f);
         // A lone left wire mirrors to both channels; 800 frames at 48 kHz / 60 fps.
-        if (an->lastSampleRate() != 48000) { glfwTerminate(); return fail("offline sinks: Audio Out sample rate not tapped"); }
-        if (an->lastBlock().size() != 800 * 2) { glfwTerminate(); return fail("offline sinks: Audio Out block should be 800 stereo frames"); }
+        if (an->lastSampleRate() != 48000) { return failed("offline sinks: Audio Out sample rate not tapped"); }
+        if (an->lastBlock().size() != 800 * 2) { return failed("offline sinks: Audio Out block should be 800 stereo frames"); }
         bool mirrored = true;
         for (std::size_t i = 0; i < an->lastBlock().size(); i += 2)
             if (an->lastBlock()[i] != an->lastBlock()[i + 1]) { mirrored = false; break; }
-        if (!mirrored) { glfwTerminate(); return fail("offline sinks: lone mono wire should mirror to both channels"); }
+        if (!mirrored) { return failed("offline sinks: lone mono wire should mirror to both channels"); }
         bool nonSilent = false;
         for (float v : an->lastBlock()) if (v > 0.01f || v < -0.01f) { nonSilent = true; break; }
-        if (!nonSilent) { glfwTerminate(); return fail("offline sinks: tapped block should carry the sine, not silence"); }
-        if (an->deviceTouched()) { glfwTerminate(); return fail("offline sinks: Audio Out must not touch the device while offline"); }
+        if (!nonSilent) { return failed("offline sinks: tapped block should carry the sine, not silence"); }
+        if (an->deviceTouched()) { return failed("offline sinks: Audio Out must not touch the device while offline"); }
 
         // Nothing connected -> empty block, rate 0.
         g.disconnect(aId, 0);
         g.evaluate(1.0f / 60.0f);
-        if (!an->lastBlock().empty() || an->lastSampleRate() != 0) { glfwTerminate(); return fail("offline sinks: disconnected Audio Out should tap an empty block"); }
+        if (!an->lastBlock().empty() || an->lastSampleRate() != 0) { return failed("offline sinks: disconnected Audio Out should tap an empty block"); }
 
         // Positive control: back live, the device path IS reached -- otherwise the negative check
         // above could pass for the wrong reason (deviceTouched() never firing at all).
         g.setOffline(false);
         g.evaluate(1.0f / 60.0f);   // live, still disconnected: reaches the device path, pushes silence
-        if (!an->deviceTouched()) { glfwTerminate(); return fail("offline sinks: a live frame should reach the device path"); }
+        if (!an->deviceTouched()) { return failed("offline sinks: a live frame should reach the device path"); }
         std::fprintf(stderr, "gl_smoke OK: offline mode taps the Audio Out block and never touches the device\n");
     }
-
-    // --- Scenario: an offline render interrupts a live recording (stop + save), and the Recorder
-    //     does not restart -- and truncate the file it just saved -- once the render ends ---
+    return true;
+}
+// --- Scenario: an offline render interrupts a live recording (stop + save), and the Recorder
+//     does not restart -- and truncate the file it just saved -- once the render ends ---
+static bool scenario_offline_interrupts_live_recording() {
     {
         const char* recFile = "build/_offline_interrupted.mp4";
         Graph g;
@@ -2259,7 +2309,7 @@ int main() {
         int rId = g.addNode(std::move(rec));
         int oId = g.addNode(std::move(out));
         if (!g.connect(cId, 0, rId, 0) || !g.connect(rId, 0, oId, 0)) {
-            glfwTerminate(); return fail("offline sinks: connect Colour->Recorder->Output");
+            return failed("offline sinks: connect Colour->Recorder->Output");
         }
         std::remove(recFile);
         auto* rn = dynamic_cast<RecorderNode*>(g.findNode(rId));
@@ -2272,26 +2322,28 @@ int main() {
         g.evaluate(1.0f / 60.0f);
         // start() sets "recording..." but the same evaluate() immediately overwrites it with the
         // "REC <time>  <frames>" counter once encoding is under way -- check that prefix instead.
-        if (rn->statusLine().rfind("REC ", 0) != 0) { glfwTerminate(); return fail("offline sinks: Recorder should be recording live before the render"); }
+        if (rn->statusLine().rfind("REC ", 0) != 0) { return failed("offline sinks: Recorder should be recording live before the render"); }
 
         g.setOffline(true);
         g.evaluate(1.0f / 60.0f);   // render begins -> `record` reads false -> stop() + save
         std::string savedStatus = std::string("saved ") + recFile;
-        if (rn->statusLine() != savedStatus) { glfwTerminate(); return fail("offline sinks: Recorder should stop and save when the render begins"); }
-        if (!std::ifstream(recFile).good()) { glfwTerminate(); return fail("offline sinks: Recorder did not save the interrupted recording"); }
+        if (rn->statusLine() != savedStatus) { return failed("offline sinks: Recorder should stop and save when the render begins"); }
+        if (!std::ifstream(recFile).good()) { return failed("offline sinks: Recorder did not save the interrupted recording"); }
 
         for (int f = 0; f < 2; ++f) g.evaluate(1.0f / 60.0f);   // rest of the render: stays saved, not idle
-        if (rn->statusLine() != savedStatus) { glfwTerminate(); return fail("offline sinks: Recorder should stay saved for the rest of the render"); }
+        if (rn->statusLine() != savedStatus) { return failed("offline sinks: Recorder should stay saved for the rest of the render"); }
 
         g.setOffline(false);
         g.evaluate(1.0f / 60.0f);
         // `record` is still armed from before the render -- the suppression latch must keep it
         // from restarting (and truncating the file it just saved) on this first live frame.
-        if (rn->statusLine() != savedStatus) { glfwTerminate(); return fail("offline sinks: Recorder must not restart after an offline render ends"); }
+        if (rn->statusLine() != savedStatus) { return failed("offline sinks: Recorder must not restart after an offline render ends"); }
         std::fprintf(stderr, "gl_smoke OK: an offline render interrupts a live recording and it does not restart afterward\n");
     }
-
-    // --- Scenario: OfflineRenderer start/cancel -- validation, prefs swap, transport snapshot + restore ---
+    return true;
+}
+// --- Scenario: OfflineRenderer start/cancel -- validation, prefs swap, transport snapshot + restore ---
+static bool scenario_offline_start_cancel_validation() {
     {
         Graph g;
         auto col = std::make_unique<ColourNode>(); col->initGL();
@@ -2303,70 +2355,72 @@ int main() {
         RenderSettings s; s.startBar = 0.0; s.endBar = 1.0; s.prerollBars = 0.5; s.fps = 30;
         s.width = 160; s.height = 120; s.outPath = "build/_offline_cancel.mp4";
         OfflineRenderer r; std::string err;
-        if (r.start(g, s, err)) { glfwTerminate(); return fail("offline start: should refuse a graph with no Output node"); }
-        if (err != "add an Output node") { glfwTerminate(); return fail("offline start: wrong error for a missing Output node"); }
+        if (r.start(g, s, err)) { return failed("offline start: should refuse a graph with no Output node"); }
+        if (err != "add an Output node") { return failed("offline start: wrong error for a missing Output node"); }
         if (r.progress().phase != OfflineRenderer::Phase::Failed || r.progress().outPath != s.outPath)
-            { glfwTerminate(); return fail("offline start: a rejected start should still report its outPath"); }
+            { return failed("offline start: a rejected start should still report its outPath"); }
 
         auto out = std::make_unique<OutputNode>(); out->initGL();
         int oId = g.addNode(std::move(out));
-        if (!g.connect(cId, 0, oId, 0)) { glfwTerminate(); return fail("offline start: connect"); }
-        if (!r.start(g, s, err)) { glfwTerminate(); return fail(("offline start: " + err).c_str()); }
-        if (!r.active()) { glfwTerminate(); return fail("offline start: not active"); }
-        if (r.progress().framesTotal != 60 || r.progress().prerollTotal != 30) { glfwTerminate(); return fail("offline start: expected 60 frames + 30 pre-roll (0.5 bar = 1 s at 30 fps)"); }
-        if (!g.offline()) { glfwTerminate(); return fail("offline start: graph should be offline"); }
+        if (!g.connect(cId, 0, oId, 0)) { return failed("offline start: connect"); }
+        if (!r.start(g, s, err)) { return failed(("offline start: " + err).c_str()); }
+        if (!r.active()) { return failed("offline start: not active"); }
+        if (r.progress().framesTotal != 60 || r.progress().prerollTotal != 30) { return failed("offline start: expected 60 frames + 30 pre-roll (0.5 bar = 1 s at 30 fps)"); }
+        if (!g.offline()) { return failed("offline start: graph should be offline"); }
         const Transport& t = g.transport();
-        if (!(t.externalClock && t.playing && !t.looping)) { glfwTerminate(); return fail("offline start: transport should be an external, playing, non-looping clock"); }
+        if (!(t.externalClock && t.playing && !t.looping)) { return failed("offline start: transport should be an external, playing, non-looping clock"); }
 
         // The render-size prefs swap actually reaches the graph (not just inferred later from
         // the restore): a ColourNode is a ShaderNode and resizes its FBO from ctx.prefs.
         g.evaluate(1.0f / 60.0f);
         auto* onDuring = dynamic_cast<OutputNode*>(g.findNode(oId));
         if (onDuring->current().w != s.width || onDuring->current().h != s.height)
-            { glfwTerminate(); return fail("offline start: render size did not reach the graph"); }
+            { return failed("offline start: render size did not reach the graph"); }
 
         // Starting a second job while this one is active is refused -- and must not disturb it.
         RenderSettings s2 = s; s2.outPath = "build/_offline_cancel2.mp4";
         std::string err2;
-        if (r.start(g, s2, err2)) { glfwTerminate(); return fail("offline start: should refuse a second job while active"); }
-        if (err2 != "a render is already running") { glfwTerminate(); return fail("offline start: wrong error for starting while active"); }
+        if (r.start(g, s2, err2)) { return failed("offline start: should refuse a second job while active"); }
+        if (err2 != "a render is already running") { return failed("offline start: wrong error for starting while active"); }
         if (!r.active() || r.progress().framesTotal != 60)
-            { glfwTerminate(); return fail("offline start: a rejected second start must not disturb the running job"); }
+            { return failed("offline start: a rejected second start must not disturb the running job"); }
 
         r.cancel();
-        if (r.active()) { glfwTerminate(); return fail("offline cancel: still active"); }
-        if (r.progress().phase != OfflineRenderer::Phase::Cancelled) { glfwTerminate(); return fail("offline cancel: phase should be Cancelled"); }
-        if (g.offline()) { glfwTerminate(); return fail("offline cancel: graph still offline"); }
-        if (!(t.seconds == 5.0 && t.looping && !t.playing && !t.externalClock && t.bpm == 120.0)) { glfwTerminate(); return fail("offline cancel: transport not restored"); }
-        if (g.preferences() != &live) { glfwTerminate(); return fail("offline cancel: prefs pointer not restored to the graph's original"); }
+        if (r.active()) { return failed("offline cancel: still active"); }
+        if (r.progress().phase != OfflineRenderer::Phase::Cancelled) { return failed("offline cancel: phase should be Cancelled"); }
+        if (g.offline()) { return failed("offline cancel: graph still offline"); }
+        if (!(t.seconds == 5.0 && t.looping && !t.playing && !t.externalClock && t.bpm == 120.0)) { return failed("offline cancel: transport not restored"); }
+        if (g.preferences() != &live) { return failed("offline cancel: prefs pointer not restored to the graph's original"); }
         g.evaluate(1.0f / 60.0f);
         auto* on = dynamic_cast<OutputNode*>(g.findNode(oId));
-        if (on->current().w != 320 || on->current().h != 240) { glfwTerminate(); return fail("offline cancel: live prefs (texture size) not restored"); }
+        if (on->current().w != 320 || on->current().h != 240) { return failed("offline cancel: live prefs (texture size) not restored"); }
 
         {   // a renderer that never ran: cancel + destruction must be no-ops (graph_ is null)
             OfflineRenderer idle;
             idle.cancel();
             if (idle.active() || idle.progress().phase != OfflineRenderer::Phase::Idle)
-                { glfwTerminate(); return fail("offline: cancel on a never-started renderer should do nothing"); }
+                { return failed("offline: cancel on a never-started renderer should do nothing"); }
         }
 
         std::string statusBeforeSecondCancel = r.progress().status;
         r.cancel();                                              // idempotent
         if (r.active() || r.progress().phase != OfflineRenderer::Phase::Cancelled
             || r.progress().status != statusBeforeSecondCancel)
-            { glfwTerminate(); return fail("offline cancel: second cancel should be a no-op"); }
+            { return failed("offline cancel: second cancel should be a no-op"); }
         std::fprintf(stderr, "gl_smoke OK: OfflineRenderer start validates, swaps prefs + clock, and cancel restores them\n");
     }
-
-    // --- Scenario: start() has no separate prefs argument -- the render-time copy and the
-    //     restored value are both sourced from g.preferences(), so they cannot disagree ---
+    return true;
+}
+// --- Scenario: start() has no separate prefs argument -- the render-time copy and the
+//     restored value are both sourced from g.preferences(), so they cannot disagree ---
+static bool scenario_offline_prefs_single_source() {
     {
         Graph g;
         auto col = std::make_unique<ColourNode>(); col->initGL();
         int cId = g.addNode(std::move(col));
         auto out = std::make_unique<OutputNode>(); out->initGL();
         int oId = g.addNode(std::move(out));
-        if (!g.connect(cId, 0, oId, 0)) { glfwTerminate(); return fail("offline prefs source: connect"); }
+        if (!g.connect(cId, 0, oId, 0)) { return failed("offline prefs source: connect"); }
 
         Preferences real; real.textureWidth = 400; real.textureHeight = 300;
         g.setPreferences(&real);
@@ -2375,19 +2429,21 @@ int main() {
         s.width = 160; s.height = 120; s.outPath = "build/_offline_prefs_source.mp4";
 
         OfflineRenderer r; std::string err;
-        if (!r.start(g, s, err)) { glfwTerminate(); return fail(("offline prefs source: start: " + err).c_str()); }
+        if (!r.start(g, s, err)) { return failed(("offline prefs source: start: " + err).c_str()); }
         // The render-time copy was built from the graph's actual prefs (real), then resized.
         g.evaluate(1.0f / 60.0f);
         auto* on = dynamic_cast<OutputNode*>(g.findNode(oId));
         if (on->current().w != s.width || on->current().h != s.height)
-            { glfwTerminate(); return fail("offline prefs source: render size did not reach the graph"); }
+            { return failed("offline prefs source: render size did not reach the graph"); }
         r.cancel();
         if (g.preferences() != &real)
-            { glfwTerminate(); return fail("offline prefs source: restore should return the graph's actual prefs pointer"); }
+            { return failed("offline prefs source: restore should return the graph's actual prefs pointer"); }
         std::fprintf(stderr, "gl_smoke OK: OfflineRenderer sources the render-time copy and the restore from the same g.preferences(), with no separate argument to disagree\n");
     }
-
-    // --- Scenario: offline render writes every frame of a bar range, sample-locked, and restores state ---
+    return true;
+}
+// --- Scenario: offline render writes every frame of a bar range, sample-locked, and restores state ---
+static bool scenario_offline_render_every_frame_sample_locked() {
     {
         Graph g;
         auto col  = std::make_unique<ColourNode>(); col->initGL();
@@ -2401,7 +2457,7 @@ int main() {
         int oId = g.addNode(std::move(out));  int sId = g.addNode(std::move(sine));
         int aId = g.addNode(std::move(aout));
         if (!g.connect(cId, 0, rId, 0) || !g.connect(rId, 0, oId, 0) || !g.connect(sId, 0, aId, 0)) {
-            glfwTerminate(); return fail("offline e2e: connect");
+            return failed("offline e2e: connect");
         }
         Preferences live; live.textureWidth = 320; live.textureHeight = 240;
         g.setPreferences(&live);
@@ -2409,42 +2465,42 @@ int main() {
         g.evaluate(1.0f / 60.0f);                         // one live frame: 320x240, recorder starts
         auto* on = dynamic_cast<OutputNode*>(g.findNode(oId));
         auto* rn = dynamic_cast<RecorderNode*>(g.findNode(rId));
-        if (on->current().w != 320) { glfwTerminate(); return fail("offline e2e: live size not applied"); }
-        if (rn->statusLine().rfind("REC", 0) != 0) { glfwTerminate(); return fail("offline e2e: live recorder should be recording"); }
+        if (on->current().w != 320) { return failed("offline e2e: live size not applied"); }
+        if (rn->statusLine().rfind("REC", 0) != 0) { return failed("offline e2e: live recorder should be recording"); }
 
         RenderSettings s; s.startBar = 0.0; s.endBar = 1.0; s.prerollBars = 0.5; s.fps = 30;
         s.width = 160; s.height = 120; s.outPath = "build/_offline.mp4";
         std::remove("build/_offline.mp4");
         OfflineRenderer r; std::string err;
-        if (!r.start(g, s, err)) { glfwTerminate(); return fail(("offline e2e: start: " + err).c_str()); }
+        if (!r.start(g, s, err)) { return failed(("offline e2e: start: " + err).c_str()); }
         // The header's contract: step() renders AT LEAST one frame per call, so progress is
         // guaranteed even with a zero budget. A budget test made before the first frame (rather
         // than after) would stall here forever.
         for (long long want = 1; want <= 2; ++want) {
-            if (!r.step(0.0)) { glfwTerminate(); return fail("offline e2e: a zero-budget step ended the job"); }
-            if (r.progress().prerollDone != want) { glfwTerminate(); return fail("offline e2e: a zero-budget step must still render exactly one frame"); }
+            if (!r.step(0.0)) { return failed("offline e2e: a zero-budget step ended the job"); }
+            if (r.progress().prerollDone != want) { return failed("offline e2e: a zero-budget step must still render exactly one frame"); }
         }
         int steps = 0;
-        while (r.step(0.02)) { if (++steps > 100000) { glfwTerminate(); return fail("offline e2e: never finished"); } }
+        while (r.step(0.02)) { if (++steps > 100000) { return failed("offline e2e: never finished"); } }
         const OfflineRenderer::Progress& p = r.progress();
-        if (p.phase != OfflineRenderer::Phase::Done) { glfwTerminate(); return fail(("offline e2e: " + p.status).c_str()); }
-        if (p.framesDone != 60 || p.prerollDone != 30) { glfwTerminate(); return fail("offline e2e: progress counts (want 60 + 30 pre-roll)"); }
-        if (!p.audio) { glfwTerminate(); return fail("offline e2e: expected an audio track (Sine -> Audio Out)"); }
-        if (p.blackFrames != 0 || p.resizedAudioFrames != 0) { glfwTerminate(); return fail("offline e2e: unexpected black frames or resized audio blocks"); }
-        if (p.status.rfind("rendered _offline.mp4 (60 frames, 2.0 s)", 0) != 0) { glfwTerminate(); return fail(("offline e2e: status line: " + p.status).c_str()); }
-        if (rn->statusLine() != "saved build/_offline_live_rec.mp4") { glfwTerminate(); return fail("offline e2e: the live recording should have stopped + saved during the render"); }
+        if (p.phase != OfflineRenderer::Phase::Done) { return failed(("offline e2e: " + p.status).c_str()); }
+        if (p.framesDone != 60 || p.prerollDone != 30) { return failed("offline e2e: progress counts (want 60 + 30 pre-roll)"); }
+        if (!p.audio) { return failed("offline e2e: expected an audio track (Sine -> Audio Out)"); }
+        if (p.blackFrames != 0 || p.resizedAudioFrames != 0) { return failed("offline e2e: unexpected black frames or resized audio blocks"); }
+        if (p.status.rfind("rendered _offline.mp4 (60 frames, 2.0 s)", 0) != 0) { return failed(("offline e2e: status line: " + p.status).c_str()); }
+        if (rn->statusLine() != "saved build/_offline_live_rec.mp4") { return failed("offline e2e: the live recording should have stopped + saved during the render"); }
         // finish() must run exactly once per job. A stray cancel() after a completed render must
         // not overwrite the outcome -- this is the assertion that makes cancel()'s active() guard
         // observable in the Done direction (Task 6 covers the never-started null-graph direction).
         r.cancel();
-        if (r.progress().phase != OfflineRenderer::Phase::Done) { glfwTerminate(); return fail("offline e2e: a cancel() after the job finished overwrote the outcome"); }
-        if (r.progress().framesDone != 60) { glfwTerminate(); return fail("offline e2e: a cancel() after the job finished disturbed the counts"); }
+        if (r.progress().phase != OfflineRenderer::Phase::Done) { return failed("offline e2e: a cancel() after the job finished overwrote the outcome"); }
+        if (r.progress().framesDone != 60) { return failed("offline e2e: a cancel() after the job finished disturbed the counts"); }
 
         // The file: exactly 60 frames, 160x120, 2-channel non-silent audio, the Colour at the centre.
         VideoDecoder dec; std::string derr;
-        if (!dec.open("build/_offline.mp4", derr)) { glfwTerminate(); return fail(("offline e2e: open output: " + derr).c_str()); }
-        if (dec.width() != 160 || dec.height() != 120) { glfwTerminate(); return fail("offline e2e: output size should be 160x120"); }
-        if (!dec.hasAudio() || dec.audioChannels() != 2) { glfwTerminate(); return fail("offline e2e: output should have 2-channel audio"); }
+        if (!dec.open("build/_offline.mp4", derr)) { return failed(("offline e2e: open output: " + derr).c_str()); }
+        if (dec.width() != 160 || dec.height() != 120) { return failed("offline e2e: output size should be 160x120"); }
+        if (!dec.hasAudio() || dec.audioChannels() != 2) { return failed("offline e2e: output should have 2-channel audio"); }
         VideoFrame vf; std::vector<float> au; double aS = 0; bool aV = false;
         int frames = 0; bool nz = false; bool centreOk = false;
         while (dec.decodeFrame(vf, au, aS, aV)) {
@@ -2457,33 +2513,35 @@ int main() {
             for (float v : au) if (v > 0.01f || v < -0.01f) { nz = true; break; }
             au.clear();
         }
-        if (frames != 60) { std::fprintf(stderr, "got %d frames\n", frames); glfwTerminate(); return fail("offline e2e: expected exactly 60 frames in the file"); }
-        if (!nz) { glfwTerminate(); return fail("offline e2e: encoded audio is silent"); }
-        if (!centreOk) { glfwTerminate(); return fail("offline e2e: centre pixel is not the Colour"); }
+        if (frames != 60) { std::fprintf(stderr, "got %d frames\n", frames); return failed("offline e2e: expected exactly 60 frames in the file"); }
+        if (!nz) { return failed("offline e2e: encoded audio is silent"); }
+        if (!centreOk) { return failed("offline e2e: centre pixel is not the Colour"); }
 
         // State restored; the next live frame is back at the live size.
         const Transport& t = g.transport();
-        if (!(t.seconds == 5.0 && t.looping && !t.playing && !t.externalClock)) { glfwTerminate(); return fail("offline e2e: transport not restored"); }
-        if (g.offline()) { glfwTerminate(); return fail("offline e2e: graph still offline"); }
+        if (!(t.seconds == 5.0 && t.looping && !t.playing && !t.externalClock)) { return failed("offline e2e: transport not restored"); }
+        if (g.offline()) { return failed("offline e2e: graph still offline"); }
         g.evaluate(1.0f / 60.0f);
-        if (on->current().w != 320 || on->current().h != 240) { glfwTerminate(); return fail("offline e2e: live texture size not restored"); }
+        if (on->current().w != 320 || on->current().h != 240) { return failed("offline e2e: live texture size not restored"); }
         // The interrupted live recording must NOT restart on its own: `record` is still true, so
         // without the Recorder's re-arm latch this frame reopens the same path and truncates the
         // file the render just saved. Assert the saved file survives, byte size and all.
-        if (rn->statusLine() != "saved build/_offline_live_rec.mp4") { glfwTerminate(); return fail("offline e2e: the live recorder restarted and overwrote its saved file"); }
+        if (rn->statusLine() != "saved build/_offline_live_rec.mp4") { return failed("offline e2e: the live recorder restarted and overwrote its saved file"); }
         std::ifstream liveRec("build/_offline_live_rec.mp4", std::ios::binary | std::ios::ate);
-        if (!liveRec.good() || liveRec.tellg() <= 0) { glfwTerminate(); return fail("offline e2e: the interrupted live recording was truncated"); }
+        if (!liveRec.good() || liveRec.tellg() <= 0) { return failed("offline e2e: the interrupted live recording was truncated"); }
         rn->inputDefault(3) = false; g.evaluate(1.0f / 60.0f);   // re-arm cleared; still not recording
         std::fprintf(stderr, "gl_smoke OK: offline render wrote 60 sample-locked 160x120 frames with stereo audio and restored state\n");
     }
-
-    // --- Scenario: the capture blit must NOT flip vertically ---
-    // The end-to-end scenario above renders a FLAT colour, which is flip-invariant: not one of
-    // its assertions can tell an upright movie from an upside-down one. FBO textures are
-    // bottom-up and VideoEncoder::addVideoFrame wants bottom-up rows (it flips for encoding),
-    // so the capture blit must leave the rows alone -- unlike the Output window's blit, which
-    // flips because it draws to a screen. Render a vertically asymmetric picture and check which
-    // end of the decoded frame it lands on.
+    return true;
+}
+// --- Scenario: the capture blit must NOT flip vertically ---
+// The end-to-end scenario above renders a FLAT colour, which is flip-invariant: not one of
+// its assertions can tell an upright movie from an upside-down one. FBO textures are
+// bottom-up and VideoEncoder::addVideoFrame wants bottom-up rows (it flips for encoding),
+// so the capture blit must leave the rows alone -- unlike the Output window's blit, which
+// flips because it draws to a screen. Render a vertically asymmetric picture and check which
+// end of the decoded frame it lands on.
+static bool scenario_offline_capture_no_vertical_flip() {
     {
         const int W = 64, H = 64;
         std::vector<unsigned char> px((std::size_t)W * H * 4);
@@ -2494,7 +2552,7 @@ int main() {
                 px[i] = px[i + 1] = px[i + 2] = v; px[i + 3] = 255;
             }
         const char* fixture = "gl_smoke_offline_orient.png";
-        if (!stbi_write_png(fixture, W, H, 4, px.data(), W * 4)) { glfwTerminate(); return fail("offline flip: write fixture"); }
+        if (!stbi_write_png(fixture, W, H, 4, px.data(), W * 4)) { return failed("offline flip: write fixture"); }
 
         Graph g;
         auto img = std::make_unique<ImageStreamerNode>(); img->initGL();
@@ -2502,39 +2560,41 @@ int main() {
         auto out = std::make_unique<OutputNode>(); out->initGL();
         int iId = g.addNode(std::move(img));
         int oId = g.addNode(std::move(out));
-        if (!g.connect(iId, 0, oId, 0)) { std::remove(fixture); glfwTerminate(); return fail("offline flip: connect"); }
+        if (!g.connect(iId, 0, oId, 0)) { std::remove(fixture); return failed("offline flip: connect"); }
 
         RenderSettings s; s.startBar = 0.0; s.endBar = 0.1; s.prerollBars = 0.0; s.fps = 30;
         s.width = 64; s.height = 64; s.outPath = "build/_offline_flip.mp4";
         std::remove(s.outPath.c_str());
         OfflineRenderer r; std::string err;
-        if (!r.start(g, s, err)) { std::remove(fixture); glfwTerminate(); return fail(("offline flip: start: " + err).c_str()); }
+        if (!r.start(g, s, err)) { std::remove(fixture); return failed(("offline flip: start: " + err).c_str()); }
         int guard = 0;
-        while (r.step(0.05)) { if (++guard > 100000) { std::remove(fixture); glfwTerminate(); return fail("offline flip: never finished"); } }
+        while (r.step(0.05)) { if (++guard > 100000) { std::remove(fixture); return failed("offline flip: never finished"); } }
         std::remove(fixture);
-        if (r.progress().phase != OfflineRenderer::Phase::Done) { glfwTerminate(); return fail(("offline flip: " + r.progress().status).c_str()); }
+        if (r.progress().phase != OfflineRenderer::Phase::Done) { return failed(("offline flip: " + r.progress().status).c_str()); }
 
         VideoDecoder dec; std::string derr;
-        if (!dec.open(s.outPath, derr)) { glfwTerminate(); return fail(("offline flip: open output: " + derr).c_str()); }
+        if (!dec.open(s.outPath, derr)) { return failed(("offline flip: open output: " + derr).c_str()); }
         VideoFrame vf; std::vector<float> au; double aS = 0; bool aV = false;
-        if (!dec.decodeFrame(vf, au, aS, aV)) { glfwTerminate(); return fail("offline flip: no frame decoded"); }
+        if (!dec.decodeFrame(vf, au, aS, aV)) { return failed("offline flip: no frame decoded"); }
         // VideoFrame rows are bottom-up as well, so row 0 is the BOTTOM of the picture: the
         // white half must come out at the far end. A flipping blit puts it at row 0 instead.
         auto midRow = [&](int y) { return (int)vf.rgba[((std::size_t)y * vf.width + vf.width / 2) * 4]; };
         int bottom = midRow(2), top = midRow(vf.height - 3);
         if (!(top > 170 && bottom < 90)) {
             std::fprintf(stderr, "offline flip: bottom row = %d, top row = %d (want dark bottom, bright top)\n", bottom, top);
-            glfwTerminate(); return fail("offline flip: the captured frame is upside down -- the capture blit must not flip");
+            return failed("offline flip: the captured frame is upside down -- the capture blit must not flip");
         }
         std::fprintf(stderr, "gl_smoke OK: the offline capture blit preserves bottom-up row order\n");
     }
-
-    // --- Scenario: every captured frame encodes exactly sampleRate/fps audio frames ---
-    // The end-to-end scenario's Sine sizes its block with audioBlockFrames(), which at 48 kHz
-    // divides exactly by every supported frame rate -- so its blocks are already the right
-    // length and none of its assertions can tell a padding/trimming capture from one that
-    // encodes the raw block. Drive the capture with a source that hands it the WRONG length in
-    // both directions and check the encoded track's duration is set by the video clock anyway.
+    return true;
+}
+// --- Scenario: every captured frame encodes exactly sampleRate/fps audio frames ---
+// The end-to-end scenario's Sine sizes its block with audioBlockFrames(), which at 48 kHz
+// divides exactly by every supported frame rate -- so its blocks are already the right
+// length and none of its assertions can tell a padding/trimming capture from one that
+// encodes the raw block. Drive the capture with a source that hands it the WRONG length in
+// both directions and check the encoded track's duration is set by the video clock anyway.
+static bool scenario_offline_audio_frame_exact_sample_count() {
     {
         struct Case { int block; const char* path; } cases[] = {
             {  800, "build/_offline_audio_pad.mp4"  },   // half a frame's worth -> padded
@@ -2548,23 +2608,23 @@ int main() {
             auto ao  = std::make_unique<AudioOutputNode>();
             int cId = g.addNode(std::move(col)); int oId = g.addNode(std::move(out));
             int sId = g.addNode(std::move(src)); int aId = g.addNode(std::move(ao));
-            if (!g.connect(cId, 0, oId, 0) || !g.connect(sId, 0, aId, 0)) { glfwTerminate(); return fail("offline audio lock: connect"); }
+            if (!g.connect(cId, 0, oId, 0) || !g.connect(sId, 0, aId, 0)) { return failed("offline audio lock: connect"); }
 
             RenderSettings s; s.startBar = 0.0; s.endBar = 0.25; s.prerollBars = 0.0; s.fps = 30;
             s.width = 64; s.height = 64; s.outPath = c.path;    // 0.25 bar at 120 bpm = 0.5 s = 15 frames
             std::remove(c.path);
             OfflineRenderer r; std::string err;
-            if (!r.start(g, s, err)) { glfwTerminate(); return fail(("offline audio lock: start: " + err).c_str()); }
+            if (!r.start(g, s, err)) { return failed(("offline audio lock: start: " + err).c_str()); }
             int guard = 0;
-            while (r.step(0.05)) { if (++guard > 100000) { glfwTerminate(); return fail("offline audio lock: never finished"); } }
-            if (r.progress().phase != OfflineRenderer::Phase::Done) { glfwTerminate(); return fail(("offline audio lock: " + r.progress().status).c_str()); }
-            if (r.progress().framesDone != 15) { glfwTerminate(); return fail("offline audio lock: expected 15 frames"); }
+            while (r.step(0.05)) { if (++guard > 100000) { return failed("offline audio lock: never finished"); } }
+            if (r.progress().phase != OfflineRenderer::Phase::Done) { return failed(("offline audio lock: " + r.progress().status).c_str()); }
+            if (r.progress().framesDone != 15) { return failed("offline audio lock: expected 15 frames"); }
             // Every block was the wrong length, so every frame was resized -- and the outcome says so.
-            if (r.progress().resizedAudioFrames != 15) { glfwTerminate(); return fail("offline audio lock: resizedAudioFrames should count every resized frame"); }
-            if (r.progress().status.find("15 audio blocks resized") == std::string::npos) { glfwTerminate(); return fail("offline audio lock: the outcome line should name the resized blocks"); }
+            if (r.progress().resizedAudioFrames != 15) { return failed("offline audio lock: resizedAudioFrames should count every resized frame"); }
+            if (r.progress().status.find("15 audio blocks resized") == std::string::npos) { return failed("offline audio lock: the outcome line should name the resized blocks"); }
 
             VideoDecoder dec; std::string derr;
-            if (!dec.open(c.path, derr)) { glfwTerminate(); return fail(("offline audio lock: open output: " + derr).c_str()); }
+            if (!dec.open(c.path, derr)) { return failed(("offline audio lock: open output: " + derr).c_str()); }
             VideoFrame vf; std::vector<float> au; double aS = 0; bool aV = false;
             std::size_t total = 0;
             while (dec.decodeFrame(vf, au, aS, aV)) { total += au.size(); au.clear(); }   // 48 kHz MONO
@@ -2573,24 +2633,26 @@ int main() {
             // window below is wide enough for AAC's priming/padding and the tail the decoder
             // stops short of, yet nowhere near either drifted value.
             std::fprintf(stderr, "[audio lock] %s: %zu mono samples decoded (want ~24000)\n", c.path, total);
-            if (total < 20000 || total > 28000) { glfwTerminate(); return fail("offline audio lock: the audio clock drifted from the video clock"); }
+            if (total < 20000 || total > 28000) { return failed("offline audio lock: the audio clock drifted from the video clock"); }
         }
         std::fprintf(stderr, "gl_smoke OK: the offline capture pads/trims every frame's audio to sampleRate/fps, so the audio clock cannot drift\n");
     }
-
-    // --- Scenario: the sinks are re-resolved by id, and a vanished Output fails through finish() ---
-    // capture() looks the Output/Audio Out nodes up through Graph::findNode every frame instead
-    // of caching a Node*, because Graph::clear() (a project load) frees every node mid-render.
-    // Clearing the graph between steps is what tells a re-resolving capture() from one holding a
-    // stale pointer, and the failure must still run finish(): a skipped finish() leaves the
-    // graph's offline flag stuck true, silently muting Audio Out, MIDI Out and the Recorder.
+    return true;
+}
+// --- Scenario: the sinks are re-resolved by id, and a vanished Output fails through finish() ---
+// capture() looks the Output/Audio Out nodes up through Graph::findNode every frame instead
+// of caching a Node*, because Graph::clear() (a project load) frees every node mid-render.
+// Clearing the graph between steps is what tells a re-resolving capture() from one holding a
+// stale pointer, and the failure must still run finish(): a skipped finish() leaves the
+// graph's offline flag stuck true, silently muting Audio Out, MIDI Out and the Recorder.
+static bool scenario_offline_sinks_resolved_by_id() {
     {
         Graph g;
         auto col = std::make_unique<ColourNode>(); col->initGL();
         auto out = std::make_unique<OutputNode>(); out->initGL();
         int cId = g.addNode(std::move(col));
         int oId = g.addNode(std::move(out));
-        if (!g.connect(cId, 0, oId, 0)) { glfwTerminate(); return fail("offline vanish: connect"); }
+        if (!g.connect(cId, 0, oId, 0)) { return failed("offline vanish: connect"); }
         Preferences live; live.textureWidth = 320; live.textureHeight = 240;
         g.setPreferences(&live);
 
@@ -2598,28 +2660,30 @@ int main() {
         s.width = 64; s.height = 64; s.outPath = "build/_offline_vanish.mp4";
         std::remove(s.outPath.c_str());
         OfflineRenderer r; std::string err;
-        if (!r.start(g, s, err)) { glfwTerminate(); return fail(("offline vanish: start: " + err).c_str()); }
-        if (!r.step(0.0) || r.progress().prerollDone != 1) { glfwTerminate(); return fail("offline vanish: expected the forced pre-roll frame first"); }
-        if (!r.step(0.0) || r.progress().framesDone != 1) { glfwTerminate(); return fail("offline vanish: expected one captured frame before the graph is cleared"); }
+        if (!r.start(g, s, err)) { return failed(("offline vanish: start: " + err).c_str()); }
+        if (!r.step(0.0) || r.progress().prerollDone != 1) { return failed("offline vanish: expected the forced pre-roll frame first"); }
+        if (!r.step(0.0) || r.progress().framesDone != 1) { return failed("offline vanish: expected one captured frame before the graph is cleared"); }
 
         g.clear();                                   // the nodes capture() was reading are now gone
-        if (r.step(0.0)) { glfwTerminate(); return fail("offline vanish: step should have failed once the Output node was freed"); }
-        if (r.progress().phase != OfflineRenderer::Phase::Failed) { glfwTerminate(); return fail("offline vanish: phase should be Failed"); }
-        if (r.progress().status != "the Output node disappeared mid-render") { glfwTerminate(); return fail(("offline vanish: wrong status: " + r.progress().status).c_str()); }
-        if (g.offline()) { glfwTerminate(); return fail("offline vanish: the failure path must still clear the offline flag"); }
-        if (g.preferences() != &live) { glfwTerminate(); return fail("offline vanish: the failure path must still restore the live preferences"); }
+        if (r.step(0.0)) { return failed("offline vanish: step should have failed once the Output node was freed"); }
+        if (r.progress().phase != OfflineRenderer::Phase::Failed) { return failed("offline vanish: phase should be Failed"); }
+        if (r.progress().status != "the Output node disappeared mid-render") { return failed(("offline vanish: wrong status: " + r.progress().status).c_str()); }
+        if (g.offline()) { return failed("offline vanish: the failure path must still clear the offline flag"); }
+        if (g.preferences() != &live) { return failed("offline vanish: the failure path must still restore the live preferences"); }
         // The encoder was open with one frame in it; finish() closed it, so the partial file plays.
         VideoDecoder dec; std::string derr;
-        if (!dec.open(s.outPath, derr)) { glfwTerminate(); return fail(("offline vanish: the partial file should still be finalised: " + derr).c_str()); }
+        if (!dec.open(s.outPath, derr)) { return failed(("offline vanish: the partial file should still be finalised: " + derr).c_str()); }
         std::fprintf(stderr, "gl_smoke OK: the offline capture re-resolves its sinks by id and a vanished Output fails through finish()\n");
     }
-
-    // --- Scenario: the fixed clock places every frame, pre-roll included ---
-    // The feature's central claim, and the one thing the other scenarios all ASSUME: they render
-    // from bar 0, where dropping the start offset entirely -- the likeliest clock bug, and the one
-    // that makes a render begin at the wrong musical position -- is invisible. Rendering from
-    // bar 2 makes the offset load-bearing, and recording the whole clock catches an accumulated
-    // dt, a dt taken from the step budget, and a pre-roll with the sign backwards.
+    return true;
+}
+// --- Scenario: the fixed clock places every frame, pre-roll included ---
+// The feature's central claim, and the one thing the other scenarios all ASSUME: they render
+// from bar 0, where dropping the start offset entirely -- the likeliest clock bug, and the one
+// that makes a render begin at the wrong musical position -- is invisible. Rendering from
+// bar 2 makes the offset load-bearing, and recording the whole clock catches an accumulated
+// dt, a dt taken from the step budget, and a pre-roll with the sign backwards.
+static bool scenario_offline_fixed_clock_preroll() {
     {
         Graph g;
         auto col   = std::make_unique<ColourNode>(); col->initGL();
@@ -2628,21 +2692,21 @@ int main() {
         int cId = g.addNode(std::move(col));
         int oId = g.addNode(std::move(out));
         int pId = g.addNode(std::move(probe));
-        if (!g.connect(cId, 0, oId, 0)) { glfwTerminate(); return fail("offline clock: connect"); }
+        if (!g.connect(cId, 0, oId, 0)) { return failed("offline clock: connect"); }
         g.transport().bpm = 120.0;                     // 4/4 at 120 bpm -> 2 s per bar
 
         RenderSettings s; s.startBar = 2.0; s.endBar = 2.5; s.prerollBars = 0.25; s.fps = 30;
         s.width = 64; s.height = 64; s.outPath = "build/_offline_clock.mp4";   // 15 pre-roll + 30 captured
         std::remove(s.outPath.c_str());
         OfflineRenderer r; std::string err;
-        if (!r.start(g, s, err)) { glfwTerminate(); return fail(("offline clock: start: " + err).c_str()); }
+        if (!r.start(g, s, err)) { return failed(("offline clock: start: " + err).c_str()); }
         int guard = 0;
-        while (r.step(0.05)) { if (++guard > 100000) { glfwTerminate(); return fail("offline clock: never finished"); } }
-        if (r.progress().phase != OfflineRenderer::Phase::Done) { glfwTerminate(); return fail(("offline clock: " + r.progress().status).c_str()); }
+        while (r.step(0.05)) { if (++guard > 100000) { return failed("offline clock: never finished"); } }
+        if (r.progress().phase != OfflineRenderer::Phase::Done) { return failed(("offline clock: " + r.progress().status).c_str()); }
 
         auto* pr = dynamic_cast<ClockProbeNode*>(g.findNode(pId));
-        if (!pr) { glfwTerminate(); return fail("offline clock: probe node missing"); }
-        if (pr->secs.size() != 45) { std::fprintf(stderr, "offline clock: %zu evaluates\n", pr->secs.size()); glfwTerminate(); return fail("offline clock: wrong evaluate count"); }
+        if (!pr) { return failed("offline clock: probe node missing"); }
+        if (pr->secs.size() != 45) { std::fprintf(stderr, "offline clock: %zu evaluates\n", pr->secs.size()); return failed("offline clock: wrong evaluate count"); }
         for (std::size_t i = 0; i < pr->secs.size(); ++i) {
             double want = 4.0 + ((double)i - 15.0) / 30.0;   // bar 2 == 4.0 s; frame 0 lands exactly there
             // EXACT, not a tolerance. renderFrameSeconds computes startBar*secondsPerBar + k/fps,
@@ -2653,26 +2717,28 @@ int main() {
             // a long render. Measured: a 1e-9 tolerance passes an accumulating implementation.
             if (pr->secs[i] != want) {
                 std::fprintf(stderr, "offline clock: evaluate %zu at %.9f s, want %.9f s\n", i, pr->secs[i], want);
-                glfwTerminate(); return fail("offline clock: frame placed wrong");
+                return failed("offline clock: frame placed wrong");
             }
-            if (pr->dts[i] != 1.0f / 30.0f) { glfwTerminate(); return fail("offline clock: dt is not 1/fps"); }
-            if (!pr->ext[i]) { glfwTerminate(); return fail("offline clock: transport not armed as an external clock"); }
+            if (pr->dts[i] != 1.0f / 30.0f) { return failed("offline clock: dt is not 1/fps"); }
+            if (!pr->ext[i]) { return failed("offline clock: transport not armed as an external clock"); }
         }
         std::fprintf(stderr, "gl_smoke OK: the offline fixed clock places all 45 frames (15 pre-roll + 30) from bar 2 at exactly k/fps\n");
     }
-
-    // --- Scenario: a render range that is empty at this tempo is rejected, not "completed" ---
-    // renderFrameCount returns 0 for a frame count that overflows (endBar 1e18 is finite and
-    // passes every validateRenderSettings rule) and for a zero-length bar. start() must reject
-    // that rather than let step() finish(Done) with no encoder ever opened -- a success with no
-    // file -- and the reject has to land BEFORE the graph is put offline, or it strands it there.
+    return true;
+}
+// --- Scenario: a render range that is empty at this tempo is rejected, not "completed" ---
+// renderFrameCount returns 0 for a frame count that overflows (endBar 1e18 is finite and
+// passes every validateRenderSettings rule) and for a zero-length bar. start() must reject
+// that rather than let step() finish(Done) with no encoder ever opened -- a success with no
+// file -- and the reject has to land BEFORE the graph is put offline, or it strands it there.
+static bool scenario_offline_empty_range_rejected() {
     {
         Graph g;
         auto col = std::make_unique<ColourNode>(); col->initGL();
         auto out = std::make_unique<OutputNode>(); out->initGL();
         int cId = g.addNode(std::move(col));
         int oId = g.addNode(std::move(out));
-        if (!g.connect(cId, 0, oId, 0)) { glfwTerminate(); return fail("offline empty range: connect"); }
+        if (!g.connect(cId, 0, oId, 0)) { return failed("offline empty range: connect"); }
         Preferences live; live.textureWidth = 320; live.textureHeight = 240;
         g.setPreferences(&live);
         g.transport().bpm = 120.0; g.transport().seconds = 5.0;
@@ -2680,37 +2746,39 @@ int main() {
         RenderSettings s; s.startBar = 0.0; s.endBar = 1e18; s.prerollBars = 0.0; s.fps = 30;
         s.width = 64; s.height = 64; s.outPath = "build/_offline_empty.mp4";
         OfflineRenderer r; std::string err;
-        if (r.start(g, s, err)) { glfwTerminate(); return fail("offline empty range: an overflowing range should be refused"); }
-        if (err != "the render range is empty or too long at this tempo") { glfwTerminate(); return fail(("offline empty range: wrong error: " + err).c_str()); }
+        if (r.start(g, s, err)) { return failed("offline empty range: an overflowing range should be refused"); }
+        if (err != "the render range is empty or too long at this tempo") { return failed(("offline empty range: wrong error: " + err).c_str()); }
         // The reject must leave the graph exactly as it found it -- this is what makes the
         // ordering in start() (counts before the offline flag and the prefs swap) observable.
-        if (g.offline()) { glfwTerminate(); return fail("offline empty range: a rejected start left the graph offline"); }
-        if (g.preferences() != &live) { glfwTerminate(); return fail("offline empty range: a rejected start swapped the preferences"); }
+        if (g.offline()) { return failed("offline empty range: a rejected start left the graph offline"); }
+        if (g.preferences() != &live) { return failed("offline empty range: a rejected start swapped the preferences"); }
         if (g.transport().externalClock || g.transport().playing || g.transport().seconds != 5.0)
-            { glfwTerminate(); return fail("offline empty range: a rejected start armed the transport"); }
+            { return failed("offline empty range: a rejected start armed the transport"); }
 
         s.endBar = 8.0; g.transport().beatsPerBar = 0;   // a hand-edited project: no seconds in a bar
-        if (r.start(g, s, err)) { glfwTerminate(); return fail("offline empty range: a zero-length bar should be refused"); }
-        if (err != "the render range is empty or too long at this tempo") { glfwTerminate(); return fail("offline empty range: wrong error for a zero-length bar"); }
-        if (g.offline()) { glfwTerminate(); return fail("offline empty range: a zero-tempo reject left the graph offline"); }
+        if (r.start(g, s, err)) { return failed("offline empty range: a zero-length bar should be refused"); }
+        if (err != "the render range is empty or too long at this tempo") { return failed("offline empty range: wrong error for a zero-length bar"); }
+        if (g.offline()) { return failed("offline empty range: a zero-tempo reject left the graph offline"); }
         std::fprintf(stderr, "gl_smoke OK: an empty render range is rejected without disturbing the graph\n");
     }
-
-    // --- Scenario: a destination that cannot be written is rejected by start(), and one that
-    //     goes bad AFTER start() still fails the render (exit 1), never Done ---
-    // The CLI's exit code is `phase == Done ? 0 : 1`, so this is the whole signal a batch
-    // pipeline gets. start() now probes the destination up front, because openEncoder() runs at
-    // the FIRST CAPTURED frame -- the whole pre-roll (1.5 s for a trivial graph at 1920x1080
-    // with a 1-bar 60 fps pre-roll, minutes for a heavy one) used to render before a typo in the
-    // path was reported. The late check stays and is what (b) below covers: the probe is an
-    // optimisation, and a path can always go bad between the two.
+    return true;
+}
+// --- Scenario: a destination that cannot be written is rejected by start(), and one that
+//     goes bad AFTER start() still fails the render (exit 1), never Done ---
+// The CLI's exit code is `phase == Done ? 0 : 1`, so this is the whole signal a batch
+// pipeline gets. start() now probes the destination up front, because openEncoder() runs at
+// the FIRST CAPTURED frame -- the whole pre-roll (1.5 s for a trivial graph at 1920x1080
+// with a 1-bar 60 fps pre-roll, minutes for a heavy one) used to render before a typo in the
+// path was reported. The late check stays and is what (b) below covers: the probe is an
+// optimisation, and a path can always go bad between the two.
+static bool scenario_offline_destination_unwritable() {
     {
         Graph g;
         auto col = std::make_unique<ColourNode>(); col->initGL();
         auto out = std::make_unique<OutputNode>(); out->initGL();
         int cId = g.addNode(std::move(col));
         int oId = g.addNode(std::move(out));
-        if (!g.connect(cId, 0, oId, 0)) { glfwTerminate(); return fail("offline enc fail: connect"); }
+        if (!g.connect(cId, 0, oId, 0)) { return failed("offline enc fail: connect"); }
         Preferences live; live.textureWidth = 320; live.textureHeight = 240;
         g.setPreferences(&live);
 
@@ -2722,17 +2790,17 @@ int main() {
         {
             s.outPath = "build/_no_such_dir_offline/out.mp4";   // the directory does not exist
             OfflineRenderer r; std::string err;
-            if (r.start(g, s, err)) { glfwTerminate(); return fail("offline enc fail: a path in a missing directory should be rejected before rendering"); }
-            if (err.rfind("cannot write ", 0) != 0) { glfwTerminate(); return fail(("offline enc fail: wrong error for a missing directory: " + err).c_str()); }
-            if (g.offline() || g.transport().externalClock) { glfwTerminate(); return fail("offline enc fail: a rejected start left the graph armed"); }
-            if (g.preferences() != &live) { glfwTerminate(); return fail("offline enc fail: a rejected start swapped the preferences"); }
+            if (r.start(g, s, err)) { return failed("offline enc fail: a path in a missing directory should be rejected before rendering"); }
+            if (err.rfind("cannot write ", 0) != 0) { return failed(("offline enc fail: wrong error for a missing directory: " + err).c_str()); }
+            if (g.offline() || g.transport().externalClock) { return failed("offline enc fail: a rejected start left the graph armed"); }
+            if (g.preferences() != &live) { return failed("offline enc fail: a rejected start swapped the preferences"); }
 
             s.outPath = "build/_offline_probe.xyzzy";           // no muxer for this extension
             std::remove(s.outPath.c_str());
-            if (r.start(g, s, err)) { glfwTerminate(); return fail("offline enc fail: an unmuxable extension should be rejected before rendering"); }
-            if (err.rfind("no video format matches ", 0) != 0) { glfwTerminate(); return fail(("offline enc fail: wrong error for a bad extension: " + err).c_str()); }
+            if (r.start(g, s, err)) { return failed("offline enc fail: an unmuxable extension should be rejected before rendering"); }
+            if (err.rfind("no video format matches ", 0) != 0) { return failed(("offline enc fail: wrong error for a bad extension: " + err).c_str()); }
             // The probe must not leave a file behind for a path it only tested.
-            if (std::ifstream(s.outPath).good()) { glfwTerminate(); return fail("offline enc fail: the destination probe left a file behind"); }
+            if (std::ifstream(s.outPath).good()) { return failed("offline enc fail: the destination probe left a file behind"); }
         }
 
         // (b) After start(): the path turns into a DIRECTORY between the probe and the first
@@ -2743,24 +2811,26 @@ int main() {
             std::remove(s.outPath.c_str());
             std::filesystem::remove_all(s.outPath);
             OfflineRenderer r; std::string err;
-            if (!r.start(g, s, err)) { glfwTerminate(); return fail(("offline enc fail: start: " + err).c_str()); }
+            if (!r.start(g, s, err)) { return failed(("offline enc fail: start: " + err).c_str()); }
             std::error_code ec;
             std::filesystem::create_directory(s.outPath, ec);   // now nothing can open it for writing
-            if (ec) { glfwTerminate(); return fail("offline enc fail: could not stage the late failure"); }
+            if (ec) { return failed("offline enc fail: could not stage the late failure"); }
             int guard = 0;
-            while (r.step(0.05)) { if (++guard > 100000) { glfwTerminate(); return fail("offline enc fail: never finished"); } }
+            while (r.step(0.05)) { if (++guard > 100000) { return failed("offline enc fail: never finished"); } }
             std::filesystem::remove_all(s.outPath, ec);
-            if (r.progress().phase != OfflineRenderer::Phase::Failed) { glfwTerminate(); return fail("offline enc fail: an unopenable encoder must fail the render, not complete it"); }
-            if (r.progress().status.rfind("could not open ", 0) != 0) { glfwTerminate(); return fail(("offline enc fail: wrong status: " + r.progress().status).c_str()); }
-            if (g.offline()) { glfwTerminate(); return fail("offline enc fail: the failure must still clear the offline flag"); }
+            if (r.progress().phase != OfflineRenderer::Phase::Failed) { return failed("offline enc fail: an unopenable encoder must fail the render, not complete it"); }
+            if (r.progress().status.rfind("could not open ", 0) != 0) { return failed(("offline enc fail: wrong status: " + r.progress().status).c_str()); }
+            if (g.offline()) { return failed("offline enc fail: the failure must still clear the offline flag"); }
         }
         std::fprintf(stderr, "gl_smoke OK: an unwritable destination is rejected before the pre-roll, and one that goes bad after start still fails the render\n");
     }
-
-    // --- Scenario: the loader gate yields without losing frames; the load timeout fails naming
-    //     the node; cancel mid-render keeps a partial, playable file ---
-    // The gate + timeout in step() are currently untested code: nothing else in this file drives
-    // a node that reports loading().
+    return true;
+}
+// --- Scenario: the loader gate yields without losing frames; the load timeout fails naming
+//     the node; cancel mid-render keeps a partial, playable file ---
+// The gate + timeout in step() are currently untested code: nothing else in this file drives
+// a node that reports loading().
+static bool scenario_offline_loader_gate_timeout_cancel() {
     {
         // busy flips the gate directly rather than counting down polls, so the scenario makes no
         // assumption about how many times loading() gets called per step() -- a detail of both
@@ -2800,36 +2870,36 @@ int main() {
         {
             Graph g; int slowId = 0; build(g, true, slowId);
             auto* slow = dynamic_cast<SlowLoader*>(g.findNode(slowId));
-            if (!slow) { glfwTerminate(); return fail("offline gate: Slow Loader node missing"); }
+            if (!slow) { return failed("offline gate: Slow Loader node missing"); }
             const std::string waitStatus = "waiting for Slow Loader #" + std::to_string(slowId);
             s.outPath = "build/_offline_gate.mp4"; std::remove(s.outPath.c_str());
             OfflineRenderer r; std::string err;
-            if (!r.start(g, s, err)) { glfwTerminate(); return fail(("offline gate: start: " + err).c_str()); }
+            if (!r.start(g, s, err)) { return failed(("offline gate: start: " + err).c_str()); }
             for (int i = 0; i < 5; ++i) {
-                if (!r.step(0.0)) { glfwTerminate(); return fail("offline gate: step should stay active while waiting"); }
-                if (r.progress().framesDone != 0) { glfwTerminate(); return fail("offline gate: rendered a frame while a node was loading"); }
-                if (!r.progress().waitingForLoad) { glfwTerminate(); return fail("offline gate: waitingForLoad should be true while gated"); }
-                if (r.progress().status != waitStatus) { glfwTerminate(); return fail(("offline gate: status: " + r.progress().status).c_str()); }
+                if (!r.step(0.0)) { return failed("offline gate: step should stay active while waiting"); }
+                if (r.progress().framesDone != 0) { return failed("offline gate: rendered a frame while a node was loading"); }
+                if (!r.progress().waitingForLoad) { return failed("offline gate: waitingForLoad should be true while gated"); }
+                if (r.progress().status != waitStatus) { return failed(("offline gate: status: " + r.progress().status).c_str()); }
             }
-            if (slow->evals != 0) { glfwTerminate(); return fail("offline gate: a gated step must not evaluate the graph at all"); }
+            if (slow->evals != 0) { return failed("offline gate: a gated step must not evaluate the graph at all"); }
             slow->busy = false;   // clear the gate
             // The settings ask for no pre-roll, but start() always burns one frame (an async load
             // only STARTS on a node's first evaluate, so the gate means nothing before one has
             // run) -- so the first ungated step renders THAT frame, and the next captures frame 0.
-            if (!r.step(0.0)) { glfwTerminate(); return fail("offline gate: step should stay active once the gate clears"); }
-            if (r.progress().prerollDone != 1 || r.progress().framesDone != 0) { glfwTerminate(); return fail("offline gate: the first ungated step should render the forced pre-roll frame"); }
-            if (!r.step(0.0)) { glfwTerminate(); return fail("offline gate: step should stay active after the pre-roll frame"); }
-            if (r.progress().framesDone != 1) { glfwTerminate(); return fail("offline gate: the first ungated step after the pre-roll should capture exactly one frame"); }
-            if (r.progress().waitingForLoad) { glfwTerminate(); return fail("offline gate: waitingForLoad should clear as soon as rendering resumes"); }
+            if (!r.step(0.0)) { return failed("offline gate: step should stay active once the gate clears"); }
+            if (r.progress().prerollDone != 1 || r.progress().framesDone != 0) { return failed("offline gate: the first ungated step should render the forced pre-roll frame"); }
+            if (!r.step(0.0)) { return failed("offline gate: step should stay active after the pre-roll frame"); }
+            if (r.progress().framesDone != 1) { return failed("offline gate: the first ungated step after the pre-roll should capture exactly one frame"); }
+            if (r.progress().waitingForLoad) { return failed("offline gate: waitingForLoad should clear as soon as rendering resumes"); }
             int steps = 0;
-            while (r.step(0.02)) { if (++steps > 100000) { glfwTerminate(); return fail("offline gate: never finished"); } }
-            if (r.progress().phase != OfflineRenderer::Phase::Done || r.progress().framesDone != 60) { glfwTerminate(); return fail("offline gate: should finish with all 60 frames"); }
-            if (r.progress().waitingForLoad) { glfwTerminate(); return fail("offline gate: a finished job should not report waitingForLoad"); }
+            while (r.step(0.02)) { if (++steps > 100000) { return failed("offline gate: never finished"); } }
+            if (r.progress().phase != OfflineRenderer::Phase::Done || r.progress().framesDone != 60) { return failed("offline gate: should finish with all 60 frames"); }
+            if (r.progress().waitingForLoad) { return failed("offline gate: a finished job should not report waitingForLoad"); }
             VideoDecoder dec; std::string derr;
-            if (!dec.open(s.outPath, derr)) { glfwTerminate(); return fail("offline gate: output did not open"); }
+            if (!dec.open(s.outPath, derr)) { return failed("offline gate: output did not open"); }
             VideoFrame vf; std::vector<float> au; double aS = 0; bool aV = false; int frames = 0;
             while (dec.decodeFrame(vf, au, aS, aV)) { ++frames; au.clear(); }
-            if (frames != 60) { glfwTerminate(); return fail("offline gate: file should hold exactly 60 frames"); }
+            if (frames != 60) { return failed("offline gate: file should hold exactly 60 frames"); }
         }
 
         // (b) Timeout: a node that never finishes loading fails the job, naming the node. This is
@@ -2841,18 +2911,18 @@ int main() {
             s.outPath = "build/_offline_timeout.mp4"; std::remove(s.outPath.c_str());
             OfflineRenderer r; std::string err;
             r.setLoadTimeoutSeconds(0.05);
-            if (!r.start(g, s, err)) { glfwTerminate(); return fail(("offline timeout: start: " + err).c_str()); }
+            if (!r.start(g, s, err)) { return failed(("offline timeout: start: " + err).c_str()); }
             int steps = 0;
             while (r.step(0.0)) {
-                if (!r.progress().waitingForLoad) { glfwTerminate(); return fail("offline timeout: waitingForLoad should be true throughout the wait"); }
+                if (!r.progress().waitingForLoad) { return failed("offline timeout: waitingForLoad should be true throughout the wait"); }
                 std::this_thread::sleep_for(std::chrono::milliseconds(5));
-                if (++steps > 1000) { glfwTerminate(); return fail("offline timeout: never gave up"); }
+                if (++steps > 1000) { return failed("offline timeout: never gave up"); }
             }
-            if (r.progress().phase != OfflineRenderer::Phase::Failed) { glfwTerminate(); return fail("offline timeout: phase should be Failed"); }
-            if (r.progress().status != timeoutStatus) { glfwTerminate(); return fail(("offline timeout: status: " + r.progress().status).c_str()); }
-            if (r.progress().waitingForLoad) { glfwTerminate(); return fail("offline timeout: a failed job should not report waitingForLoad"); }
-            if (r.progress().framesDone != 0) { glfwTerminate(); return fail("offline timeout: a load that never finished should never have rendered a frame"); }
-            if (g.offline() || g.transport().externalClock) { glfwTerminate(); return fail("offline timeout: state not restored"); }
+            if (r.progress().phase != OfflineRenderer::Phase::Failed) { return failed("offline timeout: phase should be Failed"); }
+            if (r.progress().status != timeoutStatus) { return failed(("offline timeout: status: " + r.progress().status).c_str()); }
+            if (r.progress().waitingForLoad) { return failed("offline timeout: a failed job should not report waitingForLoad"); }
+            if (r.progress().framesDone != 0) { return failed("offline timeout: a load that never finished should never have rendered a frame"); }
+            if (g.offline() || g.transport().externalClock) { return failed("offline timeout: state not restored"); }
         }
 
         // (c) Cancel mid-render: a playable partial file, state restored.
@@ -2874,38 +2944,40 @@ int main() {
             g.transport().seconds = 3.0;
             s.outPath = "build/_offline_cancel_partial.mp4"; std::remove(s.outPath.c_str());
             OfflineRenderer r; std::string err;
-            if (!r.start(g, s, err)) { glfwTerminate(); return fail(("offline cancel: start: " + err).c_str()); }
+            if (!r.start(g, s, err)) { return failed(("offline cancel: start: " + err).c_str()); }
             r.step(0.0);                                                   // the forced pre-roll frame
-            if (r.progress().prerollDone != 1 || r.progress().framesDone != 0) { glfwTerminate(); return fail("offline cancel: the first step(0) should render the forced pre-roll frame"); }
+            if (r.progress().prerollDone != 1 || r.progress().framesDone != 0) { return failed("offline cancel: the first step(0) should render the forced pre-roll frame"); }
             r.step(0.0);                                                   // exactly one frame
-            if (r.progress().framesDone != 1) { glfwTerminate(); return fail("offline cancel: step(0) should render exactly one frame"); }
+            if (r.progress().framesDone != 1) { return failed("offline cancel: step(0) should render exactly one frame"); }
             r.step(0.0);                                                   // exactly one more frame
-            if (r.progress().framesDone != 2) { glfwTerminate(); return fail("offline cancel: a second step(0) should render exactly one more frame"); }
+            if (r.progress().framesDone != 2) { return failed("offline cancel: a second step(0) should render exactly one more frame"); }
             r.cancel();
-            if (r.active() || r.progress().phase != OfflineRenderer::Phase::Cancelled) { glfwTerminate(); return fail("offline cancel: should be Cancelled"); }
-            if (r.progress().status != "cancelled after 2 frames") { glfwTerminate(); return fail(("offline cancel: status: " + r.progress().status).c_str()); }
+            if (r.active() || r.progress().phase != OfflineRenderer::Phase::Cancelled) { return failed("offline cancel: should be Cancelled"); }
+            if (r.progress().status != "cancelled after 2 frames") { return failed(("offline cancel: status: " + r.progress().status).c_str()); }
             VideoDecoder dec; std::string derr;
-            if (!dec.open(s.outPath, derr)) { glfwTerminate(); return fail("offline cancel: partial file should open"); }
+            if (!dec.open(s.outPath, derr)) { return failed("offline cancel: partial file should open"); }
             VideoFrame vf; std::vector<float> au; double aS = 0; bool aV = false; int frames = 0;
             while (dec.decodeFrame(vf, au, aS, aV)) { ++frames; au.clear(); }
             // Two encoded frames decode to either 1 or 2 depending on the edit-list quirk above --
             // never 0, and structurally never anywhere near 60 after two zero-budget steps.
-            if (frames < 1 || frames > 2) { glfwTerminate(); return fail("offline cancel: partial file frame count"); }
-            if (g.transport().seconds != 3.0 || g.transport().playing || g.transport().externalClock) { glfwTerminate(); return fail("offline cancel: transport not restored"); }
+            if (frames < 1 || frames > 2) { return failed("offline cancel: partial file frame count"); }
+            if (g.transport().seconds != 3.0 || g.transport().playing || g.transport().externalClock) { return failed("offline cancel: transport not restored"); }
         }
         std::fprintf(stderr, "gl_smoke OK: offline loader gate yields without losing frames, times out by name, and cancel keeps a partial file\n");
     }
-
-    // --- Scenario: a load that only STARTS on the first evaluate() still gates a render asked
-    //     for with no pre-roll, and its audio reaches the file ---
-    // The gate scenario above sets busy BEFORE start(), which is not how a real AsyncLoader-backed
-    // node behaves: AudioPlayerNode calls loader_.request() inside evaluate(), so loading() is
-    // false until a frame has run. step() checks the gate BEFORE evaluating, so with a pre-roll of
-    // 0 the gate was a no-op on frame 0 -- and frame 0 is the frame openEncoder() LATCHES the
-    // audio track from. The whole render came out video only (exit 0, wrong file, reproduced with
-    // `--preroll 0` on an Audio File -> Audio Out project) while the gate sat waiting for a load
-    // whose result could no longer be used. start() burns one pre-roll frame however few bars are
-    // asked for, so the gate always has a started load to see.
+    return true;
+}
+// --- Scenario: a load that only STARTS on the first evaluate() still gates a render asked
+//     for with no pre-roll, and its audio reaches the file ---
+// The gate scenario above sets busy BEFORE start(), which is not how a real AsyncLoader-backed
+// node behaves: AudioPlayerNode calls loader_.request() inside evaluate(), so loading() is
+// false until a frame has run. step() checks the gate BEFORE evaluating, so with a pre-roll of
+// 0 the gate was a no-op on frame 0 -- and frame 0 is the frame openEncoder() LATCHES the
+// audio track from. The whole render came out video only (exit 0, wrong file, reproduced with
+// `--preroll 0` on an Audio File -> Audio Out project) while the gate sat waiting for a load
+// whose result could no longer be used. start() burns one pre-roll frame however few bars are
+// asked for, so the gate always has a started load to see.
+static bool scenario_offline_late_starting_loader_gate() {
     {
         struct LateLoader : Node {
             LateLoader() : Node("Late Loader") {
@@ -2934,41 +3006,41 @@ int main() {
         int cId = g.addNode(std::move(col));  int oId = g.addNode(std::move(out));
         int lId = g.addNode(std::move(late)); int aId = g.addNode(std::move(ao));
         if (!g.connect(cId, 0, oId, 0) || !g.connect(lId, 0, aId, 0) || !g.connect(lId, 1, aId, 1))
-            { glfwTerminate(); return fail("offline late load: connect"); }
+            { return failed("offline late load: connect"); }
         g.transport().bpm = 120.0;
 
         RenderSettings s; s.startBar = 0.0; s.endBar = 0.25; s.prerollBars = 0.0; s.fps = 30;
         s.width = 64; s.height = 64; s.outPath = "build/_offline_late_load.mp4";   // 0.25 bar = 15 frames
         std::remove(s.outPath.c_str());
         OfflineRenderer r; std::string err;
-        if (!r.start(g, s, err)) { glfwTerminate(); return fail(("offline late load: start: " + err).c_str()); }
-        if (r.progress().prerollTotal != 1) { glfwTerminate(); return fail("offline late load: a 0-bar pre-roll must still burn exactly one frame"); }
+        if (!r.start(g, s, err)) { return failed(("offline late load: start: " + err).c_str()); }
+        if (r.progress().prerollTotal != 1) { return failed("offline late load: a 0-bar pre-roll must still burn exactly one frame"); }
         auto* lp = dynamic_cast<LateLoader*>(g.findNode(lId));
-        if (!lp) { glfwTerminate(); return fail("offline late load: Late Loader node missing"); }
-        if (lp->started) { glfwTerminate(); return fail("offline late load: nothing should have evaluated yet"); }
+        if (!lp) { return failed("offline late load: Late Loader node missing"); }
+        if (lp->started) { return failed("offline late load: nothing should have evaluated yet"); }
 
-        if (!r.step(0.0)) { glfwTerminate(); return fail("offline late load: step should stay active after the pre-roll frame"); }
-        if (!lp->started) { glfwTerminate(); return fail("offline late load: the burned pre-roll frame should have started the load"); }
-        if (r.progress().framesDone != 0) { glfwTerminate(); return fail("offline late load: a frame was captured before the loader had even started"); }
+        if (!r.step(0.0)) { return failed("offline late load: step should stay active after the pre-roll frame"); }
+        if (!lp->started) { return failed("offline late load: the burned pre-roll frame should have started the load"); }
+        if (r.progress().framesDone != 0) { return failed("offline late load: a frame was captured before the loader had even started"); }
         for (int i = 0; i < 3; ++i) {
-            if (!r.step(0.0)) { glfwTerminate(); return fail("offline late load: step should stay active while the load is in flight"); }
-            if (!r.progress().waitingForLoad) { glfwTerminate(); return fail("offline late load: the gate must engage once the load has started"); }
-            if (r.progress().framesDone != 0) { glfwTerminate(); return fail("offline late load: a frame was captured while the load was in flight"); }
+            if (!r.step(0.0)) { return failed("offline late load: step should stay active while the load is in flight"); }
+            if (!r.progress().waitingForLoad) { return failed("offline late load: the gate must engage once the load has started"); }
+            if (r.progress().framesDone != 0) { return failed("offline late load: a frame was captured while the load was in flight"); }
         }
         lp->busy = false;                                  // the decode lands
         int steps = 0;
-        while (r.step(0.02)) { if (++steps > 100000) { glfwTerminate(); return fail("offline late load: never finished"); } }
+        while (r.step(0.02)) { if (++steps > 100000) { return failed("offline late load: never finished"); } }
         const OfflineRenderer::Progress& p = r.progress();
-        if (p.phase != OfflineRenderer::Phase::Done) { glfwTerminate(); return fail(("offline late load: " + p.status).c_str()); }
-        if (p.framesDone != 15) { glfwTerminate(); return fail("offline late load: expected 15 captured frames"); }
+        if (p.phase != OfflineRenderer::Phase::Done) { return failed(("offline late load: " + p.status).c_str()); }
+        if (p.framesDone != 15) { return failed("offline late load: expected 15 captured frames"); }
         // The point of the whole scenario: the track is there, and the render is not degraded.
-        if (!p.audio) { glfwTerminate(); return fail("offline late load: the audio track was latched before the load finished -- the file is video only"); }
-        if (p.status.find("video only") != std::string::npos) { glfwTerminate(); return fail(("offline late load: " + p.status).c_str()); }
-        if (p.blackFrames != 0 || p.resizedAudioFrames != 0) { glfwTerminate(); return fail("offline late load: unexpected black frames or resized audio blocks"); }
+        if (!p.audio) { return failed("offline late load: the audio track was latched before the load finished -- the file is video only"); }
+        if (p.status.find("video only") != std::string::npos) { return failed(("offline late load: " + p.status).c_str()); }
+        if (p.blackFrames != 0 || p.resizedAudioFrames != 0) { return failed("offline late load: unexpected black frames or resized audio blocks"); }
 
         VideoDecoder dec; std::string derr;
-        if (!dec.open(s.outPath, derr)) { glfwTerminate(); return fail(("offline late load: open output: " + derr).c_str()); }
-        if (!dec.hasAudio() || dec.audioChannels() != 2) { glfwTerminate(); return fail("offline late load: the file should carry a 2-channel audio track"); }
+        if (!dec.open(s.outPath, derr)) { return failed(("offline late load: open output: " + derr).c_str()); }
+        if (!dec.hasAudio() || dec.audioChannels() != 2) { return failed("offline late load: the file should carry a 2-channel audio track"); }
         VideoFrame vf; std::vector<float> au; double aS = 0; bool aV = false;
         int frames = 0; bool nz = false;
         while (dec.decodeFrame(vf, au, aS, aV)) {
@@ -2976,39 +3048,40 @@ int main() {
             for (float v : au) if (v > 0.01f || v < -0.01f) { nz = true; break; }
             au.clear();
         }
-        if (frames != 15) { glfwTerminate(); return fail("offline late load: the file should hold exactly 15 frames"); }
-        if (!nz) { glfwTerminate(); return fail("offline late load: the encoded audio is silent"); }
+        if (frames != 15) { return failed("offline late load: the file should hold exactly 15 frames"); }
+        if (!nz) { return failed("offline late load: the encoded audio is silent"); }
         std::fprintf(stderr, "gl_smoke OK: a load that starts on the first evaluate still gates a pre-roll-free render and its audio reaches the file\n");
     }
-
-#ifndef _WIN32
-    // --- Scenario: a write failure mid-encode fails the render (the ENOSPC case) ---
-    // The realistic encode failure is running out of disk, and it is the one that used to be
-    // swallowed at four separate call sites -- so a batch pipeline got exit 0 and a truncated
-    // file. RLIMIT_FSIZE is the portable stand-in: with SIGXFSZ ignored, a write past the limit
-    // returns EFBIG exactly as a full disk returns ENOSPC. This scenario pins the failure to the
-    // close() route, because that is the one that exercises finish()'s Done->Failed downgrade --
-    // a branch that had never once executed. That needs a TWO-SIDED constraint on the output, and
-    // both sides are held by the render being only 0.5 s long:
-    //   lower -- the output must EXCEED the limit, or nothing fails. Measured 2003 bytes with
-    //            libx264; the limit below is 512, about 4x under it.
-    //   upper -- the output must stay UNDER FFmpeg's ~32 KiB AVIOContext buffer, or it flushes
-    //            mid-render and fails at a frame instead. This is the side that a longer render
-    //            quietly breaks: with no libx264, VideoEncoder::open falls back to MPEG-4 and
-    //            never sets bit_rate, so the ~200 kbps default applies -- ~12.5 KB over 0.5 s
-    //            (still under the buffer), but ~200 KB over the 8 s this scenario first used,
-    //            which would flush and fail the assertion with a misleading message.
-    // The mid-render write route is covered by its own scenario below, not by relaxing this one.
+    return true;
+}
+// --- Scenario: a write failure mid-encode fails the render (the ENOSPC case) ---
+// The realistic encode failure is running out of disk, and it is the one that used to be
+// swallowed at four separate call sites -- so a batch pipeline got exit 0 and a truncated
+// file. RLIMIT_FSIZE is the portable stand-in: with SIGXFSZ ignored, a write past the limit
+// returns EFBIG exactly as a full disk returns ENOSPC. This scenario pins the failure to the
+// close() route, because that is the one that exercises finish()'s Done->Failed downgrade --
+// a branch that had never once executed. That needs a TWO-SIDED constraint on the output, and
+// both sides are held by the render being only 0.5 s long:
+//   lower -- the output must EXCEED the limit, or nothing fails. Measured 2003 bytes with
+//            libx264; the limit below is 512, about 4x under it.
+//   upper -- the output must stay UNDER FFmpeg's ~32 KiB AVIOContext buffer, or it flushes
+//            mid-render and fails at a frame instead. This is the side that a longer render
+//            quietly breaks: with no libx264, VideoEncoder::open falls back to MPEG-4 and
+//            never sets bit_rate, so the ~200 kbps default applies -- ~12.5 KB over 0.5 s
+//            (still under the buffer), but ~200 KB over the 8 s this scenario first used,
+//            which would flush and fail the assertion with a misleading message.
+// The mid-render write route is covered by its own scenario below, not by relaxing this one.
+static bool scenario_encode_fail_at_close() {
     {
         struct rlimit oldLim{};
-        if (getrlimit(RLIMIT_FSIZE, &oldLim) != 0) { glfwTerminate(); return fail("offline enc write fail: getrlimit"); }
+        if (getrlimit(RLIMIT_FSIZE, &oldLim) != 0) { return failed("offline enc write fail: getrlimit"); }
         void (*oldXfsz)(int) = std::signal(SIGXFSZ, SIG_IGN);   // else the process dies on the first over-limit write
         // 2 KiB against a ~8 KiB output: a 4x margin, so an x264 that compresses this flat colour
         // rather better or worse than the one measured still overshoots. Creating the file writes
         // nothing, so the limit cannot turn this into an open failure instead.
         struct rlimit lim = oldLim; lim.rlim_cur = 512;
         if (setrlimit(RLIMIT_FSIZE, &lim) != 0) {
-            std::signal(SIGXFSZ, oldXfsz); glfwTerminate(); return fail("offline enc write fail: setrlimit");
+            std::signal(SIGXFSZ, oldXfsz); return failed("offline enc write fail: setrlimit");
         }
 
         Graph g;
@@ -3061,35 +3134,37 @@ int main() {
         // gl_smoke FAIL line. ctest pipes stderr, so CI never showed it.
         clearerr(stderr);
 
-        if (!restored) { glfwTerminate(); return fail("offline enc write fail: could not restore RLIMIT_FSIZE -- every later scenario would fail confusingly"); }
-        if (!sigBack)  { glfwTerminate(); return fail("offline enc write fail: could not restore the SIGXFSZ handler"); }
-        if (!wired)   { glfwTerminate(); return fail("offline enc write fail: connect"); }
-        if (!started) { glfwTerminate(); return fail(("offline enc write fail: start: " + err).c_str()); }
-        if (!spun)    { glfwTerminate(); return fail("offline enc write fail: never finished"); }
+        if (!restored) { return failed("offline enc write fail: could not restore RLIMIT_FSIZE -- every later scenario would fail confusingly"); }
+        if (!sigBack)  { return failed("offline enc write fail: could not restore the SIGXFSZ handler"); }
+        if (!wired)   { return failed("offline enc write fail: connect"); }
+        if (!started) { return failed(("offline enc write fail: start: " + err).c_str()); }
+        if (!spun)    { return failed("offline enc write fail: never finished"); }
         std::fprintf(stderr, "[enospc] phase=%d status=%s\n", (int)p.phase, p.status.c_str());
-        if (p.phase == OfflineRenderer::Phase::Done) { glfwTerminate(); return fail("offline enc write fail: a truncated file was reported as a completed render"); }
-        if (p.phase != OfflineRenderer::Phase::Failed) { glfwTerminate(); return fail("offline enc write fail: expected Failed"); }
-        if (stillOffline) { glfwTerminate(); return fail("offline enc write fail: the failure must still clear the offline flag"); }
+        if (p.phase == OfflineRenderer::Phase::Done) { return failed("offline enc write fail: a truncated file was reported as a completed render"); }
+        if (p.phase != OfflineRenderer::Phase::Failed) { return failed("offline enc write fail: expected Failed"); }
+        if (stillOffline) { return failed("offline enc write fail: the failure must still clear the offline flag"); }
         // Specifically the close() route -- an encode failure at a frame would mean the output
         // outgrew the avio buffer and this scenario stopped covering the Done->Failed downgrade.
-        if (p.status.rfind("could not finalise ", 0) != 0) { glfwTerminate(); return fail(("offline enc write fail: expected a close()-route failure (see the two-sided constraint above), got: " + p.status).c_str()); }
+        if (p.status.rfind("could not finalise ", 0) != 0) { return failed(("offline enc write fail: expected a close()-route failure (see the two-sided constraint above), got: " + p.status).c_str()); }
         std::fprintf(stderr, "[enospc] recorder status=%s\n", recStatus.c_str());
-        if (recStatus.rfind("save failed: ", 0) != 0) { glfwTerminate(); return fail(("offline enc write fail: the Recorder claimed a file it could not finalise: " + recStatus).c_str()); }
+        if (recStatus.rfind("save failed: ", 0) != 0) { return failed(("offline enc write fail: the Recorder claimed a file it could not finalise: " + recStatus).c_str()); }
         std::fprintf(stderr, "gl_smoke OK: a render and an inline recording that cannot write their file both fail instead of reporting success\n");
     }
-
-    // --- Scenario: a write that fails DURING the render (not at close) fails the render ---
-    // The case above is small enough that AVIOContext (~32 KiB buffer) holds the whole file until
-    // close(), so it never reaches av_interleaved_write_frame's return -- the one the encoder used
-    // to discard, and the true ENOSPC path for a long render that fills a disk hours in. High-
-    // entropy frames force flushes mid-render, so the limit is crossed by a write, not a trailer.
+    return true;
+}
+// --- Scenario: a write that fails DURING the render (not at close) fails the render ---
+// The case above is small enough that AVIOContext (~32 KiB buffer) holds the whole file until
+// close(), so it never reaches av_interleaved_write_frame's return -- the one the encoder used
+// to discard, and the true ENOSPC path for a long render that fills a disk hours in. High-
+// entropy frames force flushes mid-render, so the limit is crossed by a write, not a trailer.
+static bool scenario_encode_fail_mid_render() {
     {
         const int W = 640, H = 480;
         const char* fixture = "gl_smoke_enospc_noise.png";
-        if (!writeNoisePNG(fixture, W, H)) { glfwTerminate(); return fail("offline enc mid-write: write fixture"); }
+        if (!writeNoisePNG(fixture, W, H)) { return failed("offline enc mid-write: write fixture"); }
 
         struct rlimit oldLim{};
-        if (getrlimit(RLIMIT_FSIZE, &oldLim) != 0) { std::remove(fixture); glfwTerminate(); return fail("offline enc mid-write: getrlimit"); }
+        if (getrlimit(RLIMIT_FSIZE, &oldLim) != 0) { std::remove(fixture); return failed("offline enc mid-write: getrlimit"); }
         void (*oldXfsz)(int) = std::signal(SIGXFSZ, SIG_IGN);
         // 16 KiB against a ~70 KiB output: a ~4x margin on TOTAL size, which is what has to hold
         // for the limit to be crossed at all. Which frame reports it is incidental and late
@@ -3098,7 +3173,7 @@ int main() {
         // "stopped short of framesTotal", not a specific frame number.
         struct rlimit lim = oldLim; lim.rlim_cur = 16 * 1024;
         if (setrlimit(RLIMIT_FSIZE, &lim) != 0) {
-            std::signal(SIGXFSZ, oldXfsz); std::remove(fixture); glfwTerminate(); return fail("offline enc mid-write: setrlimit");
+            std::signal(SIGXFSZ, oldXfsz); std::remove(fixture); return failed("offline enc mid-write: setrlimit");
         }
 
         Graph g;
@@ -3124,45 +3199,47 @@ int main() {
         clearerr(stderr);            // see the note in the scenario above: stderr is latched in error
         std::remove(fixture);
 
-        if (!restored) { glfwTerminate(); return fail("offline enc mid-write: could not restore RLIMIT_FSIZE -- every later scenario would fail confusingly"); }
-        if (!sigBack)  { glfwTerminate(); return fail("offline enc mid-write: could not restore the SIGXFSZ handler"); }
-        if (!wired)   { glfwTerminate(); return fail("offline enc mid-write: connect"); }
-        if (!started) { glfwTerminate(); return fail(("offline enc mid-write: start: " + err).c_str()); }
-        if (!spun)    { glfwTerminate(); return fail("offline enc mid-write: never finished"); }
+        if (!restored) { return failed("offline enc mid-write: could not restore RLIMIT_FSIZE -- every later scenario would fail confusingly"); }
+        if (!sigBack)  { return failed("offline enc mid-write: could not restore the SIGXFSZ handler"); }
+        if (!wired)   { return failed("offline enc mid-write: connect"); }
+        if (!started) { return failed(("offline enc mid-write: start: " + err).c_str()); }
+        if (!spun)    { return failed("offline enc mid-write: never finished"); }
         std::fprintf(stderr, "[enospc-mid] phase=%d frames=%lld status=%s\n", (int)p.phase, p.framesDone, p.status.c_str());
-        if (p.phase == OfflineRenderer::Phase::Done) { glfwTerminate(); return fail("offline enc mid-write: a render that could not write its frames reported success"); }
+        if (p.phase == OfflineRenderer::Phase::Done) { return failed("offline enc mid-write: a render that could not write its frames reported success"); }
         // Specifically the frame route: this is what proves av_interleaved_write_frame's return is
         // propagated and that capture() acts on addVideoFrame's bool.
-        if (p.status.rfind("encode failed at frame ", 0) != 0) { glfwTerminate(); return fail(("offline enc mid-write: expected a per-frame encode failure, got: " + p.status).c_str()); }
-        if (p.framesDone >= p.framesTotal) { glfwTerminate(); return fail("offline enc mid-write: the render should have stopped short, not captured every frame"); }
-        if (stillOffline) { glfwTerminate(); return fail("offline enc mid-write: the failure must still clear the offline flag"); }
+        if (p.status.rfind("encode failed at frame ", 0) != 0) { return failed(("offline enc mid-write: expected a per-frame encode failure, got: " + p.status).c_str()); }
+        if (p.framesDone >= p.framesTotal) { return failed("offline enc mid-write: the render should have stopped short, not captured every frame"); }
+        if (stillOffline) { return failed("offline enc mid-write: the failure must still clear the offline flag"); }
         std::fprintf(stderr, "gl_smoke OK: a write failure mid-render stops the render and reports the frame it failed on\n");
     }
-
-    // --- Scenario: a recording that LOST FRAMES is not reported as saved ---
-    // The fifth swallow: RecorderNode::evaluate drops addVideoFrame()/addAudio()'s bool on every
-    // frame, so a take whose writes failed mid-way but whose trailer still wrote came back
-    // "saved" -- a file quietly missing frames, reported as a good one. VideoEncoder now latches
-    // writeFailed_ on any write/encode failure and close() consults it, so the per-call bools no
-    // longer have to be checked for the file to be judged honestly.
-    // Isolating that needs the writes to fail DURING the take and SUCCEED at the end, so the
-    // limit is lifted before the recording is stopped -- otherwise the trailer fails too and the
-    // latch is not what produced the verdict (which is why the scenarios above do not cover it).
-    //
-    // What this does and does not prove, precisely: FFmpeg's AVIOContext latches its OWN write
-    // error, so in this reproduction close()'s flush fails as well and the take would be judged
-    // badly even without writeFailed_ -- what the latch changes HERE is that the verdict names
-    // the lost frames instead of the flush. The latch's unique ground is a CODEC-level refusal
-    // (avcodec_send_frame/avcodec_receive_packet failing), where avio never sees an error and
-    // the trailer writes cleanly; that is not provokable from a test, so this scenario pins the
-    // message rather than claiming to be the only thing standing between "saved" and not.
+    return true;
+}
+// --- Scenario: a recording that LOST FRAMES is not reported as saved ---
+// The fifth swallow: RecorderNode::evaluate drops addVideoFrame()/addAudio()'s bool on every
+// frame, so a take whose writes failed mid-way but whose trailer still wrote came back
+// "saved" -- a file quietly missing frames, reported as a good one. VideoEncoder now latches
+// writeFailed_ on any write/encode failure and close() consults it, so the per-call bools no
+// longer have to be checked for the file to be judged honestly.
+// Isolating that needs the writes to fail DURING the take and SUCCEED at the end, so the
+// limit is lifted before the recording is stopped -- otherwise the trailer fails too and the
+// latch is not what produced the verdict (which is why the scenarios above do not cover it).
+//
+// What this does and does not prove, precisely: FFmpeg's AVIOContext latches its OWN write
+// error, so in this reproduction close()'s flush fails as well and the take would be judged
+// badly even without writeFailed_ -- what the latch changes HERE is that the verdict names
+// the lost frames instead of the flush. The latch's unique ground is a CODEC-level refusal
+// (avcodec_send_frame/avcodec_receive_packet failing), where avio never sees an error and
+// the trailer writes cleanly; that is not provokable from a test, so this scenario pins the
+// message rather than claiming to be the only thing standing between "saved" and not.
+static bool scenario_recorder_lost_frames() {
     {
         const int W = 640, H = 480;
         const char* fixture = "gl_smoke_lostframes_noise.png";
-        if (!writeNoisePNG(fixture, W, H)) { glfwTerminate(); return fail("lost frames: write fixture"); }
+        if (!writeNoisePNG(fixture, W, H)) { return failed("lost frames: write fixture"); }
 
         struct rlimit oldLim{};
-        if (getrlimit(RLIMIT_FSIZE, &oldLim) != 0) { std::remove(fixture); glfwTerminate(); return fail("lost frames: getrlimit"); }
+        if (getrlimit(RLIMIT_FSIZE, &oldLim) != 0) { std::remove(fixture); return failed("lost frames: getrlimit"); }
         void (*oldXfsz)(int) = std::signal(SIGXFSZ, SIG_IGN);
         // 16 KiB and a 120-frame take. x264's lookahead and B-frame delay mean a frame's packet
         // reaches the muxer well after the Recorder handed it over, so the crossing lands late
@@ -3171,7 +3248,7 @@ int main() {
         // scenario silently stops testing the latch. The second assertion below catches that.
         struct rlimit lim = oldLim; lim.rlim_cur = 16 * 1024;
         if (setrlimit(RLIMIT_FSIZE, &lim) != 0) {
-            std::signal(SIGXFSZ, oldXfsz); std::remove(fixture); glfwTerminate(); return fail("lost frames: setrlimit");
+            std::signal(SIGXFSZ, oldXfsz); std::remove(fixture); return failed("lost frames: setrlimit");
         }
 
         std::string recStatus = "(not run)";
@@ -3205,17 +3282,87 @@ int main() {
         clearerr(stderr);            // see the note two scenarios above: stderr is latched in error
         std::remove(fixture);
 
-        if (!restored) { glfwTerminate(); return fail("lost frames: could not restore RLIMIT_FSIZE"); }
-        if (!sigBack)  { glfwTerminate(); return fail("lost frames: could not restore the SIGXFSZ handler"); }
-        if (!wired)    { glfwTerminate(); return fail("lost frames: connect"); }
+        if (!restored) { return failed("lost frames: could not restore RLIMIT_FSIZE"); }
+        if (!sigBack)  { return failed("lost frames: could not restore the SIGXFSZ handler"); }
+        if (!wired)    { return failed("lost frames: connect"); }
         std::fprintf(stderr, "[lost frames] recorder status=%s\n", recStatus.c_str());
-        if (recStatus.rfind("save failed: ", 0) != 0) { glfwTerminate(); return fail(("lost frames: a take that lost frames was reported as saved: " + recStatus).c_str()); }
+        if (recStatus.rfind("save failed: ", 0) != 0) { return failed(("lost frames: a take that lost frames was reported as saved: " + recStatus).c_str()); }
         // Specifically the latch, not the trailer: the trailer wrote fine once the limit was
         // lifted, so anything else here means this scenario stopped testing writeFailed_.
         if (recStatus.find("frames were lost during encoding") == std::string::npos)
-            { glfwTerminate(); return fail(("lost frames: expected the sticky write-failure verdict, got: " + recStatus).c_str()); }
+            { return failed(("lost frames: expected the sticky write-failure verdict, got: " + recStatus).c_str()); }
         std::fprintf(stderr, "gl_smoke OK: a recording whose writes failed mid-take is not reported as saved, even though its trailer wrote\n");
     }
+    return true;
+}
+
+int main() {
+    // Once at startup, like the app's own main(): VideoEncoder::open() no longer does it (it is
+    // process-wide, so it used to silence the decoders too), and without this the ~20 lines of
+    // libx264/aac statistics per encoder open bury the scenario log.
+    quietFFmpegLog();
+
+    if (!scenario_asset_backed_inputs()) return 1;      // pure CPU: runs before any GL setup
+
+    if (!glfwInit()) return fail("glfwInit");
+    glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 4);
+    glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 1);
+    glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
+    glfwWindowHint(GLFW_OPENGL_FORWARD_COMPAT, GL_TRUE);
+    glfwWindowHint(GLFW_VISIBLE, GLFW_FALSE);
+    GLFWwindow* win = glfwCreateWindow(64, 64, "gl_smoke", nullptr, nullptr);
+    if (!win) { glfwTerminate(); return fail("createWindow (no offscreen GL context)"); }
+    glfwMakeContextCurrent(win);
+    if (!gladLoadGL((GLADloadfunc)glfwGetProcAddress)) { glfwTerminate(); return fail("gladLoadGL"); }
+
+    if (!scenario_colour_output()) { glfwDestroyWindow(win); glfwTerminate(); return 1; }
+    if (!scenario_image_streamer()) { glfwDestroyWindow(win); glfwTerminate(); return 1; }
+    if (!scenario_kaleidoscope_fold()) { glfwDestroyWindow(win); glfwTerminate(); return 1; }
+    if (!scenario_image_sequencer_cycle()) { glfwDestroyWindow(win); glfwTerminate(); return 1; }
+    if (!scenario_image_sequencer_crossfade()) { glfwDestroyWindow(win); glfwTerminate(); return 1; }
+    if (!scenario_colour_mix()) { glfwDestroyWindow(win); glfwTerminate(); return 1; }
+    if (!scenario_spectrograph_output()) { glfwDestroyWindow(win); glfwTerminate(); return 1; }
+    if (!scenario_sine_drives_spectrograph()) { glfwDestroyWindow(win); glfwTerminate(); return 1; }
+    if (!scenario_spectrograph_geometry_wireframe()) { glfwDestroyWindow(win); glfwTerminate(); return 1; }
+    if (!scenario_mesh_loader_wireframe()) { glfwDestroyWindow(win); glfwTerminate(); return 1; }
+    if (!scenario_load_mesh_data_diagnostics()) { glfwDestroyWindow(win); glfwTerminate(); return 1; }
+    if (!scenario_meshopt_compressed_gltf()) { glfwDestroyWindow(win); glfwTerminate(); return 1; }
+    if (!scenario_draco_compressed_gltf()) { glfwDestroyWindow(win); glfwTerminate(); return 1; }
+    if (!scenario_video_player_decode()) { glfwDestroyWindow(win); glfwTerminate(); return 1; }
+    if (!scenario_text_geometry_renderers()) { glfwDestroyWindow(win); glfwTerminate(); return 1; }
+    if (!scenario_recorder_video_encoder()) { glfwDestroyWindow(win); glfwTerminate(); return 1; }
+    if (!scenario_audio_file_player_stereo()) { glfwDestroyWindow(win); glfwTerminate(); return 1; }
+    if (!scenario_audio_file_auto_play()) { glfwDestroyWindow(win); glfwTerminate(); return 1; }
+    if (!scenario_world_transform_shared()) { glfwDestroyWindow(win); glfwTerminate(); return 1; }
+    if (!scenario_compositor_blend_matches_shader()) { glfwDestroyWindow(win); glfwTerminate(); return 1; }
+    if (!scenario_hsv_adjust_matches_reference()) { glfwDestroyWindow(win); glfwTerminate(); return 1; }
+    if (!scenario_wireframe_vertex_colour_line()) { glfwDestroyWindow(win); glfwTerminate(); return 1; }
+    if (!scenario_pitch_graph_colour()) { glfwDestroyWindow(win); glfwTerminate(); return 1; }
+    if (!scenario_skybox_cubemap_yaw_pitch()) { glfwDestroyWindow(win); glfwTerminate(); return 1; }
+    if (!scenario_deform_transform_feedback()) { glfwDestroyWindow(win); glfwTerminate(); return 1; }
+    if (!scenario_vertex_trail_snapshots()) { glfwDestroyWindow(win); glfwTerminate(); return 1; }
+    if (!scenario_vertex_trail_linestrip_multidraw()) { glfwDestroyWindow(win); glfwTerminate(); return 1; }
+    if (!scenario_vertex_trail_deform_wireframe_strips()) { glfwDestroyWindow(win); glfwTerminate(); return 1; }
+    if (!scenario_project_save_load_roundtrip()) { glfwDestroyWindow(win); glfwTerminate(); return 1; }
+    if (!scenario_drum_machine()) { glfwDestroyWindow(win); glfwTerminate(); return 1; }
+    if (!scenario_offline_audio_out_no_device()) { glfwDestroyWindow(win); glfwTerminate(); return 1; }
+    if (!scenario_offline_interrupts_live_recording()) { glfwDestroyWindow(win); glfwTerminate(); return 1; }
+    if (!scenario_offline_start_cancel_validation()) { glfwDestroyWindow(win); glfwTerminate(); return 1; }
+    if (!scenario_offline_prefs_single_source()) { glfwDestroyWindow(win); glfwTerminate(); return 1; }
+    if (!scenario_offline_render_every_frame_sample_locked()) { glfwDestroyWindow(win); glfwTerminate(); return 1; }
+    if (!scenario_offline_capture_no_vertical_flip()) { glfwDestroyWindow(win); glfwTerminate(); return 1; }
+    if (!scenario_offline_audio_frame_exact_sample_count()) { glfwDestroyWindow(win); glfwTerminate(); return 1; }
+    if (!scenario_offline_sinks_resolved_by_id()) { glfwDestroyWindow(win); glfwTerminate(); return 1; }
+    if (!scenario_offline_fixed_clock_preroll()) { glfwDestroyWindow(win); glfwTerminate(); return 1; }
+    if (!scenario_offline_empty_range_rejected()) { glfwDestroyWindow(win); glfwTerminate(); return 1; }
+    if (!scenario_offline_destination_unwritable()) { glfwDestroyWindow(win); glfwTerminate(); return 1; }
+    if (!scenario_offline_loader_gate_timeout_cancel()) { glfwDestroyWindow(win); glfwTerminate(); return 1; }
+    if (!scenario_offline_late_starting_loader_gate()) { glfwDestroyWindow(win); glfwTerminate(); return 1; }
+
+#ifndef _WIN32
+    if (!scenario_encode_fail_at_close()) { glfwDestroyWindow(win); glfwTerminate(); return 1; }
+    if (!scenario_encode_fail_mid_render()) { glfwDestroyWindow(win); glfwTerminate(); return 1; }
+    if (!scenario_recorder_lost_frames()) { glfwDestroyWindow(win); glfwTerminate(); return 1; }
 #else
     std::fprintf(stderr, "gl_smoke SKIP: the three encode-write-failure scenarios (RLIMIT_FSIZE is POSIX-only)\n");
 #endif
