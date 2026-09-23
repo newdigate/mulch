@@ -88,7 +88,23 @@ if(TARGET libsoundio_static)
     # Linux: libsoundio compiles the ALSA backend (from libasound2-dev); link its
     # snd_* symbols. (The PulseAudio backend is intentionally not built — ALSA is the
     # universal backend, and PulseAudio/PipeWire expose ALSA PCM devices anyway.)
-    target_link_libraries(libsoundio_static INTERFACE asound pthread m)
+    #
+    # ALSA::ALSA, not the bare name `asound`. The bare name was silently dropped: a verbose
+    # CI build showed NEITHER binary carrying -lasound, and gl_smoke failing to resolve every
+    # snd_pcm_* symbol. shader_streamer only linked because it ALSO links rtmidi, whose own
+    # find_package(ALSA) put /usr/lib/.../libasound.so on the line -- so this branch had been
+    # dead since it was written, masked by rtmidi on the one target that needed it. gl_smoke
+    # does not link rtmidi, so it broke the moment it started linking libsoundio.
+    # An imported target resolves to an absolute path and does not depend on linker search
+    # paths; it is also exactly the mechanism that demonstrably works here via rtmidi.
+    # Not REQUIRED, and gated on ALSA_FOUND: libsoundio only compiles alsa.c when it finds
+    # ALSA itself, so a box without libasound2-dev has no snd_* symbols to resolve and must
+    # still configure. Same shape as rtmidi's own find_package(ALSA) + if(ALSA_FOUND).
+    find_package(ALSA)
+    if(ALSA_FOUND)
+      target_link_libraries(libsoundio_static INTERFACE ALSA::ALSA)
+    endif()
+    target_link_libraries(libsoundio_static INTERFACE pthread m)
   endif()
 endif()
 
