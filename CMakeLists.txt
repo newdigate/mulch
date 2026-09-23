@@ -65,7 +65,17 @@ set(BUILD_TESTS          OFF CACHE BOOL "" FORCE)
 # libsoundio's bundled CMake requires cmake_minimum_required(VERSION 2.8.x),
 # which CMake 4.x rejects. Relax the policy minimum just for its sub-build.
 set(CMAKE_POLICY_VERSION_MINIMUM 3.5)
+# CMP0022 NEW, or the INTERFACE_LINK_LIBRARIES we attach below is silently IGNORED.
+# CMAKE_POLICY_VERSION_MINIMUM only lets the old cmake_minimum_required be accepted; the
+# policies still follow libsoundio's DECLARED 2.8, where CMP0022 is unset. Under that OLD
+# behaviour CMake uses the link IMPLEMENTATION as the link interface, and libsoundio links
+# LIBSOUNDIO_LIBS only to libsoundio_shared -- so libsoundio_static's implementation is empty
+# and nothing propagated. CMake said so in a dev warning on every Linux build:
+#   Target "libsoundio_static" has an INTERFACE_LINK_LIBRARIES property ... but because
+#   CMP0022 is not set CMake is ignoring the property and using the link implementation
+set(CMAKE_POLICY_DEFAULT_CMP0022 NEW)
 FetchContent_MakeAvailable(libsoundio)
+unset(CMAKE_POLICY_DEFAULT_CMP0022)
 unset(CMAKE_POLICY_VERSION_MINIMUM)
 # libsoundio's Debug build adds -Werror; its CoreAudio backend still uses
 # kAudioObjectPropertyElementMaster, deprecated since macOS 12, which then fails
