@@ -641,10 +641,11 @@ int main() {
         // shaded=false wires the wireframe output (0) to a Wireframe node and
         // looks for green lines; shaded=true wires the shaded output (1) to a
         // Shaded Render node and looks for the lit (bluish) surface.
-        auto renderMesh = [](const char* path, bool shaded) -> bool {
+        auto renderMesh = [](const char* path, bool shaded, float scale = 1.0f) -> bool {
             Graph g;
             auto mesh = std::make_unique<MeshLoaderNode>();
             mesh->inputDefault(0) = std::string(path);   // file path (String input)
+            mesh->inputDefault(1) = scale;               // scale (Float input)
             std::unique_ptr<Node> render;
             if (shaded) render = std::make_unique<ShadedRenderNode>();
             else        render = std::make_unique<WireframeNode>();
@@ -680,6 +681,57 @@ int main() {
         std::fprintf(stderr, "gl_smoke OK: .gltf mesh loaded (worker thread) and rendered as wireframe\n");
         if (!renderMesh("tests/assets/tetra.obj", true))      { glfwTerminate(); return fail(".obj mesh did not render shaded"); }
         std::fprintf(stderr, "gl_smoke OK: mesh shaded output rendered as a lit surface\n");
+
+        // A scale of exactly -1 must still upload. The upload is gated on `scale != appliedScale_`,
+        // and the "force an upload now that the parse landed" signal used to be appliedScale_ = -1,
+        // so a scale that happened to BE -1 collided with the sentinel: the guard was false, the
+        // freshly parsed mesh was never uploaded, and the node published empty geometry until the
+        // value changed. -1 is not an absurd input -- it mirrors the mesh, and the LFO's `min` port
+        // range is exactly [-1, 1], so a square LFO wired into `scale` with `min` dragged to its
+        // endpoint emits exactly -1.0f for half of every cycle.
+        if (!renderMesh("tests/assets/tetra.obj", false, -1.0f)) {
+            glfwTerminate();
+            return fail("mesh at scale -1 rendered nothing -- the upload sentinel collided with a real scale");
+        }
+
+        // The mechanics behind that, asserted directly. The force-upload signal is a separate
+        // flag rather than a sentinel value of appliedScale_, so it holds for BOTH halves of what
+        // the sentinel used to do: upload a freshly parsed mesh whatever the scale is, and upload
+        // a DIFFERENT mesh loaded at the SAME scale (where `scale != appliedScale_` is false).
+        {
+            Graph gm;
+            auto mesh = std::make_unique<MeshLoaderNode>();
+            mesh->inputDefault(0) = std::string("tests/assets/tetra.obj");
+            mesh->inputDefault(1) = -1.0f;
+            mesh->initGL();
+            int mId = gm.addNode(std::move(mesh));
+            auto* mn = dynamic_cast<MeshLoaderNode*>(gm.findNode(mId));
+            auto settle = [&]() {
+                for (int f = 0; f < 400; ++f) {
+                    gm.evaluate(1.0f / 60.0f);
+                    if (f > 2 && !mn->loading() && mn->uploadCount() > 0) return true;
+                    std::this_thread::sleep_for(std::chrono::milliseconds(2));
+                }
+                return false;
+            };
+            if (!settle()) { glfwTerminate(); return fail("mesh at scale -1 never uploaded"); }
+            int afterFirst = mn->uploadCount();
+
+            // Steady state: nothing changed, so nothing should re-upload. Without clearing the
+            // flag this would re-upload the whole mesh every frame, forever.
+            for (int f = 0; f < 10; ++f) gm.evaluate(1.0f / 60.0f);
+            if (mn->uploadCount() != afterFirst) {
+                glfwTerminate(); return fail("Mesh Loader re-uploaded with nothing changed");
+            }
+
+            // A different mesh at the SAME scale must upload: this is the case the old sentinel
+            // existed to cover, and the case a plain `scale != appliedScale_` guard cannot see.
+            mn->inputDefault(0) = std::string("tests/assets/triangle.gltf");
+            if (!settle() || mn->uploadCount() <= afterFirst) {
+                glfwTerminate(); return fail("a new mesh loaded at an unchanged scale never uploaded");
+            }
+            std::fprintf(stderr, "gl_smoke OK: Mesh Loader uploads at scale -1, does not re-upload idle, and reloads at an unchanged scale\n");
+        }
     }
 
     // --- Scenario 7: loadMeshData reports success / failure for diagnostics ---

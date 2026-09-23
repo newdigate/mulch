@@ -23,6 +23,10 @@ public:
     std::string statusLine() const override { return status_; }
     bool loading() const override { return loader_.pending(); }
 
+    // Test/inspection accessor: how many times the geometry has been uploaded to GL. Lets a test
+    // see both that a load DID upload and that a steady state stops re-uploading.
+    int uploadCount() const { return uploadCount_; }
+
 private:
     void uploadScaled(float scale);
 
@@ -36,7 +40,13 @@ private:
     AsyncLoader<MeshData> loader_;               // worker-thread parse, keyed on path
     MeshData              unit_;                 // cached unit-scale geometry
     bool                  haveUnit_     = false;
-    float                 appliedScale_ = -1.0f; // scale currently uploaded
+    float                 appliedScale_ = 0.0f;  // scale currently uploaded (meaningless until needsUpload_ is false)
+    // "upload on the next evaluate", set when a parse lands. A separate flag, NOT a sentinel
+    // value of appliedScale_: `scale` is a normal Float port, so a connected node can hand over
+    // any value including the sentinel itself, and the upload guard (`scale != appliedScale_`)
+    // would then be false on exactly the frame the mesh needed uploading.
+    bool                  needsUpload_  = false;
+    int                   uploadCount_  = 0;     // test/inspection only
 };
 
 } // namespace oss

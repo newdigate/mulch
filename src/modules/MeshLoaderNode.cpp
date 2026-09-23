@@ -35,7 +35,7 @@ void MeshLoaderNode::evaluate(EvalContext& ctx) {
     if (loader_.request(path, [path] { return loadMeshData(path, 1.0f); })) {
         haveUnit_ = false;
         lineCount_ = triCount_ = 0;
-        appliedScale_ = -1.0f;
+        needsUpload_ = false;   // nothing to upload until the new parse lands
         if (path.empty()) status_.clear();
         else { status_ = "loading..."; std::fprintf(stderr, "[Mesh] loading %s\n", path.c_str()); }
     }
@@ -45,7 +45,7 @@ void MeshLoaderNode::evaluate(EvalContext& ctx) {
     if (loader_.poll(done)) {
         unit_ = std::move(done);
         haveUnit_ = unit_.ok;
-        appliedScale_ = -1.0f;   // force an upload at the current scale
+        needsUpload_ = true;     // force an upload at the current scale, whatever it is
         if (unit_.ok) {
             int tris = (int)(unit_.tris.size() / 18);   // 18 floats per triangle
             status_ = "loaded: " + std::to_string(tris) + " triangles";
@@ -57,7 +57,7 @@ void MeshLoaderNode::evaluate(EvalContext& ctx) {
     }
 
     // Apply scale cheaply on the main thread (re-upload, no re-parse).
-    if (haveUnit_ && scale != appliedScale_) uploadScaled(scale);
+    if (haveUnit_ && (needsUpload_ || scale != appliedScale_)) uploadScaled(scale);
 
     ctx.out<VertexRef>(0, VertexRef{lineCount_ > 0 ? vboLines_ : 0u, lineCount_,
                                     Primitive::Lines, VertexFormat::Pos3});
@@ -67,6 +67,8 @@ void MeshLoaderNode::evaluate(EvalContext& ctx) {
 
 void MeshLoaderNode::uploadScaled(float scale) {
     appliedScale_ = scale;
+    needsUpload_  = false;
+    ++uploadCount_;
 
     std::vector<float> lines = unit_.lines;            // every float is a position
     for (float& f : lines) f *= scale;
