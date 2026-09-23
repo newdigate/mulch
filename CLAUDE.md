@@ -513,6 +513,14 @@ shaders by CWD-relative path, each package launches the app with `shaders/` as t
   out) that reads back the input texture and feeds the encoder while `record` is on;
   it takes `left`/`right` mono inputs and records an interleaved stereo track
   (mirroring a lone connected side).
+  **`encodeWrite` must set `pkt->duration` before handing a packet to the muxer** — libx264 and
+  the AAC encoder both leave it 0, and the mp4 muxer then infers each sample's duration from the
+  NEXT packet's dts, which does not exist for the last one. It fell back to 0, so every file came
+  out one frame short in its header, and the half-open edit list written from that length trimmed
+  the final frame off again on read-back. It only SHOWED when the muxer's millisecond rounding of
+  that length was exact: at 24/30/60 fps every third length (3 frames = 100 ms at 30), but at
+  25/50 fps one frame is exactly 40/20 ms so EVERY render lost its last frame. `gl_smoke`
+  round-trips lengths 1..12, 30 and 60 at both 25 and 30 fps to pin it.
 - **`AudioFile` (`src/audio/AudioFile.{h,cpp}`)** decodes a whole audio file to a
   48 kHz stereo float buffer (FFmpeg, GL-free). The `AudioPlayerNode` plays it with
   a playhead advanced by rate*dt, reading the buffer with linear interpolation for

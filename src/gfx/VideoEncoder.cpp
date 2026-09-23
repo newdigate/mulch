@@ -153,6 +153,14 @@ bool VideoEncoder::encodeWrite(AVCodecContext* ctx, AVStream* st, AVFrame* frame
         int r = avcodec_receive_packet(ctx, pkt_);
         if (r == AVERROR(EAGAIN) || r == AVERROR_EOF) break;
         if (r < 0) { writeErr_ = avErr(r); writeFailed_ = true; return false; }
+        // libx264 and the AAC encoder both leave pkt->duration at 0. The mp4 muxer then infers
+        // each sample's duration from the NEXT packet's dts -- which does not exist for the last
+        // one, so it falls back to 0 and the track comes out one frame short. The edit list it
+        // writes is a half-open window of that short length, and the demuxer drops the final
+        // frame back off on read-back. Set the duration ourselves: both time bases are chosen so
+        // one encoded unit is exactly this (video 1/fps -> 1 frame; audio 1/rate -> frame_size).
+        if (pkt_->duration <= 0)
+            pkt_->duration = (ctx->codec_type == AVMEDIA_TYPE_VIDEO) ? 1 : ctx->frame_size;
         av_packet_rescale_ts(pkt_, ctx->time_base, st->time_base);
         pkt_->stream_index = st->index;
         // The muxer takes the packet's reference on success and blanks it, so the unref below is

@@ -967,6 +967,45 @@ int main() {
         if (!nz) { glfwTerminate(); return fail("encoded audio is silent"); }
         std::fprintf(stderr, "gl_smoke OK: VideoEncoder mono round-trip (%d frames, audio) decodes\n", got);
 
+        // Every frame handed to the encoder must come back out of the file, at every length.
+        // The mp4 muxer infers each sample's duration from the NEXT packet's dts, so the LAST
+        // sample's duration is whatever the encoder put in pkt->duration -- and libx264 leaves it
+        // at 0. The track then measures one frame short, and the half-open edit list written from
+        // that length trims the final frame off again on read-back. It only SHOWS when the
+        // muxer's millisecond rounding of that length happens to be exact: at 30 fps that is
+        // every third length (3 frames = 100 ms), but at 25 fps one frame is exactly 40 ms, so
+        // EVERY length lost its last frame. Both rates are checked for that reason.
+        for (int fps : {25, 30}) {
+            for (int n : {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 30, 60}) {
+                std::string p = "build/_rec_len" + std::to_string(fps) + "_" + std::to_string(n) + ".mp4";
+                {
+                    VideoEncoder e2; std::string er;
+                    if (!e2.open(p, W, H, fps, 0, 0, er)) { glfwTerminate(); return fail(("length encoder open: " + er).c_str()); }
+                    std::vector<unsigned char> fr((size_t)W * H * 4, 0);
+                    for (int f = 0; f < n; ++f) {
+                        for (size_t i = 0; i < fr.size(); i += 4) {
+                            fr[i] = (unsigned char)(f * 7); fr[i+1] = 60; fr[i+2] = 120; fr[i+3] = 255;
+                        }
+                        if (!e2.addVideoFrame(fr.data(), f / (double)fps)) { glfwTerminate(); return fail("length encode: addVideoFrame failed"); }
+                    }
+                    std::string ec;
+                    if (!e2.close(ec)) { glfwTerminate(); return fail(("length encode close: " + ec).c_str()); }
+                }
+                VideoDecoder d2; std::string de;
+                if (!d2.open(p, de)) { glfwTerminate(); return fail(("length decode open: " + de).c_str()); }
+                VideoFrame v2; std::vector<float> a2; double s2 = 0; bool b2 = false; int back = 0;
+                while (d2.decodeFrame(v2, a2, s2, b2)) { ++back; a2.clear(); }
+                std::remove(p.c_str());
+                if (back != n) {
+                    char msg[160];
+                    std::snprintf(msg, sizeof(msg),
+                                  "encoded %d frames at %d fps but decoded %d -- the encoder is losing frames", n, fps, back);
+                    glfwTerminate(); return fail(msg);
+                }
+            }
+        }
+        std::fprintf(stderr, "gl_smoke OK: VideoEncoder round-trips every length (1..12, 30, 60) at 25 and 30 fps with no lost frames\n");
+
         // Stereo round-trip: encode interleaved L/R and confirm the file is 2-channel.
         {
             const char* sp = "build/_rec_stereo.mp4";
