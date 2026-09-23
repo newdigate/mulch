@@ -50,10 +50,7 @@ jobs:
         run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
 
       - name: Build
-        # TEMPORARY (diagnostic): --verbose so the gl_smoke link command is visible. gl_smoke
-        # fails to resolve libsoundio's ALSA symbols and the log does not show whether -lasound
-        # reaches the link line. Revert once that is answered.
-        run: cmake --build build -j --verbose
+        run: cmake --build build -j
 
       - name: Test (core, fatal)
         run: ctest --test-dir build -R core_tests --output-on-failure
