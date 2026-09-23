@@ -2041,6 +2041,14 @@ static bool scenario_drum_machine() {
             t = std::get<TexRef>(outs[0]);
             int r3, g3, b3, a3;
             readAtUV(t, 0.2f, 0.15f, r3, g3, b3, a3);
+            // NOTE: this is a real, live projectM render (not a fixed fixture), so the (r,g,b)
+            // printed here -- and at the "alpha burn" print just below -- varies from run to run;
+            // that is expected and is not a regression. That's exactly why the assertions around
+            // both prints check a PROPERTY (green did not overwrite red, i.e. alpha was respected)
+            // rather than an exact colour -- the right design for a noisy GL measurement. It also
+            // means a byte-for-byte diff of gl_smoke's stdout/stderr against a captured "golden"
+            // log will legitimately differ on these two lines alone; that's not a sign the split
+            // in this file's history broke anything.
             std::fprintf(stderr, "gl_smoke projectM pre-alpha-burn lower=(%d,%d,%d)\n", r3, g3, b3);
             if (g3 > r3 + 40) { return failed("projectM live: canvas still green before the alpha burn, so it would prove nothing"); }
             for (int y = 0; y < S; ++y) for (int x = 0; x < S; ++x) {
@@ -3296,6 +3304,67 @@ static bool scenario_recorder_lost_frames() {
     return true;
 }
 
+// The main-body scenarios, in the exact order they must run (several depend on files an
+// earlier one wrote). Looping over this table instead of writing one
+// "if (!scenario_x()) { glfwDestroyWindow(win); glfwTerminate(); return 1; }" per scenario
+// means adding a 47th scenario is a one-line addition here, and can no longer forget the
+// window/context teardown -- the copy-pasted teardown clause used to be the single most
+// copy-pasteable line in this file.
+static bool (*const kScenarios[])() = {
+    scenario_colour_output,
+    scenario_image_streamer,
+    scenario_kaleidoscope_fold,
+    scenario_image_sequencer_cycle,
+    scenario_image_sequencer_crossfade,
+    scenario_colour_mix,
+    scenario_spectrograph_output,
+    scenario_sine_drives_spectrograph,
+    scenario_spectrograph_geometry_wireframe,
+    scenario_mesh_loader_wireframe,
+    scenario_load_mesh_data_diagnostics,
+    scenario_meshopt_compressed_gltf,
+    scenario_draco_compressed_gltf,
+    scenario_video_player_decode,
+    scenario_text_geometry_renderers,
+    scenario_recorder_video_encoder,
+    scenario_audio_file_player_stereo,
+    scenario_audio_file_auto_play,
+    scenario_world_transform_shared,
+    scenario_compositor_blend_matches_shader,
+    scenario_hsv_adjust_matches_reference,
+    scenario_wireframe_vertex_colour_line,
+    scenario_pitch_graph_colour,
+    scenario_skybox_cubemap_yaw_pitch,
+    scenario_deform_transform_feedback,
+    scenario_vertex_trail_snapshots,
+    scenario_vertex_trail_linestrip_multidraw,
+    scenario_vertex_trail_deform_wireframe_strips,
+    scenario_project_save_load_roundtrip,
+    scenario_drum_machine,
+    scenario_offline_audio_out_no_device,
+    scenario_offline_interrupts_live_recording,
+    scenario_offline_start_cancel_validation,
+    scenario_offline_prefs_single_source,
+    scenario_offline_render_every_frame_sample_locked,
+    scenario_offline_capture_no_vertical_flip,
+    scenario_offline_audio_frame_exact_sample_count,
+    scenario_offline_sinks_resolved_by_id,
+    scenario_offline_fixed_clock_preroll,
+    scenario_offline_empty_range_rejected,
+    scenario_offline_destination_unwritable,
+    scenario_offline_loader_gate_timeout_cancel,
+    scenario_offline_late_starting_loader_gate,
+};
+
+#ifndef _WIN32
+// RLIMIT_FSIZE is POSIX-only (see the #else in main() below), so this trio only runs here.
+static bool (*const kEncodeFailureScenarios[])() = {
+    scenario_encode_fail_at_close,
+    scenario_encode_fail_mid_render,
+    scenario_recorder_lost_frames,
+};
+#endif
+
 int main() {
     // Once at startup, like the app's own main(): VideoEncoder::open() no longer does it (it is
     // process-wide, so it used to silence the decoders too), and without this the ~20 lines of
@@ -3315,54 +3384,12 @@ int main() {
     glfwMakeContextCurrent(win);
     if (!gladLoadGL((GLADloadfunc)glfwGetProcAddress)) { glfwTerminate(); return fail("gladLoadGL"); }
 
-    if (!scenario_colour_output()) { glfwDestroyWindow(win); glfwTerminate(); return 1; }
-    if (!scenario_image_streamer()) { glfwDestroyWindow(win); glfwTerminate(); return 1; }
-    if (!scenario_kaleidoscope_fold()) { glfwDestroyWindow(win); glfwTerminate(); return 1; }
-    if (!scenario_image_sequencer_cycle()) { glfwDestroyWindow(win); glfwTerminate(); return 1; }
-    if (!scenario_image_sequencer_crossfade()) { glfwDestroyWindow(win); glfwTerminate(); return 1; }
-    if (!scenario_colour_mix()) { glfwDestroyWindow(win); glfwTerminate(); return 1; }
-    if (!scenario_spectrograph_output()) { glfwDestroyWindow(win); glfwTerminate(); return 1; }
-    if (!scenario_sine_drives_spectrograph()) { glfwDestroyWindow(win); glfwTerminate(); return 1; }
-    if (!scenario_spectrograph_geometry_wireframe()) { glfwDestroyWindow(win); glfwTerminate(); return 1; }
-    if (!scenario_mesh_loader_wireframe()) { glfwDestroyWindow(win); glfwTerminate(); return 1; }
-    if (!scenario_load_mesh_data_diagnostics()) { glfwDestroyWindow(win); glfwTerminate(); return 1; }
-    if (!scenario_meshopt_compressed_gltf()) { glfwDestroyWindow(win); glfwTerminate(); return 1; }
-    if (!scenario_draco_compressed_gltf()) { glfwDestroyWindow(win); glfwTerminate(); return 1; }
-    if (!scenario_video_player_decode()) { glfwDestroyWindow(win); glfwTerminate(); return 1; }
-    if (!scenario_text_geometry_renderers()) { glfwDestroyWindow(win); glfwTerminate(); return 1; }
-    if (!scenario_recorder_video_encoder()) { glfwDestroyWindow(win); glfwTerminate(); return 1; }
-    if (!scenario_audio_file_player_stereo()) { glfwDestroyWindow(win); glfwTerminate(); return 1; }
-    if (!scenario_audio_file_auto_play()) { glfwDestroyWindow(win); glfwTerminate(); return 1; }
-    if (!scenario_world_transform_shared()) { glfwDestroyWindow(win); glfwTerminate(); return 1; }
-    if (!scenario_compositor_blend_matches_shader()) { glfwDestroyWindow(win); glfwTerminate(); return 1; }
-    if (!scenario_hsv_adjust_matches_reference()) { glfwDestroyWindow(win); glfwTerminate(); return 1; }
-    if (!scenario_wireframe_vertex_colour_line()) { glfwDestroyWindow(win); glfwTerminate(); return 1; }
-    if (!scenario_pitch_graph_colour()) { glfwDestroyWindow(win); glfwTerminate(); return 1; }
-    if (!scenario_skybox_cubemap_yaw_pitch()) { glfwDestroyWindow(win); glfwTerminate(); return 1; }
-    if (!scenario_deform_transform_feedback()) { glfwDestroyWindow(win); glfwTerminate(); return 1; }
-    if (!scenario_vertex_trail_snapshots()) { glfwDestroyWindow(win); glfwTerminate(); return 1; }
-    if (!scenario_vertex_trail_linestrip_multidraw()) { glfwDestroyWindow(win); glfwTerminate(); return 1; }
-    if (!scenario_vertex_trail_deform_wireframe_strips()) { glfwDestroyWindow(win); glfwTerminate(); return 1; }
-    if (!scenario_project_save_load_roundtrip()) { glfwDestroyWindow(win); glfwTerminate(); return 1; }
-    if (!scenario_drum_machine()) { glfwDestroyWindow(win); glfwTerminate(); return 1; }
-    if (!scenario_offline_audio_out_no_device()) { glfwDestroyWindow(win); glfwTerminate(); return 1; }
-    if (!scenario_offline_interrupts_live_recording()) { glfwDestroyWindow(win); glfwTerminate(); return 1; }
-    if (!scenario_offline_start_cancel_validation()) { glfwDestroyWindow(win); glfwTerminate(); return 1; }
-    if (!scenario_offline_prefs_single_source()) { glfwDestroyWindow(win); glfwTerminate(); return 1; }
-    if (!scenario_offline_render_every_frame_sample_locked()) { glfwDestroyWindow(win); glfwTerminate(); return 1; }
-    if (!scenario_offline_capture_no_vertical_flip()) { glfwDestroyWindow(win); glfwTerminate(); return 1; }
-    if (!scenario_offline_audio_frame_exact_sample_count()) { glfwDestroyWindow(win); glfwTerminate(); return 1; }
-    if (!scenario_offline_sinks_resolved_by_id()) { glfwDestroyWindow(win); glfwTerminate(); return 1; }
-    if (!scenario_offline_fixed_clock_preroll()) { glfwDestroyWindow(win); glfwTerminate(); return 1; }
-    if (!scenario_offline_empty_range_rejected()) { glfwDestroyWindow(win); glfwTerminate(); return 1; }
-    if (!scenario_offline_destination_unwritable()) { glfwDestroyWindow(win); glfwTerminate(); return 1; }
-    if (!scenario_offline_loader_gate_timeout_cancel()) { glfwDestroyWindow(win); glfwTerminate(); return 1; }
-    if (!scenario_offline_late_starting_loader_gate()) { glfwDestroyWindow(win); glfwTerminate(); return 1; }
+    for (bool (*scenario)() : kScenarios)
+        if (!scenario()) { glfwDestroyWindow(win); glfwTerminate(); return 1; }
 
 #ifndef _WIN32
-    if (!scenario_encode_fail_at_close()) { glfwDestroyWindow(win); glfwTerminate(); return 1; }
-    if (!scenario_encode_fail_mid_render()) { glfwDestroyWindow(win); glfwTerminate(); return 1; }
-    if (!scenario_recorder_lost_frames()) { glfwDestroyWindow(win); glfwTerminate(); return 1; }
+    for (bool (*scenario)() : kEncodeFailureScenarios)
+        if (!scenario()) { glfwDestroyWindow(win); glfwTerminate(); return 1; }
 #else
     std::fprintf(stderr, "gl_smoke SKIP: the three encode-write-failure scenarios (RLIMIT_FSIZE is POSIX-only)\n");
 #endif
