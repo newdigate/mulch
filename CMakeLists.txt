@@ -65,7 +65,17 @@ set(BUILD_TESTS          OFF CACHE BOOL "" FORCE)
 # libsoundio's bundled CMake requires cmake_minimum_required(VERSION 2.8.x),
 # which CMake 4.x rejects. Relax the policy minimum just for its sub-build.
 set(CMAKE_POLICY_VERSION_MINIMUM 3.5)
+# CMP0022 NEW, or the INTERFACE_LINK_LIBRARIES we attach below is silently IGNORED.
+# CMAKE_POLICY_VERSION_MINIMUM only lets the old cmake_minimum_required be accepted; the
+# policies still follow libsoundio's DECLARED 2.8, where CMP0022 is unset. Under that OLD
+# behaviour CMake uses the link IMPLEMENTATION as the link interface, and libsoundio links
+# LIBSOUNDIO_LIBS only to libsoundio_shared -- so libsoundio_static's implementation is empty
+# and nothing propagated. CMake said so in a dev warning on every Linux build:
+#   Target "libsoundio_static" has an INTERFACE_LINK_LIBRARIES property ... but because
+#   CMP0022 is not set CMake is ignoring the property and using the link implementation
+set(CMAKE_POLICY_DEFAULT_CMP0022 NEW)
 FetchContent_MakeAvailable(libsoundio)
+unset(CMAKE_POLICY_DEFAULT_CMP0022)
 unset(CMAKE_POLICY_VERSION_MINIMUM)
 # libsoundio's Debug build adds -Werror; its CoreAudio backend still uses
 # kAudioObjectPropertyElementMaster, deprecated since macOS 12, which then fails
@@ -88,7 +98,23 @@ if(TARGET libsoundio_static)
     # Linux: libsoundio compiles the ALSA backend (from libasound2-dev); link its
     # snd_* symbols. (The PulseAudio backend is intentionally not built — ALSA is the
     # universal backend, and PulseAudio/PipeWire expose ALSA PCM devices anyway.)
-    target_link_libraries(libsoundio_static INTERFACE asound pthread m)
+    #
+    # ALSA::ALSA, not the bare name `asound`. The bare name was silently dropped: a verbose
+    # CI build showed NEITHER binary carrying -lasound, and gl_smoke failing to resolve every
+    # snd_pcm_* symbol. shader_streamer only linked because it ALSO links rtmidi, whose own
+    # find_package(ALSA) put /usr/lib/.../libasound.so on the line -- so this branch had been
+    # dead since it was written, masked by rtmidi on the one target that needed it. gl_smoke
+    # does not link rtmidi, so it broke the moment it started linking libsoundio.
+    # An imported target resolves to an absolute path and does not depend on linker search
+    # paths; it is also exactly the mechanism that demonstrably works here via rtmidi.
+    # Not REQUIRED, and gated on ALSA_FOUND: libsoundio only compiles alsa.c when it finds
+    # ALSA itself, so a box without libasound2-dev has no snd_* symbols to resolve and must
+    # still configure. Same shape as rtmidi's own find_package(ALSA) + if(ALSA_FOUND).
+    find_package(ALSA)
+    if(ALSA_FOUND)
+      target_link_libraries(libsoundio_static INTERFACE ALSA::ALSA)
+    endif()
+    target_link_libraries(libsoundio_static INTERFACE pthread m)
   endif()
 endif()
 

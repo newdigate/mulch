@@ -3079,6 +3079,11 @@ static bool scenario_offline_late_starting_loader_gate() {
 //            (still under the buffer), but ~200 KB over the 8 s this scenario first used,
 //            which would flush and fail the assertion with a misleading message.
 // The mid-render write route is covered by its own scenario below, not by relaxing this one.
+// RLIMIT_FSIZE / SIGXFSZ are POSIX-only, so these three DEFINITIONS must be guarded, not just
+// the table and the loop that call them -- MSVC compiles every function in the file whether or
+// not it is referenced. (Before they were extracted into functions they were bare blocks inside
+// the #ifndef in main(), so the Windows compiler never saw them.)
+#ifndef _WIN32
 static bool scenario_encode_fail_at_close() {
     {
         struct rlimit oldLim{};
@@ -3303,6 +3308,7 @@ static bool scenario_recorder_lost_frames() {
     }
     return true;
 }
+#endif   // _WIN32: the three RLIMIT_FSIZE scenarios above
 
 // The main-body scenarios, in the exact order they must run (several depend on files an
 // earlier one wrote). Looping over this table instead of writing one
