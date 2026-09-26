@@ -344,6 +344,21 @@ fixed, and each fix is pinned by a check that fails when it is reverted.
     the seek's target, over 300). Each check fails when its fix is reverted. The rule that only the chosen
     streams count towards settled audio stays unpinned: `VideoEncoder` cannot write a two-program MPEG-TS.
 
+### Revisions during execution (third code review of Task 5)
+
+62. **Only a caller waiting for audio gives it up.** Revision 57 read "no packet taken since the read-ahead
+    last stopped at the cap" as "the caller is waiting for this audio", which holds only for an offline
+    render: live playback and pauses stop decoding too once the pool is full, and audio given up then was
+    merely late when a render started from there without a seek. On the fragmented ProRes clip a harness
+    reading each frame's audio ahead of the playhead found 30–70 ms of silence; reading as the node does it
+    found none, but only by timing. Now `pumpAudio(t, waitingForAudio)`: the worker passes its offline
+    flag, and a call without it gives nothing up and forgets what an earlier call gave up -- so the first
+    waiting call after live ones only marks the cap, and the worker, which may have just freed buffers,
+    gets to decode before anything is given up. `VideoStream` takes a read-ahead size for tests; with a
+    1-byte read-ahead, an offline render of a clip whose audio starts 1.5 s in must not stall. `seek()` no
+    longer sets the resampler's format as well as freeing it, so the resampler check pins the line that
+    resets it.
+
 ## Root cause
 
 Reproduced with a headless harness that compiles the real `VideoPlayerNode.cpp` and drives
@@ -514,12 +529,15 @@ functions, unit-tested in `core_tests` (the `StepSync.h` / `BarSync.h` pattern).
 - `seek(t) → bool`: to the keyframe at or before t; failing that, the start of the file by timestamp,
   then by byte position -- the only way a raw stream (`AVFMT_NOTIMESTAMPS`) seeks. False when even that
   fails.
-- `pumpAudio(t)`: read ahead (queueing video packets) until the audio is settled up to source time t.
+- `pumpAudio(t, waitingForAudio)`: read ahead (queueing video packets) until the audio is settled up to
+  source time t. Only a caller waiting for the audio -- the worker in an offline render -- lets it give
+  audio up when stuck (below); any other call gives nothing up and forgets what was given up before.
 - `audioSettledUpTo()`: the source time up to which no more audio will arrive -- the decoded audio's
   end, or, once the demuxer has read 2 s past a point without audio for it (counting only the chosen
-  streams' packets), that point; once the read-ahead is stuck at the 64 MB cap (no packet taken off the
-  queue since `pumpAudio()` last stopped there: the caller is waiting for this audio), the latest packet
-  read; +inf at the end of the input or with no audio stream. `setMaxQueuedBytes()` sets the cap for tests.
+  streams' packets), that point; once a waiting caller is stuck at the 64 MB cap (no packet taken off the
+  queue since `pumpAudio(t, true)` last stopped there: its frames all wait on this audio), the latest
+  packet read; +inf at the end of the input or with no audio stream. `setMaxQueuedBytes()` sets the cap for
+  tests (and `VideoStream` takes a read-ahead size to pass on).
 - `takeAudio(out, startT, continues)`: move out the next run of audio decoded since the last call, with
   its start time. Runs follow the source's timestamps: audio within 40 ms of where the audio so far ends
   carries straight on, and a hole or an overlap starts a new run (`continues` false). The resampler is
@@ -836,14 +854,17 @@ the UI keeps running.
   `seek(2.02)` lands on the keyframe 2 s after the first frame and the audio starts with that frame; holes
   of 0.6 s and 64 ms in the audio are kept -- the audio after each resumes at its own time as a new run,
   and `pumpAudio` settles through them; with a 1-byte read-ahead cap and audio starting 1.5 s in, the audio
-  settles through the cap only once no packet has been taken since the last stop; after `seek(1.0)` the
+  settles through the cap only once a waiting caller has taken no packet since the last stop, a caller not
+  waiting gives nothing up and forgets what was given up, and the first waiting stop after it only marks
+  the cap; after `seek(1.0)` the
   44.1 kHz audio is the same whatever played before; two MPEG-TS files end to end (stereo 64×48, then
   mono 80×64) decode through, the second half's frames refused by `convert()`, its audio resampled.
 - **`VideoEncoder` keyframe interval:** with hard cuts every 10 frames, keyframes land exactly every
   50 frames (no scene-cut extras).
 - **`VideoStream`:** a missing file ends `Failed` with a reason; `test.mp4` opens with the right info;
   offline, the frame for 0.73 s is the one at 0.7 s, with audio before it; rendered offline, a clip with
-  a hole in its audio is silent across the hole and plays the tone after it.
+  a hole in its audio is silent across the hole and plays the tone after it; with a 1-byte read-ahead, an
+  offline render of a clip whose audio starts 1.5 s in does not stall.
 - **`VideoStream` reverse through awkward files** (written by the scenario with the indexed-clip
   writer): offline reverse is exact through a first keyframe interval longer than the stretch ring (loop
   on and off) and across the loop seam of an FLV with B-frames; live reverse over that FLV decodes a

@@ -1456,7 +1456,7 @@ EOF
 - Modify (full rewrite): `src/gfx/VideoDecoder.h`, `src/gfx/VideoDecoder.cpp`
 - Modify: `tests/gl_smoke.cpp`
 
-The worker must decode a frame, look at its time, and only then decide to convert it; convert with threads; and keep audio ahead of the video however few frames it buffers. So: `decodeNext()` returns a `DecodedFrame` (a counted reference, nothing copied); `convert()` writes TOP-DOWN RGBA with threaded swscale (the portable FFmpeg ≥ 5 path rejects a negative-stride destination, and FFmpeg 5–7 allocate a new buffer for a destination frame with none — so the caller's buffer is wrapped in a no-op-free `AVBufferRef`); video packets are queued (≤ 64 MB) so `pumpAudio()` can read audio ahead; `thread_count = 0`; an interrupt callback lets a stop abort blocking I/O. The legacy `decodeFrame()` keeps its exact behaviour (bottom-up, single-threaded conversion) — the 15 `gl_smoke` uses rely on it. Every time in and out counts from the first video frame, which `open()` decodes (and the first `decodeNext()` hands out): a container that starts its clock late (MPEG-TS) or shows a B-frame delay with no edit list (FLV, fragmented MP4) would otherwise put the first frame after the playhead's 0 — an offline render could never have its first frame. `seek(t <= 0)` goes to the very start of the file, since a timestamp search (MPEG-TS) can overshoot the first frame's time by a keyframe interval; audio from before the first frame is dropped. `open()` seeks to the start before decoding that first frame, because some demuxers read their keyframe index only when first asked to seek (Matroska and WebM cues) — without it the worker could not seek ahead in the first lap. MPEG-TS and MPEG-PS indexes are ignored (`nextKeyframeAfter` reports none known): their demuxers list every packet they probe while seeking as a keyframe. A frame with no timestamp (the B-frame tail a decoder flushes from an AVI or MPEG-PS, every frame of a raw H.264 stream) takes the previous frame's time plus its duration; one with nothing before it since a seek into the file cannot be placed and is skipped. A raw stream has no times to seek by (a search reads the whole file, then fails), so `seek()` takes it to its first byte, falls back there whenever a seek fails, and returns false only when not even the start can be reached; `open()` fails when no frame decodes. Audio comes out in runs that follow its timestamps — a hole or an overlap starts a new run, which `takeAudio()` flags — the resampler is rebuilt when the audio format changes and reset by a seek, and once the read-ahead is stuck at the 64 MB cap — no packet taken off the queue since `pumpAudio()` last stopped there, so the caller is waiting for this audio — the audio counts as settled up to the last packet read, so an offline render cannot wait forever (while packets are still being taken it only waits: a fragmented MOV puts each fragment's audio after its video). A raw stream's frame duration comes from its decoder (its demuxer knows only 25 fps). The second scenario writes the awkward files itself; one needs FFmpeg's API directly (a remux that leaves a hole in the audio), and the FLV and raw H.264 cases SKIP where there is no H.264 encoder.
+The worker must decode a frame, look at its time, and only then decide to convert it; convert with threads; and keep audio ahead of the video however few frames it buffers. So: `decodeNext()` returns a `DecodedFrame` (a counted reference, nothing copied); `convert()` writes TOP-DOWN RGBA with threaded swscale (the portable FFmpeg ≥ 5 path rejects a negative-stride destination, and FFmpeg 5–7 allocate a new buffer for a destination frame with none — so the caller's buffer is wrapped in a no-op-free `AVBufferRef`); video packets are queued (≤ 64 MB) so `pumpAudio()` can read audio ahead; `thread_count = 0`; an interrupt callback lets a stop abort blocking I/O. The legacy `decodeFrame()` keeps its exact behaviour (bottom-up, single-threaded conversion) — the 15 `gl_smoke` uses rely on it. Every time in and out counts from the first video frame, which `open()` decodes (and the first `decodeNext()` hands out): a container that starts its clock late (MPEG-TS) or shows a B-frame delay with no edit list (FLV, fragmented MP4) would otherwise put the first frame after the playhead's 0 — an offline render could never have its first frame. `seek(t <= 0)` goes to the very start of the file, since a timestamp search (MPEG-TS) can overshoot the first frame's time by a keyframe interval; audio from before the first frame is dropped. `open()` seeks to the start before decoding that first frame, because some demuxers read their keyframe index only when first asked to seek (Matroska and WebM cues) — without it the worker could not seek ahead in the first lap. MPEG-TS and MPEG-PS indexes are ignored (`nextKeyframeAfter` reports none known): their demuxers list every packet they probe while seeking as a keyframe. A frame with no timestamp (the B-frame tail a decoder flushes from an AVI or MPEG-PS, every frame of a raw H.264 stream) takes the previous frame's time plus its duration; one with nothing before it since a seek into the file cannot be placed and is skipped. A raw stream has no times to seek by (a search reads the whole file, then fails), so `seek()` takes it to its first byte, falls back there whenever a seek fails, and returns false only when not even the start can be reached; `open()` fails when no frame decodes. Audio comes out in runs that follow its timestamps — a hole or an overlap starts a new run, which `takeAudio()` flags — the resampler is rebuilt when the audio format changes and reset by a seek, and once a caller waiting for the audio (an offline render: `pumpAudio(t, true)`) is stuck at the 64 MB cap — no packet taken off the queue since it last stopped there — the audio counts as settled up to the last packet read, so an offline render cannot wait forever (while packets are still being taken it only waits: a fragmented MOV puts each fragment's audio after its video; and a caller not waiting gives nothing up, since a live pause stops decoding too). A raw stream's frame duration comes from its decoder (its demuxer knows only 25 fps). The second scenario writes the awkward files itself; one needs FFmpeg's API directly (a remux that leaves a hole in the audio), and the FLV and raw H.264 cases SKIP where there is no H.264 encoder.
 
 - [ ] **Step 1: Add `#include <cstring>` to `tests/gl_smoke.cpp`, after `#include <cstdlib>`**. In `tests/gl_smoke.cpp`, replace:
 
@@ -1819,27 +1819,35 @@ static bool scenario_video_decoder_awkward_files() {
         if (!std::isinf(h.audioSettledUpTo())) { return failed("audio hole: at the end of the input all the audio is settled"); }
     }
 
-    // The read-ahead cap (1 byte here: full after a single packet), with audio that starts 1.5 s in. While
-    // packets are still being taken off the queue, pumpAudio waits at the cap -- audio that a file puts after
-    // a run of video (fragmented MOV) still arrives. Once none has been taken since it last stopped there,
-    // nothing will drain the queue: what was read counts as settled (an offline render would wait forever).
+    // The read-ahead cap (1 byte here: full after a single packet), with audio that starts 1.5 s in. A caller
+    // waiting for the audio (an offline render) that is still taking packets off the queue only waits at
+    // the cap -- audio a file puts after a run of video (fragmented MOV) still arrives. Once it has taken
+    // none since the last stop, nothing will drain the queue: what was read counts as settled (it would
+    // wait forever). A caller that is not waiting (live) gives nothing up, even when it stops decoding.
     const std::string lateAudio = "build/_late_audio.mkv";
     if (!writeAudioHoleClip(lateAudio, -1.0, 1.5)) { return failed("read-ahead cap: writing the clip failed"); }
     VideoDecoder q;
     q.setMaxQueuedBytes(1);
     DecodedFrame q0, q1;
     if (!q.open(lateAudio, err) || !q.decodeNext(q0)) { return failed("read-ahead cap: open"); }
-    q.pumpAudio(1.0);                                    // stops at the cap
+    q.pumpAudio(1.0, true);                              // stops at the cap
     const double atCap = q.audioSettledUpTo();
     if (!q.decodeNext(q1)) { return failed("read-ahead cap: decode"); }
-    q.pumpAudio(1.0);                                    // a packet was taken since: still draining
+    q.pumpAudio(1.0, true);                              // a packet was taken since: still draining
     const double draining = q.audioSettledUpTo();
-    q.pumpAudio(1.0);                                    // none since: stuck
+    q.pumpAudio(1.0, true);                              // none since: stuck
     const double stuck = q.audioSettledUpTo();
-    if (atCap >= 0.0 || draining >= 0.0 || !(stuck >= q1.t)) {
-        std::fprintf(stderr, "read-ahead cap: settled up to %.3f at the cap, %.3f while draining, %.3f once stuck\n",
-                     atCap, draining, stuck);
-        return failed("read-ahead cap: the audio must settle through the cap once, and only once, nothing drains the queue");
+    q.pumpAudio(1.0);                                    // not waiting: what was given up is forgotten...
+    q.pumpAudio(1.0);                                    // ...and stuck again, nothing is given up
+    const double live = q.audioSettledUpTo();
+    q.pumpAudio(1.0, true);                              // waiting again: its first stop -- not stuck yet
+    const double rewaiting = q.audioSettledUpTo();
+    q.pumpAudio(1.0, true);                              // stuck
+    const double restuck = q.audioSettledUpTo();
+    if (atCap >= 0.0 || draining >= 0.0 || !(stuck >= q1.t) || live >= 0.0 || rewaiting >= 0.0 || !(restuck >= q1.t)) {
+        std::fprintf(stderr, "read-ahead cap: settled up to %.3f at the cap, %.3f while draining, %.3f once stuck, "
+                     "%.3f live, %.3f waiting again, %.3f stuck again\n", atCap, draining, stuck, live, rewaiting, restuck);
+        return failed("read-ahead cap: the audio must settle through the cap once, and only once, a waiting caller is stuck");
     }
 
     // A seek resets the resampler: the audio after seek(1.0) is the same whatever played before it (at
@@ -2051,21 +2059,25 @@ public:
 
     // Read ahead -- queueing video packets instead of decoding them -- until the audio is settled up
     // to time `t` (see audioSettledUpTo), the input ends, or kMaxQueuedBytes of video packets
-    // are waiting.
-    void pumpAudio(double t);
+    // are waiting. `waitingForAudio`: the caller cannot go on without this audio (an offline render),
+    // so pumpAudio may give it up when stuck (see audioSettledUpTo). A call without it gives nothing
+    // up, and forgets what an earlier call gave up.
+    void pumpAudio(double t, bool waitingForAudio = false);
 
     // Tests only: cap the read-ahead at `bytes` instead of kMaxQueuedBytes.
     void setMaxQueuedBytes(std::size_t bytes) { maxQueuedBytes_ = bytes; }
 
     // The time up to which no more audio will arrive: the end of the decoded audio, or -- once
     // the demuxer has read kAudioSettleSlack past a point without meeting audio for it -- that
-    // point. +inf at the end of the input or with no audio stream. When pumpAudio() finds the
-    // queue still at kMaxQueuedBytes with no packet taken off it since it last stopped there, the
-    // caller has stopped decoding -- it is waiting for this audio -- and nothing will ever drain
-    // the queue: the audio then counts as settled up to the latest packet read. (Reading further
-    // would take unbounded memory: 4K ProRes runs past 64 MB in under a second.) While the caller
-    // is still taking packets, it only waits: audio that a file puts after a long run of video
-    // (fragmented MOV writes each fragment's video, then its audio) still arrives.
+    // point. +inf at the end of the input or with no audio stream. A caller waiting for audio can
+    // get stuck: when pumpAudio(t, true) finds the queue still at kMaxQueuedBytes with no packet
+    // taken off it since it last stopped there, the caller has stopped decoding -- its frames all
+    // wait on this audio -- and nothing will ever drain the queue, so the audio counts as settled up
+    // to the latest packet read. (Reading further would take unbounded memory: 4K ProRes runs past
+    // 64 MB in under a second.) While packets are still being taken it only waits: audio that a file
+    // puts after a run of video (fragmented MOV writes each fragment's video, then its audio) still
+    // arrives. Only a waiting caller gives audio up: a live pause stops decoding too, and audio given
+    // up then would be merely late once a render starts.
     double audioSettledUpTo() const;
 
     // Move out the next run of audio decoded since the last call (48 kHz mono float): samples
@@ -2396,7 +2408,6 @@ bool VideoDecoder::seek(double t) {
     if (vctx_) avcodec_flush_buffers(vctx_);
     if (actx_) avcodec_flush_buffers(actx_);
     if (swr_) swr_free(&swr_);   // it holds samples from before the seek
-    swrFormat_ = -1;
     clearQueue();
     resetStreamState();
     nextT_ = atStart ? startT_ : kNaN;   // a first frame with no timestamp: the file's first, or unknown
@@ -2498,13 +2509,17 @@ void VideoDecoder::placeAudio(double start, const float* s, std::size_t n) {
     }
 }
 
-void VideoDecoder::pumpAudio(double t) {
+void VideoDecoder::pumpAudio(double t, bool waitingForAudio) {
     if (!fmt_ || !actx_) return;
+    if (!waitingForAudio) { capSettledT_ = -kInf; takenAtCap_ = ~std::uint64_t(0); }   // gives nothing up
     while (audioSettledUpTo() < t) {
         if (queuedBytes_ >= maxQueuedBytes_) {
-            // Full. Stuck -- nothing taken off the queue since the last time -- settles what was read.
-            if (packetsTaken_ == takenAtCap_) capSettledT_ = std::max(capSettledT_, demuxedT_);
-            takenAtCap_ = packetsTaken_;
+            // Full. A waiting caller that took nothing off the queue since the last time is stuck: what was
+            // read counts as settled (see the header).
+            if (waitingForAudio) {
+                if (packetsTaken_ == takenAtCap_) capSettledT_ = std::max(capSettledT_, demuxedT_);
+                takenAtCap_ = packetsTaken_;
+            }
             return;
         }
         if (!readPacket()) return;
@@ -2807,7 +2822,7 @@ EOF
 - Modify: `CMakeLists.txt` (`APP_SOURCES` and the `gl_smoke` sources)
 - Modify: `tests/gl_smoke.cpp`
 
-One worker thread per file. It opens the file, sizes a pool of RGBA buffers from the 512 MB budget, then loops: snapshot the request, recycle frames that can never be shown, read audio ahead, ask `videoNextStep()` what to do, and do it — never holding the mutex while decoding or converting. The graph thread only calls `request()`, `frameAt()` (the frame it returns is *checked out* until the next call), `readAudio()`, and offline `frameReadyFor()` / `waitForFrame()`. Details that the prototype showed matter: live catch-up is sliced to 100 ms so a decoder slower than the playhead still moves the picture; a seek keeps the newest frame at or before its target; a seek lands where its decode loop admits frames, retrying further back (1 s, 2 s, 4 s… to the file's start) when it lands late — a decode-time index lands a seek just below a keyframe ON it, a timestamp search (MPEG-TS) overshoots a keyframe interval, and some demuxers find nothing near the end — and is *pinned* only if even the start lands late; reverse stretches are published whole (they decode forwards); offline, a stretch whose ring evicted its lower frames covers only down to its oldest; a frame at or past the duration ends the lap. With loop off, frames past the playhead's lap are kept (they are the next ones if loop comes back on) and what reverse covered below the lap is dropped with its frames; runs end at the lap's end whether looping or not; a wrap forgets what the last seek taught about keyframes (`noSeekBelow`), which was about the old lap. An offline render that starts in reverse restarts the run — live stretches kept every stride-th frame — and until an offline stretch lands, reverse readiness says no. The decoder's audio runs follow its timestamps: the worker begins a new chunk wherever a run does not continue the one before (a hole in the source's audio then reads as silence), and a seek that cannot reach even the file's start fails the stream rather than being tried again every step. The new scenarios write the awkward files themselves — a long first keyframe interval, an FLV with B-frames (those parts SKIP without an H.264 encoder), an AVI whose last keyframe is its last frame (a seek there yields only an untimed frame, which the decoder skips), a one-keyframe clip for loop toggles — and count reverse stretches (`reverseStretches()`; `seeks()` is its forward twin) to prove live reverse cannot spin.
+One worker thread per file. It opens the file, sizes a pool of RGBA buffers from the 512 MB budget, then loops: snapshot the request, recycle frames that can never be shown, read audio ahead, ask `videoNextStep()` what to do, and do it — never holding the mutex while decoding or converting. The graph thread only calls `request()`, `frameAt()` (the frame it returns is *checked out* until the next call), `readAudio()`, and offline `frameReadyFor()` / `waitForFrame()`. Details that the prototype showed matter: live catch-up is sliced to 100 ms so a decoder slower than the playhead still moves the picture; a seek keeps the newest frame at or before its target; a seek lands where its decode loop admits frames, retrying further back (1 s, 2 s, 4 s… to the file's start) when it lands late — a decode-time index lands a seek just below a keyframe ON it, a timestamp search (MPEG-TS) overshoots a keyframe interval, and some demuxers find nothing near the end — and is *pinned* only if even the start lands late; reverse stretches are published whole (they decode forwards); offline, a stretch whose ring evicted its lower frames covers only down to its oldest; a frame at or past the duration ends the lap. With loop off, frames past the playhead's lap are kept (they are the next ones if loop comes back on) and what reverse covered below the lap is dropped with its frames; runs end at the lap's end whether looping or not; a wrap forgets what the last seek taught about keyframes (`noSeekBelow`), which was about the old lap. An offline render that starts in reverse restarts the run — live stretches kept every stride-th frame — and until an offline stretch lands, reverse readiness says no. The decoder's audio runs follow its timestamps: the worker begins a new chunk wherever a run does not continue the one before (a hole in the source's audio then reads as silence), and a seek that cannot reach even the file's start fails the stream rather than being tried again every step. The worker passes its offline flag to `pumpAudio()`, so only an offline render — which cannot go on without the audio — lets the decoder give it up; `VideoStream` takes a read-ahead size so a test can cap it. The new scenarios write the awkward files themselves — a long first keyframe interval, an FLV with B-frames (those parts SKIP without an H.264 encoder), an AVI whose last keyframe is its last frame (a seek there yields only an untimed frame, which the decoder skips), a one-keyframe clip for loop toggles — and count reverse stretches (`reverseStretches()`; `seeks()` is its forward twin) to prove live reverse cannot spin.
 
 - [ ] **Step 1: Add `#include "gfx/VideoStream.h"` to `tests/gl_smoke.cpp`, after `#include "gfx/VideoDecoder.h"`**. In `tests/gl_smoke.cpp`, replace:
 
@@ -2921,6 +2936,26 @@ static bool scenario_video_stream_basics() {
         if (rms(1.1, 1.5) > 1e-3 || rms(1.7, 1.9) < 0.1) {
             std::fprintf(stderr, "video stream: audio RMS %.4f inside the hole, %.4f after it\n", rms(1.1, 1.5), rms(1.7, 1.9));
             return failed("video stream: the audio after a hole must play at its own time, with silence across the hole");
+        }
+
+        // An offline render must not wait forever for audio the read-ahead cannot reach: with it capped at a
+        // byte, 4 buffers and the audio starting 1.5 s in, the worker's frames all wait on audio nothing will
+        // read, so it gives that audio up (VideoDecoder::pumpAudio) -- and only then.
+        const std::string lateAudio = "build/_stream_late_audio.mkv";
+        if (!writeAudioHoleClip(lateAudio, -1.0, 1.5)) { return failed("video stream: writing the late-audio clip failed"); }
+        VideoStream l(lateAudio, (std::size_t)64 * 48 * 4 * 4, 1);
+        while (l.state() == VideoStream::State::Opening && secondsSince(t0) < 30.0)
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        if (l.state() != VideoStream::State::Ready) { return failed("video stream: the late-audio clip did not open"); }
+        for (int k = 0; k <= 50; ++k) {
+            VideoRequest lr;
+            lr.u = k / 25.0; lr.rate = 1.0f; lr.offline = true;
+            l.request(lr);
+            VideoStream::FrameView lv;
+            if (!l.waitForFrame(lr.u, 5.0) || !l.frameAt(lr.u, lv)) {
+                std::fprintf(stderr, "video stream: the late-audio clip stalled at u=%.2f\n", lr.u);
+                return failed("video stream: an offline render must not wait forever for audio the read-ahead cannot reach");
+            }
         }
         std::fprintf(stderr, "gl_smoke OK: VideoStream opens, reports its info, fails cleanly, and serves the exact frame + audio\n");
     }
@@ -3258,7 +3293,9 @@ public:
         std::uint64_t       serial = 0;     // changes whenever a different frame is shown
     };
 
-    explicit VideoStream(std::string path, std::size_t poolBytes = kVideoPoolBytes);
+    // `readAheadBytes` caps the decoder's read-ahead (tests set it small; see VideoDecoder::pumpAudio).
+    explicit VideoStream(std::string path, std::size_t poolBytes = kVideoPoolBytes,
+                         std::size_t readAheadBytes = VideoDecoder::kMaxQueuedBytes);
     ~VideoStream();                        // stops and joins the worker
     VideoStream(const VideoStream&) = delete;
     VideoStream& operator=(const VideoStream&) = delete;
@@ -3297,7 +3334,7 @@ private:
     void waitForWork();
     bool peekNext();
     void takeAudio();
-    void pumpAudio(double u);
+    void pumpAudio(double u, bool offline);
     void seekDecoder(double t);
     bool seekLanding(double end, double slack);
     void seekTo(double target);
@@ -3322,6 +3359,7 @@ private:
 
     const std::string path_;
     const std::size_t poolBytes_;
+    const std::size_t readAheadBytes_;
     std::atomic<bool> stop_{false};
     std::atomic<std::uint64_t> seeks_{0}, reverseStretches_{0};
 
@@ -3388,8 +3426,8 @@ namespace oss {
 
 namespace { constexpr double kInf = std::numeric_limits<double>::infinity(); }
 
-VideoStream::VideoStream(std::string path, std::size_t poolBytes)
-    : path_(std::move(path)), poolBytes_(poolBytes), audio_(VideoDecoder::kOutRate) {
+VideoStream::VideoStream(std::string path, std::size_t poolBytes, std::size_t readAheadBytes)
+    : path_(std::move(path)), poolBytes_(poolBytes), readAheadBytes_(readAheadBytes), audio_(VideoDecoder::kOutRate) {
     thread_ = std::thread([this] { run(); });
 }
 
@@ -3539,6 +3577,7 @@ void VideoStream::setFailed(const std::string& msg) {
 void VideoStream::run() {
     try {
         std::string err;
+        dec_.setMaxQueuedBytes(readAheadBytes_);
         if (!dec_.open(path_, err, &stop_)) { setFailed(err); return; }
         Info inf;
         inf.width    = dec_.width();
@@ -3633,7 +3672,7 @@ void VideoStream::step() {
     in.coverHi    = coverHi_;
     in.lead       = r.offline ? 0.0 : std::min(2.0, std::fabs((double)r.rate) * lastStretchSeconds_);
 
-    if (dir >= 0) pumpAudio(r.u);                               // keep the audio ahead of the playhead
+    if (dir >= 0) pumpAudio(r.u, r.offline);                    // keep the audio ahead of the playhead
 
     const VideoStep s = videoNextStep(in);
     switch (s.kind) {
@@ -3693,9 +3732,11 @@ void VideoStream::takeAudio() {
     cv_.notify_all();
 }
 
-void VideoStream::pumpAudio(double u) {
+// Read the audio ahead of u. An offline render cannot go on without it: the decoder may give it up
+// only then (VideoDecoder::pumpAudio).
+void VideoStream::pumpAudio(double u, bool offline) {
     if (!winfo_.hasAudio) return;
-    dec_.pumpAudio(u + kVideoAudioLead - lapOffset_);
+    dec_.pumpAudio(u + kVideoAudioLead - lapOffset_, offline);
     takeAudio();
 }
 
@@ -3767,7 +3808,7 @@ void VideoStream::catchUp(double target) {
         held = std::move(next_);
         heldT = t;
         lastT_ = t;
-        pumpAudio(target);
+        pumpAudio(target, offline);
         if (directionChanged()) return;
         std::lock_guard<std::mutex> lk(m_);
         if (!req_.offline && req_.u > target) target = req_.u;
@@ -4842,9 +4883,9 @@ with:
   stream has no times to seek by, so `seek()` sends it to its first byte (the fallback for any
   failed seek; `seek()` returns false only when not even the start is reachable). Audio comes out
   in runs that follow its timestamps (`takeAudio(out, startT, continues)`: a hole or an overlap
-  starts a new run), the resampler is rebuilt when the audio format changes, and once the
-  read-ahead is stuck at the 64 MB cap (nothing taken off the queue since `pumpAudio()` last
-  stopped there) the audio counts as settled up to the last packet read.
+  starts a new run), the resampler is rebuilt when the audio format changes, and once an
+  offline caller (`pumpAudio(t, true)`) is stuck at the 64 MB cap (nothing taken off the queue
+  since it last stopped there) the audio counts as settled up to the last packet read.
 - **The Video Player decodes on a worker** (`src/gfx/VideoStream.{h,cpp}`, one per node,
   GL-free): it opens the file, keeps a fixed pool of RGBA frames (512 MB budget:
   `core/VideoPlan.h` `videoPoolFrames`) decoded ahead of the requested playhead, and reads
