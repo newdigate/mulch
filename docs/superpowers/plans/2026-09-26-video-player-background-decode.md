@@ -976,16 +976,19 @@ EOF
 - Create: `tests/test_timed_audio.cpp`
 - Modify: `CMakeLists.txt` (the `core_tests` source list)
 
-The worker's audio, as chunks tagged with unwrapped time. `sample()` reproduces the node's old `emitAudio` mapping exactly; uncovered time is silence; where chunks overlap at a loop seam the later-starting chunk wins; `append(..., clipHi)` lets a reverse stretch stop at the start of the stretch above it.
+The worker's audio, as chunks tagged with unwrapped time. `sample()` reproduces the node's old `emitAudio` mapping exactly; uncovered time is silence; a chunk covers up to the end of its last sample, so adjacent chunks tile; where chunks overlap the most recently begun one wins (the new lap at a loop seam; in reverse the stretch below, since the one above resumes its audio just before its keyframe out of a flushed decoder); `append(..., clipHi)` keeps the samples that start before the stretch above; `retain()` keeps the playhead's neighbourhood (trimming chunk backs in reverse), and a 180 s cap drops the chunk farthest from the playhead.
 
 - [ ] **Step 1: Write the failing tests** — `tests/test_timed_audio.cpp` (complete file)
 
 ```cpp
 #include <doctest/doctest.h>
+#include <limits>
 #include <vector>
 #include "core/TimedAudio.h"
 
 using namespace oss;
+
+static const double kInfT = std::numeric_limits<double>::infinity();
 
 // A chunk whose sample i holds the value i, starting at `start`.
 static void addRamp(TimedAudio& a, double start, int n) {
@@ -1023,54 +1026,104 @@ TEST_CASE("TimedAudio: times no chunk covers are silence") {
     empty.sample(0.0, 1.0, &v, 1); CHECK(v == 0.0f);
 }
 
-TEST_CASE("TimedAudio: where chunks overlap, the later-starting chunk wins (a loop seam)") {
+TEST_CASE("TimedAudio: a chunk covers its last interval, so adjacent chunks tile (a loop seam)") {
+    TimedAudio a(1000);
+    std::vector<float> ones(1000, 1.0f), twos(1000, 2.0f);
+    a.beginChunk(0.0); a.append(ones.data(), ones.size());       // lap 0's audio ends exactly at D = 1
+    a.beginChunk(1.0); a.append(twos.data(), twos.size());       // lap 1 starts at D
+    std::vector<float> out(40);
+    a.sample(0.98, 1.02, out.data(), 40);                         // one output sample per source sample
+    for (int j = 0; j < 40; ++j) CHECK(out[(std::size_t)j] == doctest::Approx(j < 20 ? 1.0f : 2.0f));
+    float v = 0.0f;
+    a.sample(0.9995, 0.9995, &v, 1); CHECK(v == doctest::Approx(1.0f));   // the last interval holds
+}
+
+TEST_CASE("TimedAudio: where chunks overlap, the most recently begun wins") {
     TimedAudio a(1000);
     std::vector<float> ones(2000, 1.0f), twos(2000, 2.0f);
     a.beginChunk(0.0); a.append(ones.data(), ones.size());       // [0, 2)
-    a.beginChunk(1.5); a.append(twos.data(), twos.size());       // [1.5, 3.5)
+    a.beginChunk(1.5); a.append(twos.data(), twos.size());       // [1.5, 3.5): a loop seam, the new lap
     float v = 0.0f;
     a.sample(1.0, 1.0, &v, 1); CHECK(v == doctest::Approx(1.0f));
     a.sample(1.6, 1.6, &v, 1); CHECK(v == doctest::Approx(2.0f));
     a.sample(3.0, 3.0, &v, 1); CHECK(v == doctest::Approx(2.0f));
+    // Reverse: the stretch above was decoded first, and its audio resumes a little before its keyframe
+    // (1.0) out of a just-flushed decoder. The stretch below, decoded next and clipped at that keyframe,
+    // runs on unbroken there -- and wins, though it starts earlier.
+    TimedAudio r(1000);
+    std::vector<float> above(2000, 2.0f), below(3000, 1.0f);
+    r.beginChunk(0.9);  r.append(above.data(), above.size());
+    r.beginChunk(-1.0); r.append(below.data(), below.size(), 1.0);
+    r.sample(0.95, 0.95, &v, 1); CHECK(v == doctest::Approx(1.0f));
+    r.sample(1.50, 1.50, &v, 1); CHECK(v == doctest::Approx(2.0f));
 }
 
-TEST_CASE("TimedAudio: append keeps only samples before clipHi") {
+TEST_CASE("TimedAudio: append keeps the samples that start before clipHi") {
     TimedAudio a(1000);
     std::vector<float> s(100, 1.0f);
     a.beginChunk(0.0);
-    a.append(s.data(), s.size(), 0.010);                          // 10 samples fit before 10 ms
-    CHECK(a.size() == 10);
-    a.append(s.data(), s.size(), 0.010);                          // already at the clip: nothing more
-    CHECK(a.size() == 10);
+    a.append(s.data(), s.size(), 0.0105);                         // samples at 0..10 ms start before 10.5 ms
+    CHECK(a.size() == 11);
+    a.append(s.data(), s.size(), 0.0105);                         // the next would start at 11 ms: none
+    CHECK(a.size() == 11);
     TimedAudio none;
     none.append(s.data(), s.size());                              // no chunk begun: no-op
     CHECK(none.size() == 0);
 }
 
-TEST_CASE("TimedAudio: retain drops chunks outside the window and trims fronts a second at a time") {
+TEST_CASE("TimedAudio: retain drops chunks outside the window and trims fronts once a second is stale") {
     TimedAudio a(1000);
     std::vector<float> s(5000, 1.0f);
     a.beginChunk(0.0);  a.append(s.data(), s.size());            // [0, 5)
     a.beginChunk(10.0); a.append(s.data(), s.size());            // [10, 15): current
-    a.retain(6.0, 100.0);                                         // the first chunk ends before 6
+    a.retain(6.0, kInfT);                                         // the first chunk ends before 6
     CHECK(a.size() == 5000);
-    a.retain(10.5, 100.0);                                        // under a second into the chunk: kept
+    a.retain(10.5, kInfT);                                        // under a second into the chunk: kept
     CHECK(a.size() == 5000);
-    a.retain(12.5, 100.0);                                        // 2.5 s in: trimmed
+    a.retain(12.5, kInfT);                                        // 2.5 s in: trimmed
     CHECK(a.size() == 2500);
     float v = 0.0f;
     a.sample(13.0, 13.0, &v, 1); CHECK(v == doctest::Approx(1.0f));
 }
 
-TEST_CASE("TimedAudio: holds at most kMaxSeconds, dropping the oldest chunks first") {
-    TimedAudio a(100);
-    std::vector<float> s(2000, 1.0f);                             // 20 s per chunk at 100 Hz
-    a.beginChunk(0.0);  a.append(s.data(), s.size());
-    a.beginChunk(20.0); a.append(s.data(), s.size());             // 40 s held: the first chunk goes
-    CHECK(a.size() == 2000);
+TEST_CASE("TimedAudio: in reverse, retain trims what the playhead has passed from the backs of chunks") {
+    TimedAudio a(1000);
+    std::vector<float> s(10000, 1.0f);
+    a.beginChunk(10.0); a.append(s.data(), s.size());            // [10, 20): the stretch being played
+    a.beginChunk(0.0);  a.append(s.data(), s.size(), 10.0);      // [0, 10): the stretch below, current
+    a.retain(-kInfT, 12.0 + 0.5);                                 // the playhead at 12, keeping 0.5 s above
+    CHECK(a.size() == 10000 + 2500);                              // [10, 12.5) and [0, 10)
     float v = 0.0f;
-    a.sample(10.0, 10.0, &v, 1); CHECK(v == 0.0f);
-    a.sample(30.0, 30.0, &v, 1); CHECK(v == doctest::Approx(1.0f));
+    a.sample(12.4, 12.4, &v, 1); CHECK(v == doctest::Approx(1.0f));
+    a.sample(12.6, 12.6, &v, 1); CHECK(v == 0.0f);
+    a.retain(-kInfT, 12.0);                                       // under a second more: left alone
+    CHECK(a.size() == 10000 + 2500);
+}
+
+TEST_CASE("TimedAudio: the cap drops the chunk farthest from the playhead -- in reverse, not the one playing") {
+    const int rate = 100;
+    const std::size_t half = (std::size_t)(TimedAudio::kMaxSeconds * rate / 2) + rate;   // just over half the cap
+    std::vector<float> s(half, 1.0f);
+    const double len = (double)half / rate;
+    TimedAudio a(rate);                                           // before any retain(): the oldest goes
+    a.beginChunk(0.0); a.append(s.data(), s.size());
+    a.beginChunk(len); a.append(s.data(), s.size());              // over the cap
+    CHECK(a.size() == half);
+    float v = 0.0f;
+    a.sample(0.5 * len, 0.5 * len, &v, 1); CHECK(v == 0.0f);
+    a.sample(1.5 * len, 1.5 * len, &v, 1); CHECK(v == doctest::Approx(1.0f));
+    const std::size_t third = (std::size_t)(TimedAudio::kMaxSeconds * rate / 3) + rate;  // three are over
+    std::vector<float> t(third, 1.0f);
+    const double tl = (double)third / rate;
+    TimedAudio r(rate);                                           // reverse: the playhead in the first chunk
+    r.beginChunk(2.0 * tl); r.append(t.data(), t.size());        // the stretch playing
+    r.retain(-kInfT, 2.5 * tl);
+    r.beginChunk(tl); r.append(t.data(), t.size());              // the stretch below
+    r.beginChunk(0.0); r.append(t.data(), t.size());             // and the one below that: over the cap
+    CHECK(r.size() == 2 * third);
+    r.sample(2.4 * tl, 2.4 * tl, &v, 1); CHECK(v == doctest::Approx(1.0f));     // still playing
+    r.sample(1.5 * tl, 1.5 * tl, &v, 1); CHECK(v == 0.0f);                      // the farthest went
+    r.sample(0.5 * tl, 0.5 * tl, &v, 1); CHECK(v == doctest::Approx(1.0f));     // the current one stays
 }
 ```
 
@@ -1100,21 +1153,28 @@ Expected: the build FAILS, with an error mentioning `core/TimedAudio.h' file not
 ```cpp
 #pragma once
 #include <algorithm>
+#include <cmath>
 #include <cstddef>
 #include <limits>
+#include <utility>
 #include <vector>
 
 namespace oss {
 
 // Decoded audio tagged with UNWRAPPED time (see core/VideoPlan.h), for the Video Player's worker.
-// Audio is kept as contiguous chunks, each a start time plus mono samples at `rate`. A seek, a loop
-// wrap or a reverse stretch begins a new chunk. sample() maps output samples onto source time exactly
-// as the node's emitAudio always did (linear interpolation; a reversed span reads backwards). Times
-// no chunk covers are silence, and where chunks overlap (a loop seam) the later-starting chunk wins.
+// Audio is kept as contiguous chunks, each a start time plus mono samples at `rate`, covering
+// [start, start + size / rate): a chunk's last interval holds its last sample, so adjacent chunks tile.
+// A seek, a loop wrap or a reverse stretch begins a new chunk. sample() maps output samples onto source
+// time exactly as the node's emitAudio always did (linear interpolation; a reversed span reads
+// backwards). Times no chunk covers are silence. Where chunks overlap, the most recently begun one wins:
+// at a loop seam that is the new lap; in reverse it is the stretch below, whose audio runs on unbroken
+// up to where the stretch above resumed its own -- a little before that stretch's keyframe, with a
+// just-flushed decoder fading in.
 // GL-free. Not thread-safe: VideoStream guards it with its mutex.
 class TimedAudio {
 public:
-    static constexpr double kMaxSeconds = 30.0;   // safety cap on everything held
+    static constexpr double kMaxSeconds = 180.0;  // safety cap on everything held (about 35 MB at 48 kHz)
+    static constexpr double kGridEps    = 1e-6;   // samples: a time on the sample grid is not rounded past
 
     explicit TimedAudio(int rate = 48000) : rate_(rate) {}
 
@@ -1125,33 +1185,38 @@ public:
     // Start a new chunk at unwrapped time `startU`; append() adds to it.
     void beginChunk(double startU) { chunks_.push_back(Chunk{startU, {}}); }
 
-    // Append to the current chunk, keeping only samples that start before `clipHi` (a reverse stretch
-    // passes the start of the stretch above it, so the two never overlap). No-op with no chunk.
+    // Append to the current chunk, keeping only the samples that start before `clipHi` (a reverse
+    // stretch passes the start of the stretch above it). No-op with no chunk.
     void append(const float* s, std::size_t n,
                 double clipHi = std::numeric_limits<double>::infinity()) {
         if (chunks_.empty() || n == 0) return;
         Chunk& c = chunks_.back();
-        const double room = (clipHi - end(c)) * rate_;
-        if (room <= 0.0) return;
+        const double room = std::ceil((clipHi - end(c)) * rate_ - kGridEps);
+        if (!(room > 0.0)) return;
         const std::size_t take = room < (double)n ? (std::size_t)room : n;
         c.s.insert(c.s.end(), s, s + take);
         capTotal();
     }
 
-    // Drop audio lying entirely outside [lo, hi]. A chunk's front is trimmed only a whole second at a
-    // time, so calling this every frame does not memmove the buffer every frame.
+    // Keep the audio around the playhead: [lo, hi] is forward [u - keep, +inf), reverse (-inf, u + keep].
+    // Chunks wholly outside go (never the current one). A chunk's front (forward) or back (reverse) is cut
+    // once more than a second of it lies outside, so calling this every step does not move memory every
+    // step. It also notes where the playhead is, for the cap.
     void retain(double lo, double hi) {
+        focus_ = std::isfinite(lo) ? (std::isfinite(hi) ? 0.5 * (lo + hi) : lo) : hi;
         std::vector<Chunk> kept;
         kept.reserve(chunks_.size());
         for (std::size_t i = 0; i < chunks_.size(); ++i) {
             Chunk& c = chunks_[i];
             const bool current = i + 1 == chunks_.size();
             if (!current && (end(c) < lo || c.start > hi)) continue;
-            if (lo > c.start + 1.0) {
+            if (std::isfinite(lo) && lo > c.start + 1.0) {
                 const std::size_t drop = std::min(c.s.size(), (std::size_t)((lo - c.start) * rate_));
                 c.s.erase(c.s.begin(), c.s.begin() + (std::ptrdiff_t)drop);
                 c.start += (double)drop / rate_;
             }
+            if (!current && std::isfinite(hi) && end(c) > hi + 1.0)
+                c.s.resize((std::size_t)std::max(0.0, std::ceil((hi - c.start) * rate_ - kGridEps)));
             kept.push_back(std::move(c));
         }
         chunks_.swap(kept);
@@ -1159,6 +1224,10 @@ public:
 
     // n output samples spanning source time [u0, u1] (u1 < u0 reads backwards).
     void sample(double u0, double u1, float* out, int n) const {
+        const double lo = std::min(u0, u1), hi = std::max(u0, u1);
+        span_.clear();                                   // the chunks the span touches, newest first
+        for (std::size_t k = chunks_.size(); k-- > 0;)
+            if (chunks_[k].start <= hi && end(chunks_[k]) > lo) span_.push_back(&chunks_[k]);
         for (int j = 0; j < n; ++j) out[j] = at(u0 + (u1 - u0) * ((double)j / n));
     }
 
@@ -1174,33 +1243,47 @@ private:
 
     double end(const Chunk& c) const { return c.start + (double)c.s.size() / rate_; }
 
+    // The sample at t from the newest chunk of span_ covering it.
     float at(double t) const {
-        const Chunk* best = nullptr;
-        for (const Chunk& c : chunks_) {
-            const double idx = (t - c.start) * rate_;
-            if (idx >= 0.0 && idx < (double)c.s.size() - 1.0 && (!best || c.start > best->start)) best = &c;
+        for (const Chunk* c : span_) {
+            const double idx = (t - c->start) * rate_;
+            if (!(idx >= 0.0 && idx < (double)c->s.size())) continue;
+            const std::size_t i = (std::size_t)idx;
+            const float fr = (float)(idx - (double)i);
+            const float next = i + 1 < c->s.size() ? c->s[i + 1] : c->s[i];
+            return c->s[i] * (1.0f - fr) + next * fr;
         }
-        if (!best) return 0.0f;
-        const double idx = (t - best->start) * rate_;
-        const std::size_t i = (std::size_t)idx;
-        const float fr = (float)(idx - (double)i);
-        return best->s[i] * (1.0f - fr) + best->s[i + 1] * fr;
+        return 0.0f;
     }
 
-    // Drop the oldest chunks (never the current one) while more than kMaxSeconds is held.
+    // While more than kMaxSeconds is held, drop the chunk farthest from the playhead (never the current
+    // one; before any retain() the oldest goes first). In reverse the oldest chunk is the one being played.
     void capTotal() {
         const std::size_t cap = (std::size_t)(kMaxSeconds * rate_);
-        while (chunks_.size() > 1 && size() > cap) chunks_.erase(chunks_.begin());
+        std::size_t total = size();
+        while (chunks_.size() > 1 && total > cap) {
+            std::size_t victim = 0;
+            double farthest = -1.0;
+            for (std::size_t i = 0; i + 1 < chunks_.size(); ++i) {
+                const Chunk& c = chunks_[i];
+                const double d = focus_ < c.start ? c.start - focus_ : (focus_ >= end(c) ? focus_ - end(c) : 0.0);
+                if (d > farthest) { farthest = d; victim = i; }
+            }
+            total -= chunks_[victim].s.size();
+            chunks_.erase(chunks_.begin() + (std::ptrdiff_t)victim);
+        }
     }
 
     std::vector<Chunk> chunks_;
     int rate_;
+    double focus_ = -std::numeric_limits<double>::infinity();   // where retain() last put the playhead
+    mutable std::vector<const Chunk*> span_;                     // sample()'s scratch
 };
 
 } // namespace oss
 ```
 
-- [ ] **Step 5: Build and run the tests (7 test cases)**
+- [ ] **Step 5: Build and run the tests (9 test cases)**
 
 ```bash
 cmake --build build --target core_tests -j8 && ./build/core_tests -tc='TimedAudio*'

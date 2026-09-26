@@ -205,6 +205,29 @@ one more (31) turned up while writing the tests for them.
 39. **The MPEG-TS acceptance bound is 1 s**: 33 runs had a 0.055 s median but a 0.44 s worst case,
     and trusting the index took 1.6–2.4 s.
 
+### Revisions during execution (code review of Task 4)
+
+The reviewer drove the store through the prototype worker and node with a tone clip in five
+containers, scanning the published audio for gaps and clicks; each finding reproduced before it was
+fixed.
+
+40. **Where audio chunks overlap, the most recently begun one wins** (it was the later-starting one).
+    In reverse the stretch above resumes its audio up to ~0.1 s before its keyframe, out of a decoder
+    that was just flushed -- a fade-in -- and "later-starting wins" played that instead of the
+    unbroken audio of the stretch below: a dip and a click at every stretch seam (4–8 per 6 s). At loop
+    seams and seeks the newest chunk also starts later, so nothing changes there.
+41. **Chunks tile.** A chunk covers its last sample's interval (holding that sample), and a reverse
+    stretch keeps the samples that *start* before the stretch above (it kept those that ended before
+    it). Every MP4 loop wrap played one silent sample, and some reverse seams dropped samples.
+42. **The cap is 180 s and drops the chunk farthest from the playhead** (it was 30 s, oldest first --
+    and in reverse the oldest chunk is the one being played). With keyframes more than ~15 s apart,
+    reverse played seconds of silence, and an offline render finished with the gaps in it. Reverse
+    `retain()` also trims what the playhead has passed from the backs of chunks.
+43. **`sample()` finds the chunks a span touches once per call** (it scanned every chunk for every
+    output sample: ~1 ms a frame in a Debug build with ~95 chunks held).
+44. **Tests**: adjacent chunks tiling, the newest chunk winning in reverse, `clipHi` at sample starts,
+    reverse trimming, the cap sparing the playhead's chunk.
+
 ## Root cause
 
 Reproduced with a headless harness that compiles the real `VideoPlayerNode.cpp` and drives
@@ -550,11 +573,15 @@ the UI keeps running.
 - **Playing forward, audio is read ahead** with `pumpAudio(u + 1 s)` every worker step and during
   catch-up, independent of how many frames the pool holds.
 - Seeks, wraps and reverse stretches begin a new chunk; a reverse stretch clips its audio at the start
-  of the stretch above it.
+  of the stretch above it (keeping the samples that start before it). A chunk covers up to the end of
+  its last sample, so adjacent chunks tile, and where chunks overlap the most recently begun one wins:
+  the new lap at a loop seam, the stretch below in reverse (the one above resumes its audio a little
+  before its keyframe, out of a just-flushed decoder).
 - Audio decoded during catch-up and during reverse stretches is kept, so reverse still sweeps
   backwards, as today.
 - **Retention:** live forward drops audio more than 2 s behind u; reverse drops audio more than 2 s
-  ahead of it. A 30 s total cap is a safety net.
+  ahead of it, trimming the backs of chunks. A 180 s cap is a safety net; it drops the chunk farthest
+  from the playhead first.
 - Anything not yet decoded reads as silence.
 
 ### Offline renders
@@ -645,9 +672,11 @@ the UI keeps running.
 - **`TimedAudio`:**
   - sampling inside a chunk matches today's `emitAudio` mapping;
   - silence where uncovered;
-  - the later chunk wins at a loop boundary;
+  - the most recently begun chunk wins where chunks overlap (a loop seam; reverse stretches);
+  - adjacent chunks tile;
   - a reverse sweep reads backwards;
-  - `clipHi`, retention, and the 30 s cap.
+  - `clipHi` keeps the samples that start before it; retention forward and reverse; the 180 s cap
+    spares the playhead's chunk.
 
 ### `gl_smoke`
 
@@ -723,6 +752,10 @@ Measured on the development machine, in Debug and Release, with the acceptance h
 - Smooth reverse at 4K with widely spaced keyframes.
 - Transport sync for the Video Player.
 - The swept audio after a large hitch: an existing behaviour, unchanged.
+- **Reverse audio seams on some files.** Each reverse stretch restarts the audio decoder. Where a
+  container rounds audio times to the millisecond (MKV, FLV), or the stretches are very short (all-intra
+  video: one frame each), the seams between stretches can still click. Decoding a little audio before
+  each seek point (a pre-roll) would fix both.
 - Local build configuration. `build.sh` builds Debug; this design removes the Debug-only
   per-byte-free cost from the video path, and switching local builds to RelWithDebInfo is a separate
   choice.
@@ -737,7 +770,7 @@ Measured on the development machine, in Debug and Release, with the acceptance h
   packet queue and the GL textures. Capping `thread_count` or the pool budget are the levers if several
   4K players must run at once.
 - **Container duration** can differ slightly from the stream's real end. Frames at or beyond D are not
-  queued while looping, and the later chunk wins at audio seams.
+  queued while looping, and the newest chunk wins at audio seams.
 
 ## Appendix: reproducing the measurements
 
