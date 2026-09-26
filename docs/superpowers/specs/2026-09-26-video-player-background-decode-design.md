@@ -195,6 +195,16 @@ one more (31) turned up while writing the tests for them.
 37. **Tests**: a B-frame index window case; the reverse direction change checked in full; the
     MPEG-TS probe check in `gl_smoke`; the acceptance step's bound is 0.5 s.
 
+### Revisions during execution (third code review of Task 3)
+
+38. **An index keyframe counts eight frames later than listed, and the lap start stays exact.** Three
+    frames covered x264 (2 frames early) but not x265, whose open GOPs list keyframes 4–6 frames early
+    by decode time: recovery from a jump just below a keyframe still took 0.8–1.3 s instead of about
+    0.27 s. The lead is now added to the index entry itself (`kVideoIndexLead` = 8), so the next lap's
+    start -- an exact presentation time -- no longer waits out the margin.
+39. **The MPEG-TS acceptance bound is 1 s**: 33 runs had a 0.055 s median but a 0.44 s worst case,
+    and trusting the index took 1.6–2.4 s.
+
 ## Root cause
 
 Reproduced with a headless harness that compiles the real `VideoPlayerNode.cpp` and drives
@@ -452,9 +462,9 @@ The rules below are checked in order after each snapshot of the request.
    - If a keyframe lies between the head and the target (the next lap's start counts) and the gap is
      more than 1 s: `Seek{target}`. A seek restarts FFmpeg's frame-threading pipeline, which costs more
      than decoding through a shorter gap.
-   - An index keyframe counts only if it lies three frames before the target: B-frame streams'
-     indexes list keyframes by decode time, and a seek for a target just below the one shown would land
-     a whole interval back.
+   - An index keyframe counts as eight frames later than listed: B-frame streams' indexes list
+     keyframes by decode time (x264 2 frames early, x265 up to 6), and a seek for a target just below
+     the one shown would land a whole interval back. The next lap's start is exact.
    - If there is no keyframe index and the target is more than 2 s ahead: `Seek{target}`.
    - Not, though, within the lap while an earlier seek ahead has landed at or behind the decoder and
      the target has not moved on by the gap it revealed (`videoNoSeekBelow`): a seek would land there
@@ -699,8 +709,8 @@ Measured on the development machine, in Debug and Release, with the acceptance h
 6. `ctest` passes on all three CI platforms.
 7. A local ThreadSanitizer build of `gl_smoke` reports no data races [zero reports].
 7a. MPEG-TS with 10 s keyframes: after reverse and a 4 s jump ahead, the picture is back in step
-    within 0.5 s with at most one seek [0.04–0.25 s, no seeks, in 10 runs; trusting the MPEG-TS index
-    took 1.6–2.4 s].
+    within 1 s with at most one seek [0.04–0.31 s, no seeks, in 10 runs; worst 0.44 s in a reviewer's
+    33; trusting the MPEG-TS index took 1.6–2.4 s].
 8. CLAUDE.md's Video Player and `VideoDecoder` notes describe the worker design. They currently
    describe synchronous decoding and the sliding keyframe window.
 

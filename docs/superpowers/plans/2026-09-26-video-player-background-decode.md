@@ -215,8 +215,8 @@ constexpr double      kVideoTimeEps       = 1e-6;  // frame-time comparisons: ab
 constexpr double      kVideoCatchUpSlice  = 0.1;   // live: show the best frame reached at least this often (s)
 constexpr double      kVideoRestartLeads  = 3.0;   // reverse: a moving playhead further above what is covered than
                                                    // this many leads (plus a frame) restarts rather than waits
-constexpr double      kVideoIndexLead     = 3.0;   // an index may list a keyframe by its decode time: this many
-                                                   // frames early (a B-frame reorder delay)
+constexpr double      kVideoIndexLead     = 8.0;   // an index may list a keyframe by its decode time: up to this
+                                                   // many frames early (B-frames: x264 2, x265's open GOP up to 6)
 
 // How many RGBA frames of w x h fit the budget, clamped to [kVideoPoolMinFrames, kVideoPoolMaxFrames].
 inline int videoPoolFrames(std::size_t budgetBytes, int w, int h) {
@@ -522,7 +522,7 @@ EOF
 - Modify: `src/core/VideoPlan.h` (append before the closing namespace)
 - Modify: `tests/test_video_plan.cpp` (append)
 
-`videoNextStep()` is the worker's whole decision table. Forward: seek when the target is behind everything held (unless the last seek was *pinned* because the target precedes the file's first frame); when the target is more than 2 frames ahead of the decoder, seek only if a keyframe lies between (the next lap's start counts) **and** the gap is over 1 s (a seek restarts FFmpeg's frame-threading pipeline), else catch up; wrap or wait at the lap's end; fill a free buffer; else wait. With loop off, a decoder left a lap behind the playhead (it fell behind while looping) seeks into the playhead's lap — `lapEnd` is the decoder's lap end whether looping or not. An index keyframe counts as between only when it lies `kVideoIndexLead` frames before the target: indexes list B-frame streams' keyframes by decode time, a frame or two early, and a seek decided inside that window lands a whole keyframe interval back. A seek ahead that landed at or behind the decoder anyway (no index) is not repeated within the lap until the target has moved on by the gap it revealed (`videoNoSeekBelow`). Reverse: a fresh stretch when the run is new, the target fell below what is covered, or the playhead is *stranded* above it — stopped (paused or offline: no lead), or more than `kVideoRestartLeads` leads above — aimed `lead` below a moving playhead; prefetch the stretch below once a stretch's budget (`videoStretchBudget`, half the pool) is free; wait at the start of the clip with loop off. First, one line of Task 2's anchor test changes so it admits frames exactly as the worker's prefetch does (strictly below the stretch above) — it passes before and after.
+`videoNextStep()` is the worker's whole decision table. Forward: seek when the target is behind everything held (unless the last seek was *pinned* because the target precedes the file's first frame); when the target is more than 2 frames ahead of the decoder, seek only if a keyframe lies between (the next lap's start counts) **and** the gap is over 1 s (a seek restarts FFmpeg's frame-threading pipeline), else catch up; wrap or wait at the lap's end; fill a free buffer; else wait. With loop off, a decoder left a lap behind the playhead (it fell behind while looping) seeks into the playhead's lap — `lapEnd` is the decoder's lap end whether looping or not. An index keyframe counts as `kVideoIndexLead` frames later than listed: indexes list B-frame streams' keyframes by decode time — x264 2 frames early, x265's open GOP up to 6 — and a seek decided inside that window lands a whole keyframe interval back (the next lap's start is exact). A seek ahead that landed at or behind the decoder anyway (no index) is not repeated within the lap until the target has moved on by the gap it revealed (`videoNoSeekBelow`). Reverse: a fresh stretch when the run is new, the target fell below what is covered, or the playhead is *stranded* above it — stopped (paused or offline: no lead), or more than `kVideoRestartLeads` leads above — aimed `lead` below a moving playhead; prefetch the stretch below once a stretch's budget (`videoStretchBudget`, half the pool) is free; wait at the start of the clip with loop off. First, one line of Task 2's anchor test changes so it admits frames exactly as the worker's prefetch does (strictly below the stretch above) — it passes before and after.
 
 - [ ] **Step 1: In Task 2's anchor test, admit frames the way the worker's prefetch does: strictly below the stretch above, not up to the anchor**. In `tests/test_video_plan.cpp`, replace:
 
@@ -589,12 +589,17 @@ TEST_CASE("videoNextStep forward: far behind -> catch up, or seek when a keyfram
     CHECK(videoNextStep(in).kind == VideoStepKind::Fill);
 }
 
-TEST_CASE("videoNextStep forward: an index keyframe just below the target may be a frame or two later") {
+TEST_CASE("videoNextStep forward: an index keyframe just below the target may be a few frames later") {
     VideoPlanInput in = fwd(19.95);                    // x264's B-frames: the keyframe shown at 20.0 is
     in.duration = 30.0; in.lapEnd = 30.0;              // listed at its decode time, 19.92
     in.head = 12.04; in.lowest = 12.0; in.nextKey = 19.92;
     CHECK(videoNextStep(in).kind == VideoStepKind::CatchUp);   // a seek for 19.95 would land at 10
-    in.target = 20.1;                                  // well past it: the keyframe is surely between
+    in.nextKey = 19.76; in.target = 19.88;             // x265's open GOP: listed 6 frames early
+    CHECK(videoNextStep(in).kind == VideoStepKind::CatchUp);
+    in.nextKey = 19.92; in.target = 20.3;              // well past it: the keyframe is surely between
+    CHECK(videoNextStep(in).kind == VideoStepKind::Seek);
+    in = fwd(10.05);                                   // the next lap's start is exact, index or not
+    in.keyKnown = false; in.head = 8.9; in.lowest = 8.86;
     CHECK(videoNextStep(in).kind == VideoStepKind::Seek);
 }
 
@@ -894,8 +899,8 @@ struct VideoPlanInput {
 //  seek was pinned there), or -- loop off -- when the decoder is in an earlier lap than the playhead (it
 //  fell behind while looping): nothing it decodes there can be shown. When the target is ahead of the
 //  decoder by more than kVideoCatchUpFrames, seek if a keyframe lies between (the next lap's start
-//  counts; an index keyframe must be kVideoIndexLead frames before the target, since it may be listed by
-//  its decode time) and the jump is longer than kVideoSeekMinJump -- a seek restarts the decoder's
+//  counts, exactly; an index keyframe counts kVideoIndexLead frames later, since it may be listed by its
+//  decode time) and the jump is longer than kVideoSeekMinJump -- a seek restarts the decoder's
 //  frame-threading pipeline, which costs more than decoding through a short gap -- or, with no index, if
 //  it is more than kVideoSeekNoIndex away; but within the lap not while noSeekBelow says a seek would
 //  land behind the decoder again (no index, or a wrong one); otherwise catch up by decoding without
@@ -929,12 +934,12 @@ inline VideoStep videoNextStep(const VideoPlanInput& in) {
     if (!loops && in.lapEnd <= in.lapLo + eps)                             // the decoder is a lap behind
         return VideoStep{VideoStepKind::Seek, in.target};
     if (!in.eof && in.target > in.head + kVideoCatchUpFrames * in.frameDur) {
-        const bool   known   = in.keyKnown || in.target >= in.lapEnd;
-        const double key     = std::min(in.keyKnown ? in.nextKey : std::numeric_limits<double>::infinity(), in.lapEnd);
-        const double gap     = in.target - in.head;
-        const bool   between = key <= in.target - kVideoIndexLead * in.frameDur;
-        const bool   jump    = known ? (between && gap > kVideoSeekMinJump) : gap > kVideoSeekNoIndex;
-        const bool   futile  = in.target < in.lapEnd && in.target < in.noSeekBelow;
+        const bool   known  = in.keyKnown || in.target >= in.lapEnd;
+        const double listed = in.keyKnown ? in.nextKey + kVideoIndexLead * in.frameDur : std::numeric_limits<double>::infinity();
+        const double key    = std::min(listed, in.lapEnd);
+        const double gap    = in.target - in.head;
+        const bool   jump   = known ? (key <= in.target && gap > kVideoSeekMinJump) : gap > kVideoSeekNoIndex;
+        const bool   futile = in.target < in.lapEnd && in.target < in.noSeekBelow;
         return VideoStep{jump && !futile ? VideoStepKind::Seek : VideoStepKind::CatchUp, in.target};
     }
     if (in.eof) return loops ? VideoStep{VideoStepKind::Wrap} : VideoStep{};
@@ -4388,7 +4393,7 @@ c++ -O2 -std=gnu++17 -I$R/src $(pkg-config --cflags libavformat) vp_tsjump.cpp $
 for i in 1 2 3 4 5; do ./vp_tsjump long1080.ts; done
 ```
 
-Expected on every line: the picture back within 0.2 s after < 0.5 s, with at most 1 seek (prototype, 10 runs: 0.04–0.25 s, no seeks; trusting the MPEG-TS index instead took 1.6–2.4 s with a seek landing 8 s back).
+Expected on every line: the picture back within 0.2 s after < 1 s, with at most 1 seek (prototype, 10 runs: 0.04–0.31 s, no seeks; a reviewer's 33 runs: median 0.055 s, worst 0.44 s; trusting the MPEG-TS index instead took 1.6–2.4 s with a seek landing 8 s back).
 
 - [ ] **Step 8: ThreadSanitizer** — a separate build directory:
 
