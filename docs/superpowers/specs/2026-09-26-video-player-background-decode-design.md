@@ -312,6 +312,38 @@ fixed, and each fix is pinned by a check that fails when it is reverted.
     packet: 40 calls with nothing decoded between them grew the queue by 130 MB on the ProRes file.
     `pumpAudio()` checks the cap before each read again, as it did before.
 
+### Revisions during execution (second code review of Task 5)
+
+57. **The audio settles through the cap only once the read-ahead is stuck.** Revision 51 settled the first
+    time `pumpAudio()` met the cap, while the worker was still draining the queue into its pool, so it gave
+    up audio the pool and the decoder's pipeline could have waited for -- not only audio lagging "further
+    behind than 64 MB". A fragmented MOV writes each fragment's video and then its audio (OBS records this
+    way): 4K ProRes in 2 s fragments rendered offline with 0.97 s of silence in 18 spans, where the code
+    before revision 51 rendered it whole. Now, at the cap, the audio counts as settled only when no packet
+    has been taken off the queue since `pumpAudio()` last stopped there: the caller has stopped decoding --
+    its pool is full and it is waiting for this audio -- and nothing will ever drain the queue. Both
+    fragmented clips render with no silence, and the late-audio clip still renders whole (frame 0 ready
+    after 0.56 s: the pool fills first; peak memory 1.0 GB, the pool now fully used).
+58. **Audio carries on across at most 40 ms** (`kAudioJitter`; it was 0.1 s). Holes of 65 and 86 ms were
+    closed up, leaving the rest of the lap's audio that much early. 40 ms is far above timestamp rounding
+    (Matroska and FLV keep milliseconds) and under the ~45 ms by which audio leading the picture starts to
+    show.
+59. **A raw stream's frame duration comes from its decoder.** Its demuxer knows only a default of 25 fps,
+    so 30 and 60 fps raw streams told the planner 0.04 s (their frame times were right: each frame carries
+    its duration). The decoder reads the real rate from the stream when `open()` decodes the first frame.
+60. **Test fixes.** `VideoEncoder`'s MPEG-TS starts its clock 0.04 s in (the B-frame delay), not 1.4 s: the
+    check's comment says so, and its duration tolerance (0.1 s) is 0.02 s, so a broken rebase (12.04 s)
+    fails it. The awkward-files check no longer claims the raw stream decoded when that case SKIPped.
+    `VideoStream`'s reverse check SKIPs its FLV parts without an H.264 encoder, like the decoder's.
+61. **Tests pin the rest.** The read-ahead cap takes a test value (`setMaxQueuedBytes`): with a 1-byte cap
+    and audio that starts 1.5 s in, the audio must not settle while a packet was taken since the last stop,
+    and must settle once none was. A 64 ms hole must start a new run. After `seek(1.0)` a decoder that
+    played 2 s of 44.1 kHz audio must hand out the same samples as a fresh one. The raw stream is written at
+    30 fps and must report 1/30 s. An AVI whose last keyframe is its last frame must not make live reverse
+    spin: a seek there yields only an untimed frame with nothing before it (3 stretches in 1.5 s; placed at
+    the seek's target, over 300). Each check fails when its fix is reverted. The rule that only the chosen
+    streams count towards settled audio stays unpinned: `VideoEncoder` cannot write a two-program MPEG-TS.
+
 ## Root cause
 
 Reproduced with a headless harness that compiles the real `VideoPlayerNode.cpp` and drives
@@ -485,16 +517,18 @@ functions, unit-tested in `core_tests` (the `StepSync.h` / `BarSync.h` pattern).
 - `pumpAudio(t)`: read ahead (queueing video packets) until the audio is settled up to source time t.
 - `audioSettledUpTo()`: the source time up to which no more audio will arrive -- the decoded audio's
   end, or, once the demuxer has read 2 s past a point without audio for it (counting only the chosen
-  streams' packets), that point; when `pumpAudio()` stopped at the 64 MB cap, the latest packet read;
-  +inf at the end of the input or with no audio stream.
+  streams' packets), that point; once the read-ahead is stuck at the 64 MB cap (no packet taken off the
+  queue since `pumpAudio()` last stopped there: the caller is waiting for this audio), the latest packet
+  read; +inf at the end of the input or with no audio stream. `setMaxQueuedBytes()` sets the cap for tests.
 - `takeAudio(out, startT, continues)`: move out the next run of audio decoded since the last call, with
-  its start time. Runs follow the source's timestamps: audio within 0.1 s of where the audio so far ends
+  its start time. Runs follow the source's timestamps: audio within 40 ms of where the audio so far ends
   carries straight on, and a hole or an overlap starts a new run (`continues` false). The resampler is
   rebuilt whenever the audio's format changes, and reset by a seek.
 - `convert(const DecodedFrame&, uint8_t* dst, int stride)`: threaded, top-down conversion through the
   portable path above (the stride at least a row). The conversion context is created lazily from the
   first frame's format.
-- `frameDuration()`: taken from `avg_frame_rate`, then `r_frame_rate`, falling back to 1/30 s.
+- `frameDuration()`: taken from `avg_frame_rate`, then `r_frame_rate`, falling back to 1/30 s; a raw
+  stream's from its decoder, which reads the rate from the stream (its demuxer knows only 25 fps).
 - `nextKeyframeAfter(t, double& key)`: looked up through `avformat_index_get_entry_from_timestamp` /
   `avformat_index_get_entry`. Returns false when the stream has no index; `key` is +inf when none is
   known after t, which includes MPEG-TS and MPEG-PS, whose indexes list seek probes as keyframes, and
@@ -797,12 +831,14 @@ the UI keeps running.
   encoder) counts from its first frame -- at 0, with the keyframe index, the duration, `seek(0)` and the
   audio counting from it too; so does an MPEG-TS whose clock starts 1.4 s in.
 - **`VideoDecoder` on awkward files:** an AVI's untimed B-frame tail follows the frame before it, every
-  lap; a raw H.264 stream (SKIPped without an H.264 encoder) decodes 50 frames 0.04 s apart and seeks to
-  its start; in a Matroska file whose video starts 1 s in, `seek(2.02)` lands on the keyframe 2 s after
-  the first frame and the audio starts with that frame; a 0.6 s hole in the audio is kept -- the audio
-  after it resumes at its own time as a new run, and `pumpAudio` settles through it; two MPEG-TS files
-  end to end (stereo 64×48, then mono 80×64) decode through, the second half's frames refused by
-  `convert()`, its audio resampled.
+  lap; a raw H.264 stream at 30 fps (SKIPped without an H.264 encoder) decodes 50 frames 1/30 s apart,
+  reports a 1/30 s frame duration and seeks to its start; in a Matroska file whose video starts 1 s in,
+  `seek(2.02)` lands on the keyframe 2 s after the first frame and the audio starts with that frame; holes
+  of 0.6 s and 64 ms in the audio are kept -- the audio after each resumes at its own time as a new run,
+  and `pumpAudio` settles through them; with a 1-byte read-ahead cap and audio starting 1.5 s in, the audio
+  settles through the cap only once no packet has been taken since the last stop; after `seek(1.0)` the
+  44.1 kHz audio is the same whatever played before; two MPEG-TS files end to end (stereo 64×48, then
+  mono 80×64) decode through, the second half's frames refused by `convert()`, its audio resampled.
 - **`VideoEncoder` keyframe interval:** with hard cuts every 10 frames, keyframes land exactly every
   50 frames (no scene-cut extras).
 - **`VideoStream`:** a missing file ends `Failed` with a reason; `test.mp4` opens with the right info;
@@ -812,8 +848,9 @@ the UI keeps running.
   writer): offline reverse is exact through a first keyframe interval longer than the stretch ring (loop
   on and off) and across the loop seam of an FLV with B-frames; live reverse over that FLV decodes a
   handful of stretches in 2.5 s (a spinning worker decodes thousands) and follows the playhead across
-  the seam; paused, the picture settles on the playhead's frame and decoding stops; an offline render
-  straight after live reverse is exact from its first frame.
+  the seam (the FLV parts SKIP without an H.264 encoder); paused, the picture settles on the playhead's
+  frame and decoding stops; an offline render straight after live reverse is exact from its first frame;
+  live reverse from the last frame of an AVI whose last keyframe is its last frame does not spin.
 - **`VideoStream` loop toggles:** loop off with the playhead a lap ahead of the decoder renders that
   lap's frames; loop off and back on near a lap's end keeps the next lap's frames (offline exact); the
   same at a lap's start in reverse goes on into the lap below.
