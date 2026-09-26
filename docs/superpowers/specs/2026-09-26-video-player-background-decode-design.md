@@ -1,7 +1,7 @@
 # Video Player — Background Decoding — Design
 
 **Date:** 2026-09-26
-**Status:** Design approved in brainstorm; awaiting written-spec review
+**Status:** Approved; revised during planning after a working prototype (see *Revisions during planning*)
 
 ## Goal
 
@@ -28,6 +28,43 @@ whole UI stop responding. After this change:
 - **No hardware decode.** On this Mac, VideoToolbox decoded 4K at 29–52 fps, against 39–117 fps for
   FFmpeg's threaded software decoder (FFmpeg command line, pure decode). So it gives no wall-clock gain.
 - **Memory is a fixed per-node budget** of 512 MB of frame buffers.
+
+## Revisions during planning
+
+The plan was written against a working prototype, built and measured on the development machine
+(unit tests, `gl_smoke`, and a ThreadSanitizer build of `gl_smoke` with zero reports). Building it
+found these problems in the design as first approved, and changed it as follows:
+
+1. **Audio reads ahead of the video.** Audio used to be decoded only as far as video had been
+   demuxed. With a small frame pool (16 frames ≈ 0.5 s at 4K, 4 at 8K), a file that interleaves audio
+   in ~1 s chunks would get silence gaps live, and offline renders would stall waiting for audio.
+   The decoder now queues *compressed* video packets (bounded at 64 MB) so `pumpAudio()` can keep the
+   audio 1 s ahead whatever the pool size. Offline audio readiness uses the decoder's "settled up to"
+   watermark, so `TimedAudio::covers()` is dropped.
+2. **The playhead holds at the start until the first frame is on screen.** Opening and decoder
+   warm-up take ~0.4 s at 4K; running the clock meanwhile skipped the first 12–15 frames (this is what
+   made 10-bit HEVC look unreliable).
+3. **Live catch-up is sliced (100 ms).** At 2× on 4K HEVC the decoder (≤ 49 fps) cannot keep up with
+   the playhead (60 fps), and chasing it froze the picture. Now it shows the best frame reached every
+   100 ms and re-plans.
+4. **Seeks only pay off for jumps over 1 s.** A seek restarts FFmpeg's frame-threading pipeline
+   (~0.3–0.4 s at 4K HEVC), so shorter gaps are decoded through. The start of the next lap counts as a
+   keyframe. A seek keeps the newest frame at or before its target on screen until the seek delivers a
+   better one (flushing it had left the picture with nothing new to show). A seek that lands late
+   retries 1 s earlier, and one that still lands late -- the target precedes the file's first frame --
+   is "pinned" so it is not repeated.
+5. **Reverse stretches are published together when complete.** They decode forwards, so publishing
+   frames one by one showed a stretch's *earliest* frame first and then played it forwards.
+6. **Stride counting starts from the frame containing a stretch's end** (the end is a boundary, not a
+   frame time), and a frame at or past D ends the lap.
+7. **The node exposes `hasFrame()`**: an unwrapped frame time can be negative in looping reverse, so
+   `shownFrameTime()` cannot double as "no frame" (−1).
+8. **The time model (`videoAdvance`, `videoPosition`) lives in `core/VideoPlan.h`**, so it is unit
+   tested; it pins the loop-off lap from the position *before* the step (the first version pinned the
+   next lap when loop went off on the frame that crossed the end).
+9. **Acceptance criteria use measured numbers** (see below). Memory in particular is 0.6 GB at 1080p
+   and 0.9–1.15 GB at 4K -- half of today's 1.7 GB, but not "512 MB plus a little": FFmpeg's
+   frame-thread buffers, the packet queue and the GL textures add ~0.4 GB at 4K.
 
 ## Root cause
 
@@ -121,28 +158,33 @@ At 2× speed, 4K HEVC will skip frames.
 ### Units
 
 **`core/VideoPlan.h`** — new, header-only, no GL or FFmpeg code. All playback *decisions* as pure
-functions, unit-tested in `core_tests` (the `StepSync.h` / `BarSync.h` pattern). The API below is
-indicative; the implementation plan fixes it.
-- `nextStep(PlanInput) → Step`: one of `Wait`, `Fill`, `CatchUp{to}`, `Seek{to}`, `Wrap`,
-  `ReverseStretch{end, stride, keep, contiguous}`. It is computed from:
-  - the target, direction, loop and offline flags;
+functions, unit-tested in `core_tests` (the `StepSync.h` / `BarSync.h` pattern).
+- `videoNextStep(VideoPlanInput) → VideoStep`: one of `Wait`, `Fill`, `CatchUp{to}`, `Seek{to}`,
+  `Wrap`, `Reverse{end, fresh}`. It is computed from:
+  - the target, direction (and whether it just changed), loop flag and the loop-off lap;
   - D and the nominal frame duration;
-  - the decoder head (time of the next frame) and whether it has reached the end of file;
+  - the decoder head (time of the next frame), whether the lap has ended, and where it ends;
   - the next keyframe after the head, when known;
-  - the ready-queue range, and the free and total buffer counts.
-- `selectFrame(times, n, u) → index or -1`: the frame for u.
-- `planStretch(keyTime, end, frameDur, budget, offline) → Stretch`.
-- `poolFrames(budgetBytes, w, h)` = clamp(budget / (w·h·4), 4, 64).
+  - the earliest frame held, whether the last seek was pinned, the free and total buffer counts;
+  - reverse: the range this run's stretches cover.
+- `videoSelectFrame(times, n, u) → index or -1`: the frame for u.
+- `videoPlanStretch(keyTime, end, frameDur, budget, offline) → VideoStretch`, and
+  `videoStretchKeeps(stretch, t, frameDur)`.
+- `videoPoolFrames(budgetBytes, w, h)` = clamp(budget / (w·h·4), 4, 64).
   With 512 MB that gives 16 at 4K, 64 at 1080p and 4 at 8K.
-- `lapStart(u, D)` = D·floor(u/D), and `wrapped(u, D)` = u − lapStart(u, D).
+- `videoLapStart(u, D)` = D·floor(u/D), `videoWrapped(u, D)` = u − videoLapStart(u, D).
+- The time model: `VideoPlayhead`, `videoAdvance(...)`, `videoPosition(...)`.
+- Constants: `kVideoPoolBytes`, `kVideoCatchUpFrames` (2), `kVideoSeekNoIndex` (2 s),
+  `kVideoSeekMinJump` (1 s), `kVideoAudioLead` (1 s), `kVideoAudioKeep` (2 s), `kVideoCatchUpSlice`
+  (0.1 s), `kVideoTimeEps` (1e-6).
 
 **`core/TimedAudio.h`** — new, header-only, no GL or FFmpeg code. A time-tagged audio store at
 48 kHz mono.
 - It holds contiguous chunks, each a start time u plus samples.
-- `beginChunk()` makes the next append start a new chunk; seeks and loop wraps use it.
-- `append(startU, samples, n)`.
-- `dropBefore(u)` / `dropAfter(u)` for retention.
-- `covers(u0, u1)`.
+- `beginChunk(startU)` starts a new chunk; seeks, loop wraps and reverse stretches use it.
+- `append(samples, n, clipHi = +inf)` adds to the current chunk, keeping only samples before `clipHi`
+  (a reverse stretch passes the start of the stretch above it, so the two never overlap).
+- `retain(lo, hi)` drops audio outside the window, trimming a chunk's front a second at a time.
 - `sample(u0, u1, out, n)` maps output sample j to time u0 + (u1 − u0)·j/n and interpolates linearly,
   exactly like today's `emitAudio`.
   - Times not covered by any chunk produce silence.
@@ -161,10 +203,10 @@ indicative; the implementation plan fixes it.
   |---|---|
   | `state()` | `Opening` / `Ready` / `Failed`, with an error string |
   | `info()` | width, height, D, frame duration, has-audio |
-  | `request(u, rate, loop, offline)` | the latest request wins; wakes the worker |
-  | `frameAt(u, FrameView&)` | the frame for u as `{rgba, stride, t, serial}`, valid until the next call |
-  | `frameReadyFor(u)` | true when the frame for u is decided and the audio up to u is decoded (or end of file / no audio) |
-  | `waitForFrame(u, timeout)` | offline only |
+  | `request(VideoRequest)` | `{u, rate, loop, offline, lapLo, lapHi}` (the lap bounds only matter with loop off); the latest request wins; wakes the worker |
+  | `frameAt(u, FrameView&)` | the frame for u as `{rgba, t, serial}` (rows top-down, width·4 apart), valid until the next call |
+  | `frameReadyFor(u)` | offline: the frame for u is decided and held, and (forward) no more audio can arrive for times up to u |
+  | `waitForFrame(u, timeout)` | offline only: blocks until `frameReadyFor(u)` or the timeout |
   | `readAudio(u0, u1, out, n)` | samples the audio store |
 
 - **Locking:** one mutex plus a condition variable guard the request, pool, queue and audio store.
@@ -175,19 +217,28 @@ indicative; the implementation plan fixes it.
   - sets `thread_count = 0` (automatic) before `avcodec_open2`;
   - allocates the format context first so it can install an `AVIOInterruptCB` that returns
     `*abort`. A stop then aborts a stalled open or read.
-- `decodeNext(DecodedFrame& out, audio…)`: decode the next video frame *without* converting it.
+- Video packets are read into a bounded queue (64 MB) instead of being decoded straight away.
+- `decodeNext(DecodedFrame& out)`: decode the next video frame *without* converting it.
   - `DecodedFrame` is a move-only handle that owns a reference to the decoded picture, plus its time.
   - The FFmpeg type is forward-declared, so FFmpeg headers stay out of `VideoDecoder.h`.
-  - Audio is appended exactly as `decodeFrame` does today.
+  - Audio met on the way is decoded into a pending buffer.
   - Handles are cheap reference counts, so the worker can hold the previous and the next frame at once,
     which the catch-up rule needs.
+- `pumpAudio(t)`: read ahead (queueing video packets) until the audio is settled up to source time t.
+- `audioSettledUpTo()`: the source time up to which no more audio will arrive -- the decoded audio's
+  end, or, once the demuxer has read 2 s past a point without audio for it, that point; +inf at the
+  end of the input or with no audio stream.
+- `takeAudio(out, startT)`: move out the audio decoded since the last call, with its start time.
 - `convert(const DecodedFrame&, uint8_t* dst, int stride)`: threaded, top-down conversion through the
   portable path above. The conversion context is created lazily from the first frame's format.
 - `frameDuration()`: taken from `avg_frame_rate`, then `r_frame_rate`, falling back to 1/30 s.
 - `nextKeyframeAfter(t, double& key)`: looked up through `avformat_index_get_entry_from_timestamp` /
   `avformat_index_get_entry`. Returns false when the stream has no index.
 - `decodeFrame()` keeps its current behaviour, including single-threaded bottom-up output, for the
-  15 `gl_smoke` call sites.
+  15 `gl_smoke` call sites (it is now built on `decodeNext()` + `takeAudio()`).
+- `convert()` passes the caller's buffer to `sws_scale_frame()` wrapped in a reference-counted buffer
+  whose free callback does nothing: FFmpeg 5–7 allocate a new buffer for a destination frame that has
+  none, which would silently write the pixels somewhere else.
 
 **`modules/VideoPlayerNode`** — existing, simplified.
 - **Kept:** the ports, the `rate`/`play`/`loop` semantics, the status line, and `playhead()`, which
@@ -201,6 +252,8 @@ indicative; the implementation plan fixes it.
   - two framebuffers for the flip blit;
   - the last shown serial;
   - offline bookkeeping: the pending next u and a stall flag.
+- **Test accessors:** `playhead()` (wrapped), `hasFrame()`, `shownFrameTime()` (unwrapped; valid when
+  `hasFrame()`), `audioOut()`.
 - **Overrides `loading()`** — see Offline renders.
 
 **`gfx/VideoEncoder`** — test support only. `open(…, std::string& err, int keyframeInterval = 0)`,
@@ -212,7 +265,10 @@ with widely spaced keyframes.
 - Each frame, u advances by rate·dt while `play` is on.
 - **Loop on:** u runs freely, including below 0 in reverse. The displayed position is `wrapped(u, D)`.
 - **Loop off:** u is clamped to the lap it is in, [L·D, (L+1)·D], with L fixed when loop was switched
-  off (0 initially). The displayed position is u − L·D, so the end holds the last frame.
+  off (0 initially) -- taken from the position *before* that frame's step. The displayed position is
+  u − L·D, so the end holds the last frame.
+- **Start:** u does not advance until the first frame of the file is on screen, so opening and decoder
+  warm-up do not skip the clip's first frames.
 - **D = 0 (unknown duration):** today's behaviour is kept. u is clamped at ≥ 0, there are no laps, and
   the worker holds the last frame at end of file.
 - The worker tags every frame and audio chunk with unwrapped times. While looping it does not queue
@@ -226,7 +282,8 @@ with widely spaced keyframes.
    "load failed: …".
 3. **First `Ready`:** allocate the staging and output textures at the video size, plus the flip
    framebuffers.
-4. Advance u as in the Time model, then call `request(u, play ? rate : 0, loop, ctx.offline)`.
+4. Advance u as in the Time model (held until a first frame is on screen), then call
+   `request(u, play ? rate : 0, loop, ctx.offline)`.
 5. Call `frameAt(u)`. If the serial changed:
    - upload to the staging texture with `glTexSubImage2D` (top-down rows);
    - flip into the output texture with one `glBlitFramebuffer` (source rows 0→H, destination H→0),
@@ -236,8 +293,8 @@ with widely spaced keyframes.
    - Paused, or u unchanged: silence, as today.
    - Otherwise: `readAudio(uPrev, u, out, n)`.
    - A loop wrap is continuous in u, so today's one silent block per wrap goes away.
-8. **Status:** position / duration × rate, plus "(buffering)" when the shown frame's time is more than
-   0.2 s from u.
+8. **Status:** position / duration × rate, plus "(buffering)" when playing forward and the shown frame
+   is more than max(0.2 s, 2 frames) behind u.
 
 The UI thread never waits in live mode. When no newer frame is ready, the previous picture stays up.
 
@@ -249,11 +306,12 @@ to move.
 
 The rules below are checked in order after each snapshot of the request.
 
-1. **Target behind everything we have** (before the first queued frame, or before the decoder head
-   with an empty queue): `Seek{target}`.
+1. **A direction change, or a target behind everything held** (the frame on screen and the queue):
+   `Seek{target}` -- unless the last seek for a target at or before this one was pinned.
 2. **Target ahead of the head by more than 2 frame durations:**
-   - If the next keyframe after the head is known and is ≤ the target: `Seek{target}`, because
-     jumping is cheaper than decoding through.
+   - If a keyframe lies between the head and the target (the next lap's start counts) and the gap is
+     more than 1 s: `Seek{target}`. A seek restarts FFmpeg's frame-threading pipeline, which costs more
+     than decoding through a shorter gap.
    - If there is no keyframe index and the target is more than 2 s ahead: `Seek{target}`.
    - Otherwise: `CatchUp{target}`.
 3. **End of file:** `Wrap` when loop is on and D > 0 (seek to the start of the next lap, and call
@@ -268,6 +326,14 @@ The rules below are checked in order after each snapshot of the request.
   converted and queued.
 - This is exact for variable-frame-rate files too, and it is the same step used after a seek. So only
   the frame for the target is converted, never the frames between the keyframe and the target.
+- **Live, catch-up is sliced.** It chases a moving playhead for at most 100 ms, then shows the best
+  frame reached and returns to the planner. A decoder slower than the playhead therefore still moves
+  the picture (skipping frames) instead of chasing forever.
+- **A seek keeps what is still useful.** Queued frames after the target are released; the newest one
+  at or before it stays up until the seek delivers a better one.
+- **A late landing retries.** If the first frame after a seek is later than the target, the seek is
+  retried 1 s earlier; if it still lands late, the target precedes the file's first frame, and that
+  frame is shown for it.
 
 **The worker recycles frames that can never be shown, itself.** That covers:
 - *superseded* frames: those older than the newest queued frame that is ≤ the target in forward
@@ -280,7 +346,8 @@ The pool therefore cannot deadlock on frames that will never be shown.
 ### Worker: reverse playback
 
 1. **Plan a stretch ending at E** (initially the target). Seek to E; the first decoded frame gives the
-   keyframe time K. The estimated frame count is n = round((E − K) / frameDur) + 1.
+   keyframe time K. The frame count is n = floor((E − K) / frameDur) + 1, counted from the frame whose
+   interval contains E (E is a boundary, not necessarily a frame time).
 2. **Live:** the budget is M = pool / 2 frames.
    - If n ≤ M, keep every frame in [K, E].
    - Otherwise keep every s-th frame counting back from E, s = ceil(n / M), so E itself is always kept
@@ -293,6 +360,8 @@ The pool therefore cannot deadlock on frames that will never be shown.
 4. **Next stretch:** E′ = K − ε (live), which lands on the previous keyframe. Crossing below the start
    of a lap goes to the previous lap's end when looping, and holds the first frame otherwise.
 5. **Prefetch:** the next stretch starts once ≥ M buffers are free.
+6. **A stretch's frames are queued together when it is complete.** Decoding runs forwards, so queueing
+   them one by one would show the earliest first and then play the stretch forwards.
 
 **Expected live reverse quality with the 512 MB budget:**
 
@@ -310,7 +379,10 @@ the UI keeps running.
 - The worker appends the decoder's 48 kHz mono audio to the `TimedAudio` store as it decodes,
   anchoring each new chunk from the first audio timestamp (today's `audioStartT` rule) plus the lap
   offset.
-- Seeks and wraps call `beginChunk()`.
+- **Playing forward, audio is read ahead** with `pumpAudio(u + 1 s)` every worker step and during
+  catch-up, independent of how many frames the pool holds.
+- Seeks, wraps and reverse stretches begin a new chunk; a reverse stretch clips its audio at the start
+  of the stretch above it.
 - Audio decoded during catch-up and during reverse stretches is kept, so reverse still sweeps
   backwards, as today.
 - **Retention:** live forward drops audio more than 2 s behind u; reverse drops audio more than 2 s
@@ -336,6 +408,9 @@ the UI keeps running.
   render then fails through the renderer's normal 30 s timeout naming the node, instead of finishing
   with a wrong frame. The flag clears when `ctx.offline` goes false or the file changes.
 - **Reverse:** the offline stretch rule above makes reverse renders frame-exact.
+- **Readiness** (`frameReadyFor(u)`): the frame for u lies in the run of consecutive decided frames
+  and is still held; playing forward, the audio is also settled up to u (or u is in an earlier lap,
+  whose audio is complete). In reverse the stretch that brings the frame also brought its audio.
 
 ### Errors
 
@@ -385,12 +460,17 @@ the UI keeps running.
   - contiguous offline.
 - **`poolFrames`:** 16 / 64 / 4 at 4K / 1080p / 8K.
 - **Lap mapping:** `lapStart` / `wrapped` for negative u, and at exact multiples of D.
+- **`nextStep` rules added in planning:** a target in the next lap seeks (index or not) unless the gap
+  is short; a short gap with a keyframe in it is decoded through; a pinned seek is not repeated.
+- **`videoStretchKeeps`:** an end between frames counts from the frame containing it.
+- **The time model:** loop on runs past the end and below 0; loop off clamps to the lap captured
+  before the step; paused does not move; unknown duration clamps at 0.
 - **`TimedAudio`:**
   - sampling inside a chunk matches today's `emitAudio` mapping;
   - silence where uncovered;
   - the later chunk wins at a loop boundary;
   - a reverse sweep reads backwards;
-  - `covers` and retention.
+  - `clipHi`, retention, and the 30 s cap.
 
 ### `gl_smoke`
 
@@ -398,6 +478,12 @@ the UI keeps running.
   It runs with the graph in offline mode, so frames are exact and synchronous; one live-mode check
   polls until the texture has colour.
 - The existing encoder round-trip checks keep `decodeFrame()`'s bottom-up output honest.
+- **`VideoDecoder` split decode:** `decodeNext()` + `convert()` equal `decodeFrame()` flipped,
+  byte for byte; the keyframe lookup; a second of audio read ahead after one video frame.
+- **`VideoEncoder` keyframe interval:** with hard cuts every 10 frames, keyframes land exactly every
+  50 frames (no scene-cut extras).
+- **`VideoStream`:** a missing file ends `Failed` with a reason; `test.mp4` opens with the right info;
+  offline, the frame for 0.73 s is the one at 0.7 s, with audio before it.
 - **A new generated clip,** `build/_video_longgop.mp4`:
   - 160×90, 25 fps, 12 s (300 frames), keyframes 250 frames apart, with a 440 Hz tone;
   - written with `VideoEncoder`'s new keyframe interval;
@@ -419,17 +505,20 @@ the UI keeps running.
 
 ## Acceptance criteria
 
-Measured on the development machine, in Debug and Release, with the investigation harness and clips
-(see the appendix):
+Measured on the development machine, in Debug and Release, with the acceptance harness and clips
+(see the appendix). The prototype met every one; the figures in brackets are what it measured.
 
-1. 4K H.264 and 4K 8-bit HEVC play forward at 1× with the picture within one frame of the playhead in
-   steady state.
-2. 4K 10-bit HEVC does the same on an otherwise idle machine (36 fps capacity against 30 needed).
-3. Once a file is open, no `evaluate()` exceeds 25 ms at 4K, and the mean is < 10 ms.
-4. After a single 600 ms hitch, 1080p with keyframes 8 s apart is back in step within 0.5 s.
-5. The process stays within the 512 MB frame budget plus modest overhead at 4K.
+1. 4K H.264 and 4K 8-bit and 10-bit HEVC play forward at 1× with the picture within one frame of the
+   playhead in steady state [100% on time in both builds; UI 57–58 fps, vsync-bound].
+2. After a file's first frame, no `evaluate()` exceeds 25 ms at 4K, and the mean is < 10 ms
+   [worst 15–22 ms, mean 7–9 ms; 1080p mean 2.2 ms]. The first frame of a file allocates two
+   textures and takes ~50 ms once.
+3. After a single 600 ms hitch, 1080p with keyframes 8 s apart is back in step within 0.5 s [on the
+   next frame].
+4. At 2× on 4K HEVC the picture keeps moving [7–11 changes/s; before the slicing fix it froze].
+5. Resident memory at 4K is at most 1.2 GB [0.88 GB H.264, 1.15 GB 10-bit HEVC; was 1.7 GB].
 6. `ctest` passes on all three CI platforms.
-7. A local ThreadSanitizer build of the new tests reports no data races in project code.
+7. A local ThreadSanitizer build of `gl_smoke` reports no data races [zero reports].
 8. CLAUDE.md's Video Player and `VideoDecoder` notes describe the worker design. They currently
    describe synchronous decoding and the sliding keyframe window.
 
@@ -452,6 +541,9 @@ Measured on the development machine, in Debug and Release, with the investigatio
   Video Players mean many threads. This is acceptable; `thread_count` can be capped later if needed.
 - **Thin 10-bit HEVC 4K headroom** on this machine (1.2×). Heavy concurrent CPU use will drop frames.
   They are dropped, not frozen.
+- **Memory overhead beyond the pool** (~0.4 GB at 4K) comes from FFmpeg's frame-thread buffers, the
+  packet queue and the GL textures. Capping `thread_count` or the pool budget are the levers if several
+  4K players must run at once.
 - **Container duration** can differ slightly from the stream's real end. Frames at or beyond D are not
   queued while looping, and the later chunk wins at audio seams.
 
@@ -471,13 +563,14 @@ ffmpeg -y -f lavfi -i "testsrc2=size=3840x2160:rate=30" -t 6 -vf "noise=alls=10:
   -c:v hevc_videotoolbox -profile:v main10 -b:v 40M -tag:v hvc1 v4k_hevc10.mp4
 ```
 
-The harness compiles `src/modules/VideoPlayerNode.cpp` into its own translation unit with `private`
-opened up, for inspection only. It creates a hidden GL 4.1 context. Each loop it calls `evaluate()`
-with `dt` = the previous iteration's wall time, with a 16.7 ms floor, and logs:
-- the time `evaluate()` took, including a `glFinish` for the upload;
-- the playhead;
-- the window range and whether it covers the playhead;
-- resident memory.
+**Investigation harness.** It compiled the old `src/modules/VideoPlayerNode.cpp` into its own
+translation unit with `private` opened up, for inspection only, created a hidden GL 4.1 context, and
+each loop called `evaluate()` with `dt` = the previous iteration's wall time (16.7 ms floor), logging
+the time `evaluate()` took (with a `glFinish` for the upload), the playhead, the cached window and
+whether it covered the playhead, and resident memory.
 
-An optional argument injects one artificial stall to test recovery. Build it twice, with the app's
-Debug flags and with `-O2`.
+**Acceptance harness.** The same loop against the new node's public API (`playhead()`, `hasFrame()`,
+`shownFrameTime()`), reporting UI fps, time to the first frame, `evaluate()` mean / p99 / worst (and
+worst after the first half-second), the share of frames within one frame of the playhead, how often the
+picture changes, and resident memory. An optional argument injects one artificial stall. Build it with
+the app's Debug flags and with `-O2`; the implementation plan's last task gives its source.
