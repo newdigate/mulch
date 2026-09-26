@@ -112,41 +112,57 @@ private:
         return chunks_.size();
     }
 
-    // While more than kMaxSeconds is held, drop the audio farthest from the playhead: whole chunks first,
-    // farthest first -- never the one playing at the playhead, nor the one being filled -- then the far
-    // end of the one being filled, never past the playhead. (In reverse the oldest chunk is the one
-    // playing.) Before any retain() there is no playhead: the oldest audio goes first.
+    // How far c lies from the playhead (0 when it covers it).
+    double distance(const Chunk& c) const {
+        return playhead_ < c.start ? c.start - playhead_ : (playhead_ >= end(c) ? playhead_ - end(c) : 0.0);
+    }
+
+    // Cut up to n samples from the end of c farther from the playhead, never past it; how many went.
+    std::size_t trimFarEnd(Chunk& c, std::size_t n) {
+        const std::size_t before = c.s.size();
+        const double at = (playhead_ - c.start) * rate_;          // the playhead's place in c, in samples
+        if (!std::isfinite(playhead_) || at >= 0.5 * (double)before) {           // the front is farther
+            const double room = std::isfinite(at) ? std::min(std::floor(at), (double)before) : (double)before;
+            const std::size_t cut = std::min(n, (std::size_t)std::max(0.0, room));
+            c.s.erase(c.s.begin(), c.s.begin() + (std::ptrdiff_t)cut);
+            c.start += (double)cut / rate_;
+        } else {                                                                 // the back is
+            const std::size_t keep = (std::size_t)std::max(0.0, std::floor(at) + 1.0);
+            c.s.resize(std::max(keep, before - std::min(n, before)));
+        }
+        return before - c.s.size();
+    }
+
+    // While more than kMaxSeconds is held, drop the audio farthest from the playhead, never what plays at
+    // it: the farthest chunk goes whole -- or, if it is the one being filled (appends go to it), loses its
+    // far end, never past the playhead. In live reverse that one is the prefetch below the stretch that
+    // plays next, so its far end goes first. Before any retain() there is no playhead: the oldest audio
+    // goes first.
     void capTotal() {
         const std::size_t cap = (std::size_t)(kMaxSeconds * rate_);
         std::size_t total = size();
+        bool fillingSpent = false;                       // nothing more can come off the one being filled
         while (total > cap) {
             const std::size_t last = chunks_.size() - 1, playing = playingAt(playhead_);
-            std::size_t victim = last;
+            std::size_t victim = chunks_.size();
             double farthest = -1.0;
-            for (std::size_t i = 0; i < last; ++i) {
-                if (i == playing) continue;
-                const Chunk& c = chunks_[i];
-                const double d = playhead_ < c.start ? c.start - playhead_
-                               : (playhead_ >= end(c) ? playhead_ - end(c) : 0.0);
+            for (std::size_t i = 0; i < chunks_.size(); ++i) {
+                if (i == playing || (i == last && fillingSpent)) continue;
+                const double d = distance(chunks_[i]);
                 if (d > farthest) { farthest = d; victim = i; }
             }
-            if (victim == last) break;
-            total -= chunks_[victim].s.size();
-            chunks_.erase(chunks_.begin() + (std::ptrdiff_t)victim);
+            if (victim == chunks_.size()) break;
+            if (victim == last) {
+                const std::size_t cut = trimFarEnd(chunks_[last], total - cap);
+                total -= cut;
+                fillingSpent = cut == 0 || chunks_[last].s.empty();
+            } else {
+                total -= chunks_[victim].s.size();
+                chunks_.erase(chunks_.begin() + (std::ptrdiff_t)victim);
+            }
         }
-        if (total <= cap) return;
-        Chunk& c = chunks_.back();                       // what is left over the cap: the one being filled
-        const double at = (playhead_ - c.start) * rate_; // the playhead's place in it, in samples
-        const std::size_t over = total - cap;
-        if (!std::isfinite(playhead_) || at >= 0.5 * (double)c.s.size()) {   // its front is the far end
-            const double room = std::isfinite(at) ? std::floor(at) : (double)c.s.size();
-            const std::size_t cut = std::min(over, (std::size_t)std::max(0.0, std::min(room, (double)c.s.size())));
-            c.s.erase(c.s.begin(), c.s.begin() + (std::ptrdiff_t)cut);
-            c.start += (double)cut / rate_;
-        } else {                                         // its back is
-            const std::size_t keep = (std::size_t)std::max(0.0, std::floor(at) + 1.0);
-            c.s.resize(std::max(keep, c.s.size() - std::min(over, c.s.size())));
-        }
+        if (total > cap && playingAt(playhead_) == chunks_.size() - 1)          // the one playing is being filled
+            trimFarEnd(chunks_.back(), total - cap);
     }
 
     std::vector<Chunk> chunks_;
