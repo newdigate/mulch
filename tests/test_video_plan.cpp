@@ -182,7 +182,7 @@ TEST_CASE("videoStretchKeeps: from the worker's half-frame anchor the top kept f
             const double end = tOf(keyAbove) - fd / 2;               // the worker's live prefetch anchor
             const VideoStretch s = videoPlanStretch(tOf(keyAbove - gop), end, fd, 8, false);   // 4K budget
             std::vector<long> kept;
-            for (long i = keyAbove - gop; tOf(i) <= end + kVideoTimeEps; ++i)
+            for (long i = keyAbove - gop; tOf(i) <= tOf(keyAbove) - kVideoTimeEps; ++i)   // what it admits
                 if (videoStretchKeeps(s, tOf(i), fd)) kept.push_back(i);
             REQUIRE(!kept.empty());
             CHECK((int)kept.size() <= s.keep);
@@ -214,3 +214,183 @@ TEST_CASE("videoPlanStretch: offline keeps consecutive frames (a ring of the new
     CHECK(keptBack(s, 0.0, fd).size() == 250);                        // all converted; the ring keeps 8
 }
 
+static const double kInf = std::numeric_limits<double>::infinity();
+
+// A forward input with a comfortable default state: the decoder is just past the target.
+static VideoPlanInput fwd(double target) {
+    VideoPlanInput in;
+    in.target = target; in.dir = 1; in.loop = true; in.duration = 10.0; in.frameDur = 0.04;
+    in.head = target + 0.04; in.lowest = target; in.keyKnown = true; in.nextKey = kInf;
+    in.freeBuffers = 3; in.poolSize = 16;
+    return in;
+}
+
+TEST_CASE("videoNextStep forward: fill while a buffer is free, else wait") {
+    VideoPlanInput in = fwd(1.0);
+    CHECK(videoNextStep(in).kind == VideoStepKind::Fill);
+    in.freeBuffers = 0;
+    CHECK(videoNextStep(in).kind == VideoStepKind::Wait);
+}
+
+TEST_CASE("videoNextStep forward: far behind -> catch up, or seek when a keyframe is closer") {
+    VideoPlanInput in = fwd(3.0);
+    in.head = 1.0;                                     // 2 s behind
+    in.nextKey = 5.0;                                  // no keyframe before the target
+    VideoStep s = videoNextStep(in);
+    CHECK(s.kind == VideoStepKind::CatchUp);
+    CHECK(s.to == 3.0);
+    in.nextKey = 2.5;                                  // a keyframe on the way: jump to it
+    CHECK(videoNextStep(in).kind == VideoStepKind::Seek);
+    in.head = 2.5; in.nextKey = 2.7;                   // but a short gap is cheaper to decode through
+    CHECK(videoNextStep(in).kind == VideoStepKind::CatchUp);
+    in.head = 2.95;                                    // within kVideoCatchUpFrames: just fill
+    CHECK(videoNextStep(in).kind == VideoStepKind::Fill);
+}
+
+TEST_CASE("videoNextStep forward: without a keyframe index, seek only beyond kVideoSeekNoIndex") {
+    VideoPlanInput in = fwd(3.0);
+    in.keyKnown = false;
+    in.head = 1.5;
+    CHECK(videoNextStep(in).kind == VideoStepKind::CatchUp);
+    in.head = 0.5;
+    CHECK(videoNextStep(in).kind == VideoStepKind::Seek);
+}
+
+TEST_CASE("videoNextStep forward: a target in the next lap seeks -- the lap starts with a keyframe") {
+    VideoPlanInput in = fwd(11.0);                     // looping; the decoder is still in lap 0
+    in.head = 9.0; in.lowest = 8.96;                   // the frame on screen is just behind the head
+    in.nextKey = kInf;                                 // the index has no keyframe left in this lap
+    in.lapEnd = 10.0;
+    CHECK(videoNextStep(in).kind == VideoStepKind::Seek);
+    in.nextKey = 9.5;                                  // ...and a keyframe later in this lap still counts
+    CHECK(videoNextStep(in).kind == VideoStepKind::Seek);
+    in.keyKnown = false;                               // no index: the next lap's start still counts
+    in.target = 11.5; in.head = 9.8; in.lowest = 9.76;
+    CHECK(videoNextStep(in).kind == VideoStepKind::Seek);
+    in.target = 10.3;                                  // just into the next lap: decode through the wrap
+    CHECK(videoNextStep(in).kind == VideoStepKind::CatchUp);
+}
+
+TEST_CASE("videoNextStep forward: a target behind everything held seeks, unless pinned there") {
+    VideoPlanInput in = fwd(1.0);
+    in.lowest = 2.0;
+    CHECK(videoNextStep(in).kind == VideoStepKind::Seek);
+    in.seekPinned = true; in.pinnedFrom = 0.5;         // the last seek for 0.5 landed after it
+    CHECK(videoNextStep(in).kind != VideoStepKind::Seek);
+    in.target = 0.2;                                    // but further back is a new request
+    CHECK(videoNextStep(in).kind == VideoStepKind::Seek);
+}
+
+TEST_CASE("videoNextStep forward: end of the lap wraps when looping, else waits") {
+    VideoPlanInput in = fwd(9.9);
+    in.eof = true;
+    CHECK(videoNextStep(in).kind == VideoStepKind::Wrap);
+    in.loop = false;
+    CHECK(videoNextStep(in).kind == VideoStepKind::Wait);
+    in.loop = true; in.duration = 0.0;                 // unknown duration cannot wrap
+    CHECK(videoNextStep(in).kind == VideoStepKind::Wait);
+    in.duration = 10.0; in.target = 12.0;              // far into the next lap: wrap first
+    CHECK(videoNextStep(in).kind == VideoStepKind::Wrap);
+}
+
+TEST_CASE("videoNextStep forward: loop off with the decoder already past the lap waits") {
+    VideoPlanInput in = fwd(1.99);                     // loop just went off near the end of lap 0...
+    in.loop = false; in.lapLo = 0.0; in.lapHi = 2.0;
+    in.head = 2.2;                                     // ...but the decoder had run on into lap 1,
+    CHECK(videoNextStep(in).kind == VideoStepKind::Wait);
+    in.head = 2.0;                                     // ...or had just wrapped to its start
+    CHECK(videoNextStep(in).kind == VideoStepKind::Wait);
+    in.target = 1.9; in.lowest = 1.9; in.head = 1.94;  // still inside the lap: keep filling
+    CHECK(videoNextStep(in).kind == VideoStepKind::Fill);
+}
+
+TEST_CASE("videoNextStep forward: a direction change always seeks") {
+    VideoPlanInput in = fwd(1.0);
+    in.dirChanged = true;
+    VideoStep s = videoNextStep(in);
+    CHECK(s.kind == VideoStepKind::Seek);
+    CHECK(s.to == 1.0);
+}
+
+static VideoPlanInput rev(double target) {
+    VideoPlanInput in;
+    in.target = target; in.dir = -1; in.loop = true; in.duration = 10.0; in.frameDur = 0.04;
+    in.freeBuffers = 8; in.poolSize = 16;
+    in.coverValid = true; in.coverLo = target - 1.0; in.coverHi = target + 0.5;   // the playhead is inside
+    return in;
+}
+
+TEST_CASE("videoNextStep reverse: a new run starts a fresh stretch at the target") {
+    VideoPlanInput in = rev(5.0);
+    in.coverValid = false;
+    VideoStep s = videoNextStep(in);
+    CHECK(s.kind == VideoStepKind::Reverse);
+    CHECK(s.fresh);
+    CHECK(s.to == 5.0);
+    in = rev(5.0); in.dirChanged = true;
+    CHECK(videoNextStep(in).fresh);
+}
+
+TEST_CASE("videoNextStep reverse: falling below the covered stretch jumps with a fresh stretch") {
+    VideoPlanInput in = rev(5.0);
+    in.coverLo = 5.5;
+    VideoStep s = videoNextStep(in);
+    CHECK(s.kind == VideoStepKind::Reverse);
+    CHECK(s.fresh);
+}
+
+TEST_CASE("videoNextStep reverse: a fresh stretch aims where the playhead will be when it is decoded") {
+    VideoPlanInput in = rev(5.0);
+    in.coverLo = 5.5;                                  // fell below: the last stretch took 0.6 s at rate -1
+    in.lead = 0.6;
+    VideoStep s = videoNextStep(in);
+    CHECK(s.fresh);
+    CHECK(s.to == 5.0 - 0.6);
+    in.target = 0.2; in.coverLo = 0.5;                 // with loop off it never aims before the clip starts
+    in.loop = false; in.lapLo = 0.0;
+    CHECK(videoNextStep(in).to == 0.0);
+    in.loop = true;                                    // looping, it may aim into the lap before
+    CHECK(videoNextStep(in).to == 0.2 - 0.6);
+}
+
+TEST_CASE("videoNextStep reverse: a playhead still above the covered stretch is not restarted") {
+    VideoPlanInput in = rev(5.0);
+    in.coverLo = 4.0; in.coverHi = 4.6;                // a led stretch landed early: [4.0, 4.6] is covered
+    in.target = 4.9; in.lead = 0.6;                    // and the moving playhead is on its way down into it
+    VideoStep s = videoNextStep(in);
+    CHECK_FALSE(s.fresh);
+}
+
+TEST_CASE("videoNextStep reverse: a stopped playhead above the covered stretch restarts there") {
+    VideoPlanInput in = rev(5.0);
+    in.coverLo = 4.0; in.coverHi = 4.6;                // the led stretch landed below the playhead...
+    in.target = 4.9; in.lead = 0.0;                    // ...which then stopped (paused): it never arrives
+    VideoStep s = videoNextStep(in);
+    CHECK(s.kind == VideoStepKind::Reverse);
+    CHECK(s.fresh);
+    CHECK(s.to == 4.9);
+    in.target = 4.6;                                   // at the top of what is covered, it is served
+    CHECK_FALSE(videoNextStep(in).fresh);
+}
+
+TEST_CASE("videoNextStep reverse: prefetch the stretch below once half the pool is free") {
+    VideoPlanInput in = rev(5.0);
+    VideoStep s = videoNextStep(in);
+    CHECK(s.kind == VideoStepKind::Reverse);
+    CHECK_FALSE(s.fresh);
+    CHECK(s.to == in.coverLo);                         // the stretch just below what is covered
+    in.freeBuffers = 7;
+    CHECK(videoNextStep(in).kind == VideoStepKind::Wait);
+}
+
+TEST_CASE("videoNextStep reverse: the start of the clip waits with loop off, continues with loop on") {
+    VideoPlanInput in = rev(0.3);
+    in.coverLo = 0.0;
+    in.loop = false; in.lapLo = 0.0;
+    CHECK(videoNextStep(in).kind == VideoStepKind::Wait);
+    in.loop = true;                                    // looping: the previous lap's end comes next
+    VideoStep s = videoNextStep(in);
+    CHECK(s.kind == VideoStepKind::Reverse);
+    CHECK_FALSE(s.fresh);
+    CHECK(s.to == 0.0);                                // just below the lap start: the lap before
+}

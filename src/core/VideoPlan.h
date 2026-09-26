@@ -138,4 +138,89 @@ inline bool videoStretchKeeps(const VideoStretch& s, double t, double frameDur) 
     return s.stride <= 1 || k % s.stride == 0;
 }
 
+enum class VideoStepKind { Wait, Fill, CatchUp, Seek, Wrap, Reverse };
+
+struct VideoStep {
+    VideoStepKind kind  = VideoStepKind::Wait;
+    double        to    = 0.0;     // CatchUp / Seek: the target. Reverse, fresh: the stretch's end
+                                   // (inclusive). Reverse, not fresh: the start of the stretch above --
+                                   // the new stretch lies just below it.
+    bool          fresh = false;   // Reverse: start a new run (flush) rather than the next stretch down
+};
+
+// Everything the worker's next decision depends on (times unwrapped).
+struct VideoPlanInput {
+    double target      = 0.0;      // requested playhead
+    int    dir         = 1;        // +1 forward, -1 reverse (a paused request keeps the last direction)
+    bool   dirChanged  = false;    // the direction flipped since the last decision
+    bool   loop        = true;
+    double duration    = 0.0;      // D; 0 = unknown (no laps)
+    double frameDur    = 1.0 / 30.0;
+    double lapLo       = -std::numeric_limits<double>::infinity();   // loop off: the playhead's lap...
+    double lapHi       =  std::numeric_limits<double>::infinity();   // ...and where it ends
+    double head        = 0.0;      // time of the next frame the decoder will produce
+    bool   eof         = false;    // the decoder has produced the last frame of this lap
+    bool   keyKnown    = false;    // the stream has a keyframe index...
+    double nextKey     = 0.0;      // ...and this is the first keyframe after `head` (+inf: none)
+    double lapEnd      = std::numeric_limits<double>::infinity();   // looping: where the decoder's lap
+                                   // ends -- the next lap starts with a keyframe, index or not
+    double lowest      = 0.0;      // earliest frame held (on screen or queued); `head` if none
+    bool   seekPinned  = false;    // the last seek could not land at or before its target...
+    double pinnedFrom  = 0.0;      // ...so do not seek again for targets at or after this
+    int    freeBuffers = 0;
+    int    poolSize    = 0;
+    bool   coverValid  = false;    // reverse: this run's stretches reach down to coverLo...
+    double coverLo     = 0.0;
+    double coverHi     = 0.0;      // ...from here, the end of the run's first stretch
+    double lead        = 0.0;      // reverse, live: how far the playhead moves while a stretch decodes (s);
+                                   // 0 when it does not move (paused) or nothing leads (offline)
+};
+
+// The worker's next step.
+//  Forward: seek when the target is behind everything held; when it is ahead of the decoder by more
+//  than kVideoCatchUpFrames, seek if a keyframe lies between (the next lap's start counts) and the jump
+//  is longer than kVideoSeekMinJump -- a seek restarts the decoder's frame-threading pipeline, which
+//  costs more than decoding through a short gap -- or, with no index, if it is more than
+//  kVideoSeekNoIndex away; otherwise catch up by decoding without converting. At the end of the lap
+//  wrap (loop) or wait; with loop off and the decoder at or past the end of the playhead's lap (it had
+//  decoded ahead, or just wrapped, while looping), wait -- those frames can never be shown; otherwise
+//  fill a free buffer, or wait.
+//  Reverse: start a fresh stretch when the run is new or the playhead fell below what is covered,
+//  aimed `lead` below the playhead (where it will be once the stretch is decoded, so a slow stretch
+//  does not land behind it and restart forever); a playhead still above the covered stretch is on its
+//  way down into it -- unless it has stopped (no lead), when it never arrives: restart there too.
+//  Otherwise prefetch the stretch below once half the pool is free; wait at the start of the clip when
+//  loop is off.
+inline VideoStep videoNextStep(const VideoPlanInput& in) {
+    const double eps = kVideoTimeEps;
+    if (in.dir < 0) {
+        const bool loops = in.loop && in.duration > 0.0;
+        const bool stoppedAbove = in.lead <= 0.0 && in.target > in.coverHi + eps;
+        if (in.dirChanged || !in.coverValid || in.target < in.coverLo - eps || stoppedAbove) {
+            double aim = in.target - std::max(0.0, in.lead);
+            if (!loops && aim < in.lapLo) aim = std::min(in.target, in.lapLo);
+            return VideoStep{VideoStepKind::Reverse, aim, true};
+        }
+        if (!loops && in.coverLo <= in.lapLo + eps) return VideoStep{};    // nothing earlier to decode
+        const int half = in.poolSize / 2 > 1 ? in.poolSize / 2 : 1;
+        if (in.freeBuffers >= half) return VideoStep{VideoStepKind::Reverse, in.coverLo, false};
+        return VideoStep{};
+    }
+    const bool pinned = in.seekPinned && in.target >= in.pinnedFrom - eps;
+    if (in.dirChanged || (in.target < in.lowest - eps && !pinned))
+        return VideoStep{VideoStepKind::Seek, in.target};
+    if (!in.eof && in.target > in.head + kVideoCatchUpFrames * in.frameDur) {
+        const bool   known = in.keyKnown || in.target >= in.lapEnd;
+        const double key   = std::min(in.keyKnown ? in.nextKey : std::numeric_limits<double>::infinity(), in.lapEnd);
+        const double gap   = in.target - in.head;
+        const bool   jump  = known ? (key <= in.target && gap > kVideoSeekMinJump) : gap > kVideoSeekNoIndex;
+        return VideoStep{jump ? VideoStepKind::Seek : VideoStepKind::CatchUp, in.target};
+    }
+    if (in.eof)
+        return (in.loop && in.duration > 0.0) ? VideoStep{VideoStepKind::Wrap} : VideoStep{};
+    if (!in.loop && in.head >= in.lapHi - eps) return VideoStep{};
+    if (in.freeBuffers > 0) return VideoStep{VideoStepKind::Fill};
+    return VideoStep{};
+}
+
 } // namespace oss
