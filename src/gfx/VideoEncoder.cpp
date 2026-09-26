@@ -50,7 +50,7 @@ void VideoEncoder::freeAll() {
 }
 
 bool VideoEncoder::open(const std::string& path, int width, int height, int fps,
-                        int audioRate, int audioChannels, std::string& err) {
+                        int audioRate, int audioChannels, std::string& err, int keyframeInterval) {
     // NOTE: the ~20 lines of libx264/aac statistics an open dumps to stderr are quietened by
     // quietFFmpegLog(), called once at startup. It is NOT done here: av_log_set_level is
     // process-wide, so opening an encoder would otherwise silence the decoders too.
@@ -76,12 +76,14 @@ bool VideoEncoder::open(const std::string& path, int width, int height, int fps,
     vctx_->pix_fmt   = AV_PIX_FMT_YUV420P;
     vctx_->time_base = AVRational{1, fps};
     vctx_->framerate = AVRational{fps, 1};
-    vctx_->gop_size  = fps;
+    vctx_->gop_size  = keyframeInterval > 0 ? keyframeInterval : fps;
     vctx_->max_b_frames = 1;
     if (oc_->oformat->flags & AVFMT_GLOBALHEADER) vctx_->flags |= AV_CODEC_FLAG_GLOBAL_HEADER;
     if (vc->id == AV_CODEC_ID_H264) {
         av_opt_set(vctx_->priv_data, "preset", "veryfast", 0);   // real-time-ish
         av_opt_set(vctx_->priv_data, "crf",    "23",       0);
+        if (keyframeInterval > 0)   // exactly every N frames: no extra keyframes at scene cuts
+            av_opt_set(vctx_->priv_data, "x264-params", "scenecut=0", 0);
     }
     if (avcodec_open2(vctx_, vc, nullptr) < 0) { err = "could not open video encoder"; freeAll(); return false; }
     avcodec_parameters_from_context(vst_->codecpar, vctx_);

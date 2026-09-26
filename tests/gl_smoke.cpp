@@ -1239,6 +1239,33 @@ static bool scenario_video_decoder_awkward_files() {
     return true;
 }
 
+// --- Scenario: VideoEncoder places keyframes exactly every keyframeInterval frames ---
+// Hard cuts every 10 frames would earn scene-cut keyframes; with an explicit interval there must be
+// none -- the long-keyframe test clips depend on it.
+static bool scenario_video_encoder_keyframe_interval() {
+    {
+        const std::string path = "build/_enc_keyint.mp4";
+        VideoEncoder enc; std::string err;
+        if (!enc.open(path, 64, 48, 25, 0, 0, err, 50)) { return failed(("keyint: open: " + err).c_str()); }
+        std::vector<unsigned char> px((std::size_t)64 * 48 * 4);
+        for (int f = 0; f < 120; ++f) {
+            std::fill(px.begin(), px.end(), (unsigned char)(((f / 10) & 1) ? 255 : 0));
+            if (!enc.addVideoFrame(px.data(), f / 25.0)) { return failed("keyint: add frame"); }
+        }
+        if (!enc.close(err)) { return failed(("keyint: close: " + err).c_str()); }
+        VideoDecoder dec;
+        if (!dec.open(path, err)) { return failed(("keyint: decode: " + err).c_str()); }
+        double k1 = 0.0, k2 = 0.0;
+        if (!dec.nextKeyframeAfter(0.1, k1) || std::fabs(k1 - 2.0) > 0.1 ||
+            !dec.nextKeyframeAfter(2.1, k2) || std::fabs(k2 - 4.0) > 0.1) {
+            std::fprintf(stderr, "keyint: keyframes after 0.1 s and 2.1 s at %.3f and %.3f\n", k1, k2);
+            return failed("keyint: expected keyframes exactly every 2 s (50 frames at 25 fps)");
+        }
+        std::fprintf(stderr, "gl_smoke OK: an explicit keyframe interval places keyframes exactly (%.2f s, %.2f s)\n", k1, k2);
+    }
+    return true;
+}
+
 // --- Scenario 10: Video Player decodes a file to texture + audio ---
 // Decodes tests/assets/test.mp4 (a 128x96 colour pattern with a 330 Hz tone),
 // first through the bare VideoDecoder, then through the VideoPlayerNode wired
@@ -3759,6 +3786,7 @@ static bool (*const kScenarios[])() = {
     scenario_draco_compressed_gltf,
     scenario_video_decoder_split_decode,
     scenario_video_decoder_awkward_files,
+    scenario_video_encoder_keyframe_interval,
     scenario_video_player_decode,
     scenario_text_geometry_renderers,
     scenario_recorder_video_encoder,

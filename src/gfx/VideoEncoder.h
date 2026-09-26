@@ -38,9 +38,12 @@ public:
 
     // Open `path` for writing `width`x`height` video at a nominal `fps`. If
     // `audioRate` > 0 an AAC audio stream is added at that sample rate with
-    // `audioChannels` channels (1 = mono, 2 = stereo). Returns false on failure.
+    // `audioChannels` channels (1 = mono, 2 = stereo). `keyframeInterval` > 0 places
+    // a keyframe exactly every that many frames (scene-cut keyframes off -- tests use it
+    // to write clips with widely spaced keyframes); 0 keeps one per second. Returns
+    // false on failure.
     bool open(const std::string& path, int width, int height, int fps,
-              int audioRate, int audioChannels, std::string& err);
+              int audioRate, int audioChannels, std::string& err, int keyframeInterval = 0);
     bool isOpen() const { return opened_; }
 
     // Append one video frame. `rgba` is width*height*4 bytes, bottom row first
