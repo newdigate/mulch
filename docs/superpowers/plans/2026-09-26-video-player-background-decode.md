@@ -500,9 +500,21 @@ EOF
 - Modify: `src/core/VideoPlan.h` (append before the closing namespace)
 - Modify: `tests/test_video_plan.cpp` (append)
 
-`videoNextStep()` is the worker's whole decision table. Forward: seek when the target is behind everything held (unless the last seek was *pinned* because the target precedes the file's first frame); when the target is more than 2 frames ahead of the decoder, seek only if a keyframe lies between (the next lap's start counts) **and** the gap is over 1 s (a seek restarts FFmpeg's frame-threading pipeline), else catch up; wrap or wait at the lap's end; fill a free buffer; else wait. Reverse: a fresh stretch at the target when the run is new or the target left its coverage; prefetch the stretch below once half the pool is free; wait at the start of the clip with loop off.
+`videoNextStep()` is the worker's whole decision table. Forward: seek when the target is behind everything held (unless the last seek was *pinned* because the target precedes the file's first frame); when the target is more than 2 frames ahead of the decoder, seek only if a keyframe lies between (the next lap's start counts) **and** the gap is over 1 s (a seek restarts FFmpeg's frame-threading pipeline), else catch up; wrap or wait at the lap's end; fill a free buffer; else wait. Reverse: a fresh stretch when the run is new, the target fell below what is covered, or the playhead has *stopped* (paused or offline: no lead) above it — aimed `lead` below a moving playhead; prefetch the stretch below once half the pool is free; wait at the start of the clip with loop off. First, one line of Task 2's anchor test changes so it admits frames exactly as the worker's prefetch does (strictly below the stretch above) — it passes before and after.
 
-- [ ] **Step 1: Append the failing tests** — add to the end of `tests/test_video_plan.cpp`:
+- [ ] **Step 1: In Task 2's anchor test, admit frames the way the worker's prefetch does: strictly below the stretch above, not up to the anchor**. In `tests/test_video_plan.cpp`, replace:
+
+```cpp
+            for (long i = keyAbove - gop; tOf(i) <= end + kVideoTimeEps; ++i)
+```
+
+with:
+
+```cpp
+            for (long i = keyAbove - gop; tOf(i) <= tOf(keyAbove) - kVideoTimeEps; ++i)   // what it admits
+```
+
+- [ ] **Step 2: Append the failing tests** — add to the end of `tests/test_video_plan.cpp`:
 
 ```cpp
 static const double kInf = std::numeric_limits<double>::infinity();
@@ -529,7 +541,7 @@ TEST_CASE("videoNextStep forward: far behind -> catch up, or seek when a keyfram
     in.nextKey = 5.0;                                  // no keyframe before the target
     VideoStep s = videoNextStep(in);
     CHECK(s.kind == VideoStepKind::CatchUp);
-    CHECK(s.to == doctest::Approx(3.0));
+    CHECK(s.to == 3.0);
     in.nextKey = 2.5;                                  // a keyframe on the way: jump to it
     CHECK(videoNextStep(in).kind == VideoStepKind::Seek);
     in.head = 2.5; in.nextKey = 2.7;                   // but a short gap is cheaper to decode through
@@ -600,14 +612,14 @@ TEST_CASE("videoNextStep forward: a direction change always seeks") {
     in.dirChanged = true;
     VideoStep s = videoNextStep(in);
     CHECK(s.kind == VideoStepKind::Seek);
-    CHECK(s.to == doctest::Approx(1.0));
+    CHECK(s.to == 1.0);
 }
 
 static VideoPlanInput rev(double target) {
     VideoPlanInput in;
     in.target = target; in.dir = -1; in.loop = true; in.duration = 10.0; in.frameDur = 0.04;
     in.freeBuffers = 8; in.poolSize = 16;
-    in.coverValid = true; in.coverLo = target - 1.0;
+    in.coverValid = true; in.coverLo = target - 1.0; in.coverHi = target + 0.5;   // the playhead is inside
     return in;
 }
 
@@ -617,7 +629,7 @@ TEST_CASE("videoNextStep reverse: a new run starts a fresh stretch at the target
     VideoStep s = videoNextStep(in);
     CHECK(s.kind == VideoStepKind::Reverse);
     CHECK(s.fresh);
-    CHECK(s.to == doctest::Approx(5.0));
+    CHECK(s.to == 5.0);
     in = rev(5.0); in.dirChanged = true;
     CHECK(videoNextStep(in).fresh);
 }
@@ -636,20 +648,32 @@ TEST_CASE("videoNextStep reverse: a fresh stretch aims where the playhead will b
     in.lead = 0.6;
     VideoStep s = videoNextStep(in);
     CHECK(s.fresh);
-    CHECK(s.to == doctest::Approx(4.4));
+    CHECK(s.to == 5.0 - 0.6);
     in.target = 0.2; in.coverLo = 0.5;                 // with loop off it never aims before the clip starts
     in.loop = false; in.lapLo = 0.0;
-    CHECK(videoNextStep(in).to == doctest::Approx(0.0));
+    CHECK(videoNextStep(in).to == 0.0);
     in.loop = true;                                    // looping, it may aim into the lap before
-    CHECK(videoNextStep(in).to == doctest::Approx(-0.4));
+    CHECK(videoNextStep(in).to == 0.2 - 0.6);
 }
 
 TEST_CASE("videoNextStep reverse: a playhead still above the covered stretch is not restarted") {
     VideoPlanInput in = rev(5.0);
-    in.coverLo = 4.0;                                  // a led stretch landed early: [.., 4.6] is covered
-    in.target = 4.9;                                   // and the playhead is on its way down into it
+    in.coverLo = 4.0; in.coverHi = 4.6;                // a led stretch landed early: [4.0, 4.6] is covered
+    in.target = 4.9; in.lead = 0.6;                    // and the moving playhead is on its way down into it
     VideoStep s = videoNextStep(in);
     CHECK_FALSE(s.fresh);
+}
+
+TEST_CASE("videoNextStep reverse: a stopped playhead above the covered stretch restarts there") {
+    VideoPlanInput in = rev(5.0);
+    in.coverLo = 4.0; in.coverHi = 4.6;                // the led stretch landed below the playhead...
+    in.target = 4.9; in.lead = 0.0;                    // ...which then stopped (paused): it never arrives
+    VideoStep s = videoNextStep(in);
+    CHECK(s.kind == VideoStepKind::Reverse);
+    CHECK(s.fresh);
+    CHECK(s.to == 4.9);
+    in.target = 4.6;                                   // at the top of what is covered, it is served
+    CHECK_FALSE(videoNextStep(in).fresh);
 }
 
 TEST_CASE("videoNextStep reverse: prefetch the stretch below once half the pool is free") {
@@ -657,7 +681,7 @@ TEST_CASE("videoNextStep reverse: prefetch the stretch below once half the pool 
     VideoStep s = videoNextStep(in);
     CHECK(s.kind == VideoStepKind::Reverse);
     CHECK_FALSE(s.fresh);
-    CHECK(s.to == doctest::Approx(in.coverLo));        // the stretch just below what is covered
+    CHECK(s.to == in.coverLo);                         // the stretch just below what is covered
     in.freeBuffers = 7;
     CHECK(videoNextStep(in).kind == VideoStepKind::Wait);
 }
@@ -671,11 +695,11 @@ TEST_CASE("videoNextStep reverse: the start of the clip waits with loop off, con
     VideoStep s = videoNextStep(in);
     CHECK(s.kind == VideoStepKind::Reverse);
     CHECK_FALSE(s.fresh);
-    CHECK(s.to == doctest::Approx(0.0));               // just below the lap start: the lap before
+    CHECK(s.to == 0.0);                                // just below the lap start: the lap before
 }
 ```
 
-- [ ] **Step 2: Build to verify it fails**
+- [ ] **Step 3: Build to verify it fails**
 
 ```bash
 cmake --build build --target core_tests -j8
@@ -683,7 +707,7 @@ cmake --build build --target core_tests -j8
 
 Expected: the build FAILS, with an error mentioning `VideoPlanInput`.
 
-- [ ] **Step 3: Add the planner, just above `} // namespace oss`** — in `src/core/VideoPlan.h`:
+- [ ] **Step 4: Add the planner, just above `} // namespace oss`** — in `src/core/VideoPlan.h`:
 
 ```cpp
 enum class VideoStepKind { Wait, Fill, CatchUp, Seek, Wrap, Reverse };
@@ -717,9 +741,11 @@ struct VideoPlanInput {
     double pinnedFrom  = 0.0;      // ...so do not seek again for targets at or after this
     int    freeBuffers = 0;
     int    poolSize    = 0;
-    bool   coverValid  = false;    // reverse: this run's stretches reach down to coverLo
+    bool   coverValid  = false;    // reverse: this run's stretches reach down to coverLo...
     double coverLo     = 0.0;
-    double lead        = 0.0;      // reverse, live: how far the playhead moves while a stretch decodes (s)
+    double coverHi     = 0.0;      // ...from here, the end of the run's first stretch
+    double lead        = 0.0;      // reverse, live: how far the playhead moves while a stretch decodes (s);
+                                   // 0 when it does not move (paused) or nothing leads (offline)
 };
 
 // The worker's next step.
@@ -734,13 +760,15 @@ struct VideoPlanInput {
 //  Reverse: start a fresh stretch when the run is new or the playhead fell below what is covered,
 //  aimed `lead` below the playhead (where it will be once the stretch is decoded, so a slow stretch
 //  does not land behind it and restart forever); a playhead still above the covered stretch is on its
-//  way down into it. Otherwise prefetch the stretch below once half the pool is free; wait at the start
-//  of the clip when loop is off.
+//  way down into it -- unless it has stopped (no lead), when it never arrives: restart there too.
+//  Otherwise prefetch the stretch below once half the pool is free; wait at the start of the clip when
+//  loop is off.
 inline VideoStep videoNextStep(const VideoPlanInput& in) {
     const double eps = kVideoTimeEps;
     if (in.dir < 0) {
         const bool loops = in.loop && in.duration > 0.0;
-        if (in.dirChanged || !in.coverValid || in.target < in.coverLo - eps) {
+        const bool stoppedAbove = in.lead <= 0.0 && in.target > in.coverHi + eps;
+        if (in.dirChanged || !in.coverValid || in.target < in.coverLo - eps || stoppedAbove) {
             double aim = in.target - std::max(0.0, in.lead);
             if (!loops && aim < in.lapLo) aim = std::min(in.target, in.lapLo);
             return VideoStep{VideoStepKind::Reverse, aim, true};
@@ -769,7 +797,7 @@ inline VideoStep videoNextStep(const VideoPlanInput& in) {
 
 ```
 
-- [ ] **Step 4: Build and run the tests (30 test cases)**
+- [ ] **Step 5: Build and run the tests (31 test cases)**
 
 ```bash
 cmake --build build --target core_tests -j8 && ./build/core_tests -tc='video*'
@@ -777,7 +805,7 @@ cmake --build build --target core_tests -j8 && ./build/core_tests -tc='video*'
 
 Expected output includes: `Status: SUCCESS!`
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 6: Commit**
 
 ```bash
 git add src/core/VideoPlan.h tests/test_video_plan.cpp
@@ -1052,7 +1080,7 @@ EOF
 - Modify (full rewrite): `src/gfx/VideoDecoder.h`, `src/gfx/VideoDecoder.cpp`
 - Modify: `tests/gl_smoke.cpp`
 
-The worker must decode a frame, look at its time, and only then decide to convert it; convert with threads; and keep audio ahead of the video however few frames it buffers. So: `decodeNext()` returns a `DecodedFrame` (a counted reference, nothing copied); `convert()` writes TOP-DOWN RGBA with threaded swscale (the portable FFmpeg ≥ 5 path rejects a negative-stride destination, and FFmpeg 5–7 allocate a new buffer for a destination frame with none — so the caller's buffer is wrapped in a no-op-free `AVBufferRef`); video packets are queued (≤ 64 MB) so `pumpAudio()` can read audio ahead; `thread_count = 0`; an interrupt callback lets a stop abort blocking I/O. The legacy `decodeFrame()` keeps its exact behaviour (bottom-up, single-threaded conversion) — the 15 `gl_smoke` uses rely on it.
+The worker must decode a frame, look at its time, and only then decide to convert it; convert with threads; and keep audio ahead of the video however few frames it buffers. So: `decodeNext()` returns a `DecodedFrame` (a counted reference, nothing copied); `convert()` writes TOP-DOWN RGBA with threaded swscale (the portable FFmpeg ≥ 5 path rejects a negative-stride destination, and FFmpeg 5–7 allocate a new buffer for a destination frame with none — so the caller's buffer is wrapped in a no-op-free `AVBufferRef`); video packets are queued (≤ 64 MB) so `pumpAudio()` can read audio ahead; `thread_count = 0`; an interrupt callback lets a stop abort blocking I/O. The legacy `decodeFrame()` keeps its exact behaviour (bottom-up, single-threaded conversion) — the 15 `gl_smoke` uses rely on it. Every time in and out counts from the first video frame, which `open()` decodes (and the first `decodeNext()` hands out): a container that starts its clock late (MPEG-TS) or shows a B-frame delay with no edit list (FLV, fragmented MP4) would otherwise put the first frame after the playhead's 0 — an offline render could never have its first frame. `seek(t <= 0)` goes to the very start of the file, since a timestamp search (MPEG-TS) can overshoot the first frame's time by a keyframe interval; audio from before the first frame is dropped.
 
 - [ ] **Step 1: Add `#include <cstring>` to `tests/gl_smoke.cpp`, after `#include <cstdlib>`**. In `tests/gl_smoke.cpp`, replace:
 
@@ -1108,8 +1136,48 @@ static bool scenario_video_decoder_split_decode() {
         if (!c.takeAudio(s, st) || s.size() < 48000 || c.audioSettledUpTo() < 1.0) {
             return failed("split decode: pumpAudio did not read a second of audio ahead of one video frame");
         }
-        std::fprintf(stderr, "gl_smoke OK: decodeNext+convert == decodeFrame flipped; keyframe lookup; %.2f s of audio read ahead\n",
-                     s.size() / 48000.0);
+
+        // A file whose video starts late -- an FLV with B-frames puts its first frame a frame in --
+        // counts from that frame: it is at 0, and the keyframe index, the duration, seek() and the
+        // audio count from it too.
+        const std::string late = "build/_late_start.flv";
+        {
+            VideoEncoder enc;
+            if (!enc.open(late, 64, 48, 25, 48000, 1, err)) { return failed(("late start: encode: " + err).c_str()); }
+            std::vector<unsigned char> px((std::size_t)64 * 48 * 4);
+            std::vector<float> tone(48000 / 25);
+            for (int f = 0; f < 50; ++f) {
+                std::fill(px.begin(), px.end(), (unsigned char)(f * 5));
+                for (std::size_t i = 0; i < tone.size(); ++i)
+                    tone[i] = 0.5f * (float)std::sin(0.05 * (double)(f * tone.size() + i));
+                if (!enc.addVideoFrame(px.data(), f / 25.0) || !enc.addAudio(tone.data(), (int)tone.size())) {
+                    return failed("late start: encode a frame");
+                }
+            }
+            if (!enc.close(err)) { return failed(("late start: close: " + err).c_str()); }
+        }
+        VideoDecoder d;
+        if (!d.open(late, err)) { return failed(("late start: open: " + err).c_str()); }
+        DecodedFrame f0, f1;
+        if (!d.decodeNext(f0) || !d.decodeNext(f1) || f0.t != 0.0 || std::fabs(f1.t - 0.04) > 1e-6) {
+            std::fprintf(stderr, "late start: the first frames are at %.4f and %.4f\n", f0.t, f1.t);
+            return failed("late start: times must count from the first frame (0, then 0.04 s)");
+        }
+        double lateKey = 0.0;
+        if (!d.nextKeyframeAfter(0.1, lateKey) || !(lateKey > 0.9 && lateKey < 1.05)) {
+            return failed("late start: the keyframe index must count from the first frame (the next keyframe is at 1 s)");
+        }
+        if (std::fabs(d.duration() - 2.0) > 0.05) { return failed("late start: the duration must count from the first frame (2 s)"); }
+        d.seek(0.0);
+        DecodedFrame g;
+        if (!d.decodeNext(g) || g.t != 0.0) { return failed("late start: seek(0) must return to the first frame"); }
+        d.pumpAudio(1.0);
+        std::vector<float> la; double laStart = -1.0;
+        if (!d.takeAudio(la, laStart) || laStart < 0.0 || laStart > 0.05) {
+            return failed("late start: the audio must count from the first frame");
+        }
+        std::fprintf(stderr, "gl_smoke OK: decodeNext+convert == decodeFrame flipped; keyframe lookup; %.2f s of audio read ahead; "
+                     "a late-starting file counts from its first frame\n", s.size() / 48000.0);
     }
     return true;
 }
@@ -1163,7 +1231,7 @@ namespace oss {
 // One decoded video frame: tightly-packed RGBA8 pixels valid until the next
 // decodeFrame() call (the decoder reuses its conversion buffer).
 struct VideoFrame {
-    double               t = 0.0;   // presentation time in seconds (source time)
+    double               t = 0.0;   // presentation time in seconds, from the first frame
     int                  width = 0;
     int                  height = 0;
     // width*height*4 bytes, stored bottom row first (GL texture convention) so it
@@ -1187,7 +1255,7 @@ public:
     bool valid() const { return frame_ != nullptr; }
     void reset();
 
-    double t = 0.0;   // presentation time in seconds (source time)
+    double t = 0.0;   // presentation time in seconds, from the first frame
 
 private:
     friend class VideoDecoder;
@@ -1202,6 +1270,11 @@ private:
 //
 // Video packets are read into a bounded queue rather than decoded straight away, so pumpAudio()
 // can read ahead and keep the audio ahead of the playhead however few frames the caller buffers.
+//
+// Every time in and out -- frames, audio, seek(), the keyframe index, duration() -- counts from the
+// first video frame, which is at 0: a container may start its clock late (MPEG-TS), or a B-frame delay
+// with no edit list to hide it (FLV, fragmented MP4) may put the first frame a frame or two in, and a
+// playhead starts at 0. Audio from before the first frame is dropped.
 class VideoDecoder {
 public:
     VideoDecoder() = default;
@@ -1212,7 +1285,8 @@ public:
     // Open `path`. Returns false and fills `err` on failure (bad path, no video
     // stream, unsupported codec). A file with no audio stream still opens. `abort` (optional)
     // is polled by FFmpeg during blocking I/O: once it reads true, opening or reading gives up
-    // promptly (VideoStream uses it to stop its worker).
+    // promptly (VideoStream uses it to stop its worker). Decodes the first frame, to learn when
+    // it is; the first decodeNext() hands it out.
     bool open(const std::string& path, std::string& err, const std::atomic<bool>* abort = nullptr);
 
     bool   isOpen()   const { return fmt_ != nullptr; }
@@ -1227,13 +1301,13 @@ public:
     // Nominal seconds per frame, from the stream's average (else real) frame rate; 1/30 if unknown.
     double frameDuration() const;
 
-    // The first keyframe after source time `t`, from the container's index. `key` is +inf when the
+    // The first keyframe after time `t`, from the container's index. `key` is +inf when the
     // index holds none after `t`. False when the stream has no index (yet).
     bool nextKeyframeAfter(double t, double& key) const;
 
     // Seek so the next decodeNext() resumes at the keyframe at or before time
-    // `t` (seconds). Flushes the decoders, the queued packets and the pending
-    // audio, so nothing stale leaks across.
+    // `t` (seconds; at or before 0, the start of the file). Flushes the decoders, the queued
+    // packets and the pending audio, so nothing stale leaks across.
     void seek(double t);
 
     // Decode the next video frame in source order WITHOUT converting it. Audio met on the way is
@@ -1245,23 +1319,23 @@ public:
     bool convert(const DecodedFrame& f, std::uint8_t* dst, int dstStride);
 
     // Read ahead -- queueing video packets instead of decoding them -- until the audio is settled up
-    // to source time `t` (see audioSettledUpTo), the input ends, or kMaxQueuedBytes of video packets
+    // to time `t` (see audioSettledUpTo), the input ends, or kMaxQueuedBytes of video packets
     // are waiting.
     void pumpAudio(double t);
 
-    // Source time up to which no more audio will arrive: the end of the decoded audio, or -- once
+    // The time up to which no more audio will arrive: the end of the decoded audio, or -- once
     // the demuxer has read kAudioSettleSlack past a point without meeting audio for it -- that
     // point. +inf at the end of the input or with no audio stream.
     double audioSettledUpTo() const;
 
-    // Move out the audio decoded since the last call (48 kHz mono float); `startT` is the source
-    // time of its first sample. False when there is none.
+    // Move out the audio decoded since the last call (48 kHz mono float); `startT` is the time of
+    // its first sample. False when there is none.
     bool takeAudio(std::vector<float>& out, double& startT);
 
     // Decode the next video frame in source order into `out`, converted to bottom-up RGBA. Any
     // audio decoded on the way (audio packets interleaved before this video frame) is appended
     // to `audio` as 48 kHz mono float. The first time audio is appended into a freshly-cleared
-    // `audio`, `audioStartT` is set to that audio's source time and `audioStartValid` to true
+    // `audio`, `audioStartT` is set to that audio's time and `audioStartValid` to true
     // (left untouched on later calls so a multi-call fill keeps one contiguous timeline).
     // Returns false at end of stream.
     bool decodeFrame(VideoFrame& out, std::vector<float>& audio,
@@ -1298,14 +1372,17 @@ private:
     double duration_   = 0.0;
     int    audioChannels_ = 0;  // source audio channel count (0 if no audio)
     double vTimeBase_  = 0.0;   // seconds per video stream tick
+    double startT_     = 0.0;   // the container's time of the first video frame: subtracted from
+                                // every time handed out, added to every time taken in
+    DecodedFrame first_;        // decoded by open() to find startT_; the first decodeNext() returns it
     double aTimeBase_  = 0.0;   // seconds per audio stream tick
     bool   demuxEof_   = false; // read the last packet (and flushed the audio decoder)
     bool   vflushed_   = false; // sent the video decoder its end of stream
-    double demuxedT_   = -std::numeric_limits<double>::infinity();   // latest packet time read
-    double audioEndT_  = -std::numeric_limits<double>::infinity();   // end of the decoded audio
+    double demuxedT_   = -std::numeric_limits<double>::infinity();   // latest packet time read (container time)
+    double audioEndT_  = -std::numeric_limits<double>::infinity();   // end of the decoded audio (container time)
 
     std::vector<float>        pendingAudio_;          // decoded since the last takeAudio()
-    double                    pendingAudioStart_ = 0.0;
+    double                    pendingAudioStart_ = 0.0;   // container time
     std::vector<std::uint8_t> rgba_;                  // decodeFrame()'s RGBA target
     std::vector<float>        aScratch_;              // reused swr output scratch
     std::vector<float>        legacyAudio_;           // decodeFrame()'s takeAudio scratch
@@ -1370,6 +1447,7 @@ void DecodedFrame::reset() {
 VideoDecoder::~VideoDecoder() { close(); }
 
 void VideoDecoder::close() {
+    first_.reset();
     clearQueue();
     if (sws_)      { sws_freeContext(sws_); sws_ = nullptr; }
     if (swsThr_)   { sws_freeContext(swsThr_); swsThr_ = nullptr; }
@@ -1384,7 +1462,7 @@ void VideoDecoder::close() {
     vstream_ = astream_ = -1;
     width_ = height_ = 0;
     audioChannels_ = 0;
-    duration_ = vTimeBase_ = aTimeBase_ = 0.0;
+    duration_ = vTimeBase_ = aTimeBase_ = startT_ = 0.0;
     resetStreamState();
 }
 
@@ -1467,6 +1545,19 @@ bool VideoDecoder::open(const std::string& path, std::string& err, const std::at
     dstFrame_ = av_frame_alloc();
     pkt_      = av_packet_alloc();
     resetStreamState();
+
+    // Count time from the first frame (see the class comment). The duration spans from the start of
+    // the container's clock, so shorten it by however much later than that the first frame comes. (An
+    // FLV's duration counts from 0 instead: its laps end a B-frame delay late -- the last frame is held
+    // a frame or two longer, never lost.)
+    DecodedFrame f;
+    if (decodeNext(f)) {
+        startT_ = f.t;
+        f.t = 0.0;
+        first_ = std::move(f);
+        const double clockStart = fmt_->start_time != AV_NOPTS_VALUE ? (double)fmt_->start_time / AV_TIME_BASE : 0.0;
+        if (duration_ > 0.0) duration_ = std::max(0.0, duration_ - (startT_ - clockStart));
+    }
     return true;
 }
 
@@ -1483,16 +1574,19 @@ bool VideoDecoder::nextKeyframeAfter(double t, double& key) const {
     if (!fmt_ || vstream_ < 0 || vTimeBase_ <= 0.0) return false;
     AVStream* vs = fmt_->streams[vstream_];
     if (avformat_index_get_entries_count(vs) <= 0) return false;
-    const int64_t ts = (int64_t)std::floor(t / vTimeBase_) + 1;   // strictly after t
+    const int64_t ts = (int64_t)std::floor((t + startT_) / vTimeBase_) + 1;   // strictly after t
     const AVIndexEntry* e = avformat_index_get_entry_from_timestamp(vs, ts, 0);   // keyframe, >= ts
-    key = e ? e->timestamp * vTimeBase_ : kInf;
+    key = e ? e->timestamp * vTimeBase_ - startT_ : kInf;
     return true;
 }
 
 void VideoDecoder::seek(double t) {
     if (!fmt_) return;
-    if (t < 0.0) t = 0.0;
-    int64_t ts = (int64_t)(t / (vTimeBase_ > 0 ? vTimeBase_ : 1.0));
+    first_.reset();
+    // At or before 0, the very start of the file rather than the first frame's time: a demuxer that
+    // searches by timestamp (MPEG-TS) can overshoot that by a keyframe interval.
+    const double src = t > 0.0 ? t + startT_ : 0.0;
+    int64_t ts = (int64_t)(src / (vTimeBase_ > 0 ? vTimeBase_ : 1.0));
     // BACKWARD lands on the keyframe at or before ts -- exactly the GOP start the
     // caller decodes forward from. If that fails (e.g. a stream it cannot seek), restart
     // from the beginning: the caller then decodes forward to its target -- slow, but right.
@@ -1577,19 +1671,25 @@ void VideoDecoder::pumpAudio(double t) {
 
 double VideoDecoder::audioSettledUpTo() const {
     if (!actx_ || demuxEof_) return kInf;
-    return std::max(audioEndT_, demuxedT_ - kAudioSettleSlack);
+    return std::max(audioEndT_, demuxedT_ - kAudioSettleSlack) - startT_;
 }
 
 bool VideoDecoder::takeAudio(std::vector<float>& out, double& startT) {
     out.clear();
     if (pendingAudio_.empty()) return false;
     out.swap(pendingAudio_);
-    startT = pendingAudioStart_;
-    return true;
+    startT = pendingAudioStart_ - startT_;
+    if (startT < 0.0) {                            // from before the first frame: the clip starts later
+        const std::size_t skip = std::min(out.size(), (std::size_t)std::llround(-startT * kOutRate));
+        out.erase(out.begin(), out.begin() + (std::ptrdiff_t)skip);
+        startT = std::max(0.0, startT + (double)skip / kOutRate);
+    }
+    return !out.empty();
 }
 
 bool VideoDecoder::decodeNext(DecodedFrame& out) {
     out.reset();
+    if (first_.valid()) { out = std::move(first_); return true; }
     if (!fmt_ || !vctx_) return false;
 
     while (true) {
@@ -1597,7 +1697,7 @@ bool VideoDecoder::decodeNext(DecodedFrame& out) {
         if (r == 0) {
             const int64_t ts = (frame_->best_effort_timestamp != AV_NOPTS_VALUE)
                              ? frame_->best_effort_timestamp : frame_->pts;
-            out.t = (ts != AV_NOPTS_VALUE) ? ts * vTimeBase_ : 0.0;
+            out.t = ((ts != AV_NOPTS_VALUE) ? ts * vTimeBase_ : 0.0) - startT_;
             out.frame_ = av_frame_alloc();
             if (!out.frame_) { av_frame_unref(frame_); return false; }
             av_frame_move_ref(out.frame_, frame_);
@@ -1859,7 +1959,7 @@ EOF
 - Modify: `CMakeLists.txt` (`APP_SOURCES` and the `gl_smoke` sources)
 - Modify: `tests/gl_smoke.cpp`
 
-One worker thread per file. It opens the file, sizes a pool of RGBA buffers from the 512 MB budget, then loops: snapshot the request, recycle frames that can never be shown, read audio ahead, ask `videoNextStep()` what to do, and do it — never holding the mutex while decoding or converting. The graph thread only calls `request()`, `frameAt()` (the frame it returns is *checked out* until the next call), `readAudio()`, and offline `frameReadyFor()` / `waitForFrame()`. Details that the prototype showed matter: live catch-up is sliced to 100 ms so a decoder slower than the playhead still moves the picture; a seek keeps the newest frame at or before its target; a seek that lands late retries 1 s earlier and is *pinned* if it still does; reverse stretches are published whole (they decode forwards); a frame at or past the duration ends the lap.
+One worker thread per file. It opens the file, sizes a pool of RGBA buffers from the 512 MB budget, then loops: snapshot the request, recycle frames that can never be shown, read audio ahead, ask `videoNextStep()` what to do, and do it — never holding the mutex while decoding or converting. The graph thread only calls `request()`, `frameAt()` (the frame it returns is *checked out* until the next call), `readAudio()`, and offline `frameReadyFor()` / `waitForFrame()`. Details that the prototype showed matter: live catch-up is sliced to 100 ms so a decoder slower than the playhead still moves the picture; a seek keeps the newest frame at or before its target; a seek lands where its decode loop admits frames, retrying further back (1 s, 2 s, 4 s… to the file's start) when it lands late — a decode-time index lands a seek just below a keyframe ON it, a timestamp search (MPEG-TS) overshoots a keyframe interval, and some demuxers find nothing near the end — and is *pinned* only if even the start lands late; reverse stretches are published whole (they decode forwards); offline, a stretch whose ring evicted its lower frames covers only down to its oldest; a frame at or past the duration ends the lap. The new scenario writes the awkward files itself — a long first keyframe interval, and an FLV with B-frames — and counts reverse stretches (`reverseStretches()`) to prove live reverse cannot spin.
 
 - [ ] **Step 1: Add `#include "gfx/VideoStream.h"` to `tests/gl_smoke.cpp`, after `#include "gfx/VideoDecoder.h"`**. In `tests/gl_smoke.cpp`, replace:
 
@@ -1874,12 +1974,42 @@ with:
 #include "gfx/VideoStream.h"
 ```
 
-- [ ] **Step 2: Add a timing helper and the failing scenario, just above `// --- Scenario 10: Video Player decodes a file to texture + audio ---`**:
+- [ ] **Step 2: Add a timing helper, the indexed test clip (each frame paints its own number), and the two failing scenarios, just above `// --- Scenario 10: Video Player decodes a file to texture + audio ---`**:
 
 ```cpp
 // Seconds since t0.
 static double secondsSince(std::chrono::steady_clock::time_point t0) {
     return std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+}
+
+// A clip whose every frame paints its own index as 9 horizontal black/white bands (the top band is
+// bit 8), 160x90 at 25 fps with a 440 Hz tone, and keyframes exactly `gop` frames apart. Reading the
+// bands back says which frame is on screen -- and a wrong vertical flip reads a different number.
+static const int kIdxW = 160, kIdxH = 90, kIdxFps = 25;
+static bool writeIndexedClip(const std::string& path, int frames, int gop, int w = kIdxW, int h = kIdxH) {
+    VideoEncoder enc; std::string err;
+    if (!enc.open(path, w, h, kIdxFps, 48000, 1, err, gop)) {
+        std::fprintf(stderr, "writeIndexedClip: %s\n", err.c_str());
+        return false;
+    }
+    std::vector<unsigned char> px((std::size_t)w * h * 4);
+    std::vector<float> tone(48000 / kIdxFps);
+    for (int f = 0; f < frames; ++f) {
+        for (int y = 0; y < h; ++y) {                      // y = 0 is the BOTTOM row (GL order)
+            const int bandFromTop = (h - 1 - y) * 9 / h;
+            const unsigned char v = ((f >> (8 - bandFromTop)) & 1) ? 255 : 0;
+            for (int x = 0; x < w; ++x) {
+                std::size_t i = ((std::size_t)y * w + x) * 4;
+                px[i] = px[i + 1] = px[i + 2] = v; px[i + 3] = 255;
+            }
+        }
+        if (!enc.addVideoFrame(px.data(), (double)f / kIdxFps)) return false;
+        for (std::size_t i = 0; i < tone.size(); ++i)
+            tone[i] = 0.5f * (float)std::sin(6.283185307179586 * 440.0 *
+                                             (double)(f * tone.size() + i) / 48000.0);
+        if (!enc.addAudio(tone.data(), (int)tone.size())) return false;
+    }
+    return enc.close(err);
 }
 
 // --- Scenario: VideoStream -- open, the exact frame for a playhead, its audio, a failed open ---
@@ -1919,9 +2049,123 @@ static bool scenario_video_stream_basics() {
     return true;
 }
 
+// --- Scenario: VideoStream reverse through awkward files ---
+// Offline reverse must stay exact, and live reverse must not spin, whatever the file does:
+//  (a) a first keyframe interval longer than a stretch's ring: offline, the ring evicts the stretch's
+//      lower frames, so the stretch covers only down to its oldest -- claiming the lap start stalled a
+//      loop-off render and, looping, served the previous lap's frames;
+//  (b) an FLV with B-frames: its first frame comes a frame in (times count from it), a seek just below
+//      a keyframe lands ON it (an empty stretch, planned again forever), and a seek into its last
+//      frames finds nothing (the loop seam raced through laps with the picture frozen);
+//  (c) paused in reverse, the picture settles on the playhead's frame and decoding stops.
+// A frame's time names it, so the checks read FrameView::t.
+static bool openStream(VideoStream& s) {
+    const auto t0 = std::chrono::steady_clock::now();
+    while (s.state() == VideoStream::State::Opening && secondsSince(t0) < 10.0)
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    return s.state() == VideoStream::State::Ready;
+}
+
+// The frame for u in a writeIndexedClip of `n` frames: the greatest frame time i/kIdxFps <= u.
+static double indexedFrameFor(double u, double duration, bool loop, int n) {
+    const double lap = loop ? duration * std::floor(u / duration) : 0.0;
+    return lap + std::min(std::floor((u - lap) * kIdxFps + 1e-6), n - 1.0) / kIdxFps;
+}
+
+// Drive `s` offline in reverse the way the node does, from u0 down to u1 at kIdxFps, checking every
+// frame is the one for the playhead.
+static bool reverseExact(VideoStream& s, double u0, double u1, bool loop, int n, const char* what) {
+    const double D = s.info().duration;
+    for (double u = u0; u >= u1; u -= 1.0 / kIdxFps) {
+        VideoRequest r;
+        r.u = u; r.rate = -1.0f; r.offline = true; r.loop = loop;
+        if (!loop) { r.lapLo = 0.0; r.lapHi = D; }
+        s.request(r);
+        VideoStream::FrameView fv;
+        const double want = indexedFrameFor(u, D, loop, n);
+        if (!s.waitForFrame(u, 5.0) || !s.frameAt(u, fv) || std::fabs(fv.t - want) > 1e-4) {
+            std::fprintf(stderr, "%s: at u=%.3f showed %.4f, expected %.4f\n", what, u, fv.t, want);
+            return false;
+        }
+    }
+    return true;
+}
+
+static bool scenario_video_stream_reverse_files() {
+    {
+        const std::string gop = "build/_rev_long_gop.mp4", flv = "build/_rev_bframes.flv";
+        if (!writeIndexedClip(gop, 60, 60) || !writeIndexedClip(flv, 100, 25)) {
+            return failed("reverse files: could not write the clips");
+        }
+        // (a) 8 buffers -- a ring of 4 -- against a first keyframe interval of 60 frames.
+        const std::size_t eight = (std::size_t)kIdxW * kIdxH * 4 * 8;
+        {
+            VideoStream s(gop, eight);
+            if (!openStream(s) || !reverseExact(s, 2.30, 0.0, false, 60, "long keyframe interval, loop off")) {
+                return failed("reverse files: offline reverse through a long first keyframe interval (loop off)");
+            }
+        }
+        {
+            VideoStream s(gop, eight);
+            if (!openStream(s) || !reverseExact(s, 2.30, -1.0, true, 60, "long keyframe interval, loop on")) {
+                return failed("reverse files: offline reverse through a long first keyframe interval (loop on)");
+            }
+        }
+        // (b) Offline across the FLV's loop seam...
+        {
+            VideoStream s(flv);
+            if (!openStream(s) || !reverseExact(s, 3.90, -1.0, true, 100, "FLV")) {
+                return failed("reverse files: offline reverse across an FLV's loop seam");
+            }
+        }
+        // ...then live: across the seam in 2.5 s, a handful of stretches (a spinning one decodes thousands).
+        VideoStream s(flv);
+        if (!openStream(s)) { return failed("reverse files: the FLV did not open"); }
+        const double D = s.info().duration;
+        double u = 1.2;
+        VideoStream::FrameView fv;
+        const auto t0 = std::chrono::steady_clock::now();
+        auto last = t0;
+        while (secondsSince(t0) < 2.5) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(16));
+            const auto now = std::chrono::steady_clock::now();
+            u -= std::chrono::duration<double>(now - last).count();
+            last = now;
+            VideoRequest r;
+            r.u = u; r.rate = -1.0f; r.loop = true;
+            s.request(r);
+            s.frameAt(u, fv);
+        }
+        const unsigned long long live = (unsigned long long)s.reverseStretches();
+        if (live > 40 || !(std::fabs(fv.t - u) < 0.75)) {
+            std::fprintf(stderr, "reverse files: live: %llu stretches; u=%.3f showing %.3f\n", live, u, fv.t);
+            return failed("reverse files: live reverse over an FLV must not spin, and must follow the playhead across the seam");
+        }
+        // (c) Paused: the picture settles on the playhead's frame, and decoding stops.
+        VideoRequest paused;
+        paused.u = u; paused.rate = 0.0f; paused.loop = true;
+        s.request(paused);
+        std::this_thread::sleep_for(std::chrono::milliseconds(300));
+        const std::uint64_t settled = s.reverseStretches();
+        for (int i = 0; i < 30; ++i) {
+            s.request(paused);
+            s.frameAt(u, fv);
+            std::this_thread::sleep_for(std::chrono::milliseconds(16));
+        }
+        if (std::fabs(fv.t - indexedFrameFor(u, D, true, 100)) > 1e-4 || s.reverseStretches() != settled) {
+            std::fprintf(stderr, "reverse files: paused at u=%.3f showing %.4f; %llu stretches after settling, %llu now\n",
+                         u, fv.t, (unsigned long long)settled, (unsigned long long)s.reverseStretches());
+            return failed("reverse files: paused in reverse, the picture must settle on the playhead's frame and decoding stop");
+        }
+        std::fprintf(stderr, "gl_smoke OK: reverse stays exact through a long first keyframe interval and across an FLV's "
+                     "seam; live it does not spin (%llu stretches in 2.5 s); paused it settles\n", live);
+    }
+    return true;
+}
+
 ```
 
-- [ ] **Step 3: Register it in `kScenarios`, just above `scenario_video_player_decode,`**. In `tests/gl_smoke.cpp`, replace:
+- [ ] **Step 3: Register them in `kScenarios`, just above `scenario_video_player_decode,`**. In `tests/gl_smoke.cpp`, replace:
 
 ```cpp
     scenario_video_player_decode,
@@ -1931,6 +2175,7 @@ with:
 
 ```cpp
     scenario_video_stream_basics,
+    scenario_video_stream_reverse_files,
     scenario_video_player_decode,
 ```
 
@@ -2020,6 +2265,10 @@ public:
     // n output samples spanning source time [u0, u1] (see TimedAudio::sample).
     void readAudio(double u0, double u1, float* out, int n) const;
 
+    // Diagnostics: reverse stretches decoded so far. It grows with the ground reverse playback covers;
+    // a stretch that decoded nothing and was planned again would spin the worker, and show here.
+    std::uint64_t reverseStretches() const { return reverseStretches_.load(); }
+
 private:
     struct Slot { double t = 0.0; std::uint64_t serial = 0; int buf = -1; };
 
@@ -2030,7 +2279,7 @@ private:
     bool peekNext();
     void takeAudio();
     void pumpAudio(double u);
-    bool seekLanding(double src);
+    bool seekLanding(double end, double slack);
     void seekTo(double target);
     void catchUp(double target);
     void fill();
@@ -2054,6 +2303,7 @@ private:
     const std::string path_;
     const std::size_t poolBytes_;
     std::atomic<bool> stop_{false};
+    std::atomic<std::uint64_t> reverseStretches_{0};
 
     // --- guarded by m_ ---
     mutable std::mutex      m_;
@@ -2084,8 +2334,9 @@ private:
     bool          eof_ = false;
     bool          loop_ = true;            // the loop flag of the request being worked on
     int           planDir_ = 1;            // the direction the worker last planned for
-    bool          coverValid_ = false;     // reverse: this run's stretches reach down to coverLo_
+    bool          coverValid_ = false;     // reverse: this run's stretches reach down to coverLo_...
     double        coverLo_ = 0.0;
+    double        coverHi_ = 0.0;          // ...from here, the end of the run's first stretch
     double        lastStretchSeconds_ = 0.0;   // wall time the last reverse stretch took to decode
     bool          seekPinned_ = false;     // the last seek could not land at or before...
     double        pinnedFrom_ = 0.0;       // ...this target (it precedes the file's first frame)
@@ -2343,6 +2594,7 @@ void VideoStream::step() {
     in.pinnedFrom = pinnedFrom_;
     in.coverValid = coverValid_;
     in.coverLo    = coverLo_;
+    in.coverHi    = coverHi_;
     in.lead       = r.offline ? 0.0 : std::min(2.0, std::fabs((double)r.rate) * lastStretchSeconds_);
 
     if (dir >= 0) pumpAudio(r.u);                               // keep the audio ahead of the playhead
@@ -2409,22 +2661,23 @@ void VideoStream::pumpAudio(double u) {
     takeAudio();
 }
 
-// Seek so the next frame is at or before source time `src`. The index can land a frame or two late
-// (a keyframe's decode time precedes its display time), so a late landing retries a second earlier.
-// False when even that lands after `src`: `src` precedes the first frame of the file.
-bool VideoStream::seekLanding(double src) {
-    double at = src;
-    for (int attempt = 0; attempt < 2; ++attempt) {
+// Seek in the decoder's lap so the next frame is at or before unwrapped time `end` (+ `slack`: callers
+// pass the rule their decode loop admits frames by). A seek can land late: where the index holds
+// decode times (FLV, fragmented MP4, B-frames without an edit list) a seek just below a keyframe lands
+// ON it; a demuxer that searches by timestamp (MPEG-TS) can overshoot by a keyframe interval; some
+// (FLV, MPEG-TS) find no frame at all when asked for the last ones. So retry further back -- 1 s, 2 s,
+// 4 s... -- down to the start of the file. False when even that lands after `end` or finds nothing.
+bool VideoStream::seekLanding(double end, double slack) {
+    const double src = end - lapOffset_;
+    for (double back = 0.0;; back = back > 0.0 ? 2.0 * back : 1.0) {
+        const double at = std::max(0.0, src - back);
         dec_.seek(at);
         next_.reset();
         eof_ = false;
         audioChunkOpen_ = false;
-        if (!peekNext()) return false;
-        if (next_.t <= src + kVideoTimeEps) return true;
+        if (peekNext() && lapOffset_ + next_.t <= end + slack) return true;
         if (at <= 0.0) return false;
-        at = std::max(0.0, src - 1.0);
     }
-    return false;
 }
 
 void VideoStream::seekTo(double target) {
@@ -2440,7 +2693,7 @@ void VideoStream::seekTo(double target) {
         audioSettledU_ = -kInf;
     }
     lapOffset_ = winfo_.duration > 0.0 ? videoLapStart(target, winfo_.duration) : 0.0;
-    const bool landed = seekLanding(target - lapOffset_);
+    const bool landed = seekLanding(target, kVideoTimeEps);
     seekPinned_ = !landed;
     pinnedFrom_ = target;
     lastT_ = target;
@@ -2550,6 +2803,7 @@ bool VideoStream::publish(DecodedFrame& f, double t, bool runStart) {
 void VideoStream::reverseStretch(double to, bool fresh, bool offline) {
     const double D = winfo_.duration, fd = winfo_.frameDur;
     const auto began = std::chrono::steady_clock::now();
+    reverseStretches_.fetch_add(1);
     if (fresh) {
         std::lock_guard<std::mutex> lk(m_);
         flushReadyLocked();
@@ -2559,7 +2813,9 @@ void VideoStream::reverseStretch(double to, bool fresh, bool offline) {
     const double end = fresh ? to : to - kVideoTimeEps;          // the latest time this stretch may hold
     lapOffset_ = D > 0.0 ? videoLapStart(end, D) : 0.0;           // just below a lap start: the lap before
     audioClipHi_ = coverValid_ ? coverLo_ : kInf;                 // never duplicate the stretch above's audio
-    const bool landed = seekLanding(end - lapOffset_);
+    // Land where the loop below admits frames: a prefetch landing ON the stretch above's keyframe
+    // would decode nothing, cover nothing, and be planned again forever.
+    const bool landed = seekLanding(end, fresh ? kVideoTimeEps : 0.0);
     int cap = 1;
     { std::lock_guard<std::mutex> lk(m_); cap = std::max(1, (int)pool_.size() / 2); }
 
@@ -2616,8 +2872,11 @@ void VideoStream::reverseStretch(double to, bool fresh, bool offline) {
             }
         }
         if (!plan.contiguous && ring.empty() && spare.valid()) keep(spare, spareT, false);   // never empty
+        // Covered down to the keyframe -- or the lap start, when the keyframe is the lap's first frame --
+        // unless the offline ring evicted the stretch's lower frames: then only down to its oldest.
+        const bool evicted = plan.contiguous && !ring.empty() && ring.front().t > key + kVideoTimeEps;
         const bool atLapStart = key - lapOffset_ < fd * 0.5;
-        lo = atLapStart ? lapOffset_ : (plan.contiguous && !ring.empty() ? ring.front().t : key);
+        lo = evicted ? ring.front().t : (atLapStart ? lapOffset_ : key);
     }
     dec_.pumpAudio(end - lapOffset_ + fd);         // settle the stretch's audio up to its end
     takeAudio();
@@ -2627,6 +2886,7 @@ void VideoStream::reverseStretch(double to, bool fresh, bool offline) {
         for (const Slot& s : ring) insertReadyLocked(Slot{s.t, nextSerial_++, s.buf});
         const bool firstOfRun = !coverValid_;
         coverLo_ = lo;
+        if (firstOfRun) coverHi_ = end;
         coverValid_ = true;
         // Offline, stretches are consecutive: the run grows downwards from the first stretch's end.
         if (firstOfRun || !runValid_) {
@@ -2656,13 +2916,13 @@ with:
   src/gfx/VideoStream.cpp
 ```
 
-- [ ] **Step 8: Build and run the scenario**
+- [ ] **Step 8: Build and run the scenarios (the second prints only if the first passed: `gl_smoke` stops at a failure)**
 
 ```bash
-cmake --build build --target gl_smoke -j8 && ./build/gl_smoke 2>&1 | grep -E 'VideoStream|FAIL'
+cmake --build build --target gl_smoke -j8 && ./build/gl_smoke 2>&1 | grep -E 'VideoStream|reverse stays|FAIL'
 ```
 
-Expected output includes: `VideoStream opens, reports its info, fails cleanly, and serves the exact frame + audio`
+Expected output includes: `reverse stays exact through a long first keyframe interval`
 
 - [ ] **Step 9: Commit**
 
@@ -2683,7 +2943,7 @@ EOF
 
 The node keeps its ports and semantics but no longer decodes. Each frame: advance the unwrapped playhead (`videoAdvance`; held at the start until the first frame is on screen), post it to the stream, upload the newest ready frame at or before it into a staging texture and flip it into the published texture with one `glBlitFramebuffer`, and read the matching audio. Offline, it waits for the exact frame and prefetches the next one, reporting it through `loading()` so the renderer's gate does the waiting. The existing scenario must now drive the node the way the renderer does (offline + gated on `loading()`), plus a live check that polls; four new scenarios pin the fix.
 
-- [ ] **Step 1: Add the test helpers, just above `// --- Scenario 10: Video Player decodes a file to texture + audio ---`: gated evaluation, and the indexed clip (each frame paints its own number, so a read-back names the frame on screen — and a wrong vertical flip reads a different number)**:
+- [ ] **Step 1: Add the test helpers, just above `// --- Scenario 10: Video Player decodes a file to texture + audio ---`: gated evaluation, and reading the indexed clip's frame number back from a texture (a read-back names the frame on screen — and a wrong vertical flip reads a different number)**:
 
 ```cpp
 // Evaluate the way the OfflineRenderer does: wait while any node reports loading() (the Video
@@ -2698,36 +2958,6 @@ static bool evaluateGated(Graph& g, float dt, double timeoutSeconds = 10.0) {
         }
     g.evaluate(dt);
     return true;
-}
-
-// A clip whose every frame paints its own index as 9 horizontal black/white bands (the top band is
-// bit 8), 160x90 at 25 fps with a 440 Hz tone, and keyframes exactly `gop` frames apart. Reading the
-// bands back says which frame is on screen -- and a wrong vertical flip reads a different number.
-static const int kIdxW = 160, kIdxH = 90, kIdxFps = 25;
-static bool writeIndexedClip(const std::string& path, int frames, int gop, int w = kIdxW, int h = kIdxH) {
-    VideoEncoder enc; std::string err;
-    if (!enc.open(path, w, h, kIdxFps, 48000, 1, err, gop)) {
-        std::fprintf(stderr, "writeIndexedClip: %s\n", err.c_str());
-        return false;
-    }
-    std::vector<unsigned char> px((std::size_t)w * h * 4);
-    std::vector<float> tone(48000 / kIdxFps);
-    for (int f = 0; f < frames; ++f) {
-        for (int y = 0; y < h; ++y) {                      // y = 0 is the BOTTOM row (GL order)
-            const int bandFromTop = (h - 1 - y) * 9 / h;
-            const unsigned char v = ((f >> (8 - bandFromTop)) & 1) ? 255 : 0;
-            for (int x = 0; x < w; ++x) {
-                std::size_t i = ((std::size_t)y * w + x) * 4;
-                px[i] = px[i + 1] = px[i + 2] = v; px[i + 3] = 255;
-            }
-        }
-        if (!enc.addVideoFrame(px.data(), (double)f / kIdxFps)) return false;
-        for (std::size_t i = 0; i < tone.size(); ++i)
-            tone[i] = 0.5f * (float)std::sin(6.283185307179586 * 440.0 *
-                                             (double)(f * tone.size() + i) / 48000.0);
-        if (!enc.addAudio(tone.data(), (int)tone.size())) return false;
-    }
-    return enc.close(err);
 }
 
 // The index painted by writeIndexedClip, read from bottom-up RGBA pixels (a texture or a decoded
@@ -3554,14 +3784,17 @@ with:
   wrapped in a no-op-free `AVBufferRef`). Video packets are queued (≤ 64 MB) rather than
   decoded at once, so `pumpAudio()` keeps 48 kHz mono audio ahead of the video;
   `audioSettledUpTo()` says how far no more audio can arrive. The legacy `decodeFrame()`
-  (bottom-up RGBA + audio appended) is built on those and unchanged for `gl_smoke`.
+  (bottom-up RGBA + audio appended) is built on those and unchanged for `gl_smoke`. Every time
+  in and out counts from the first video frame (decoded at `open()`), so a container that starts
+  its clock late (MPEG-TS) or shows a B-frame delay (FLV, fragmented MP4) still plays from 0.
 - **The Video Player decodes on a worker** (`src/gfx/VideoStream.{h,cpp}`, one per node,
   GL-free): it opens the file, keeps a fixed pool of RGBA frames (512 MB budget:
   `core/VideoPlan.h` `videoPoolFrames`) decoded ahead of the requested playhead, and reads
   audio into a `core/TimedAudio.h` store. Its decisions — fill, catch up (decode without
   converting, 100 ms slices), seek (only for jumps over 1 s: a seek restarts the frame-thread
   pipeline), wrap, and reverse keyframe-to-frame stretches published whole — are the pure,
-  unit-tested `videoNextStep()`. The node's playhead is UNWRAPPED (lap × D + position,
+  unit-tested `videoNextStep()`. A seek lands where its decode loop admits frames, backing off
+  1 s, 2 s, 4 s… to the file's start when it lands late (decode-time indexes, MPEG-TS). The node's playhead is UNWRAPPED (lap × D + position,
   `videoAdvance`), so the worker decodes the next lap early and loops are seamless; it is held
   at the start until the first frame is on screen. The node uploads the newest frame at or
   before the playhead into a staging texture and flips it into the published texture with

@@ -101,6 +101,44 @@ found these problems in the design as first approved, and changed it as follows:
     below the playhead (capped at 2 s, never before the clip's start with loop off), and a playhead
     still above the covered stretch is left to arrive instead of being restarted.
 
+### Revisions during execution (second code review of Task 2: the planned Tasks 3, 5 and 7)
+
+The reviewer drove the planned worker against files written in six containers. Each finding below was
+reproduced on the prototype before it was fixed, and each fix was measured on every container.
+
+18. **Offline, a stretch whose ring evicted frames covers only down to its oldest.** A stretch whose
+    keyframe is the lap's first frame claimed coverage down to the lap start even when its ring of M
+    frames had evicted everything below the newest M. Through a first keyframe interval longer than the
+    ring, a loop-off render stalled, and a looping one showed the previous lap's frames (180 of 206
+    wrong on a 1080p clip whose first keyframe interval is 8.3 s).
+19. **A seek lands where its stretch admits frames.** The landing check allowed ε above the target
+    while a prefetch admits frames only up to 1 µs below the stretch above, so the two cancelled. Where
+    the index holds decode times -- FLV, fragmented MP4, B-frames without an edit list -- a seek just
+    below a keyframe lands ON it. That landing was accepted, the stretch decoded nothing, and the same
+    prefetch was planned again: 2,400–2,600 stretches in 3.6 s of live reverse instead of 6.
+20. **A seek that lands late, or finds nothing, backs off 1 s, 2 s, 4 s… to the start of the file.**
+    FLV and MPEG-TS find no frame when asked for the last ones, and an MPEG-TS timestamp search
+    overshoots by a keyframe interval. Taken as "nothing decodable", the lap counted as covered and
+    reverse raced through laps with the picture frozen (30,000 stretches); with a single retry 1 s back,
+    an MPEG-TS file with 3 s keyframes still stalled on its first reverse frame. "Pinned" now means even
+    the start of the file lands after the target.
+21. **A stopped reverse playhead above the covered stretch restarts there.** Revision 17 leaves a
+    playhead above a led stretch to arrive, but a paused one never does: it stayed a lead behind (4
+    frames on 1080p). With no lead (paused, or offline), a playhead above the top of the run's first
+    stretch (`coverHi`) starts a fresh stretch at itself.
+22. **Decoder times count from the first video frame** (decoded by `open()`, handed out by the first
+    `decodeNext()`); the keyframe index, `seek()`, the duration and the audio follow. A container that
+    starts its clock late (MPEG-TS, 1.47 s in) or shows a B-frame delay without an edit list (FLV,
+    fragmented MP4: 1–2 frames) put the first frame after the playhead's 0, so even a forward offline
+    render stalled on its first frame. `seek(t ≤ 0)` goes to the very start of the file, which a
+    timestamp search cannot overshoot; audio from before the first frame is dropped. (An FLV's duration
+    counts from 0, so its laps end a B-frame delay late: the last frame is held a frame or two longer,
+    never lost.)
+23. **`VideoStream::reverseStretches()`** counts reverse stretches, so a test can prove live reverse
+    does not spin. The new `gl_smoke` scenario writes the awkward files itself (see Testing).
+24. **Task 2's anchor test admits frames the way the worker does**: strictly below the stretch above,
+    not up to the anchor.
+
 ## Root cause
 
 Reproduced with a headless harness that compiles the real `VideoPlayerNode.cpp` and drives
@@ -312,6 +350,9 @@ with widely spaced keyframes.
   the worker holds the last frame at end of file.
 - The worker tags every frame and audio chunk with unwrapped times. While looping it does not queue
   frames whose timestamp is ≥ D, because they would overlap the next lap.
+- **Times count from the first video frame.** The decoder rebases every time it hands out or takes in
+  (frames, audio, seeks, the keyframe index, the duration) on its first frame, so u = 0 always has a
+  frame, whatever time the container's clock gives it.
 
 ### Per-frame flow on the UI thread (live)
 
@@ -370,9 +411,11 @@ The rules below are checked in order after each snapshot of the request.
   the picture (skipping frames) instead of chasing forever.
 - **A seek keeps what is still useful.** Queued frames after the target are released; the newest one
   at or before it stays up until the seek delivers a better one.
-- **A late landing retries.** If the first frame after a seek is later than the target, the seek is
-  retried 1 s earlier; if it still lands late, the target precedes the file's first frame, and that
-  frame is shown for it.
+- **A late landing retries further back.** If the first frame after a seek is later than the target
+  (a decode-time index lands a seek just below a keyframe ON it; an MPEG-TS timestamp search overshoots
+  a keyframe interval), or there is none (FLV and MPEG-TS near the end), the seek is retried 1 s, 2 s,
+  4 s… earlier, down to the start of the file. Only if even that lands late does the target precede
+  the first frame: that frame is shown for it, and the seek is pinned.
 
 **The worker recycles frames that can never be shown, itself.** That covers:
 - *superseded* frames: those older than the newest queued frame that is ≤ the target in forward
@@ -384,10 +427,12 @@ The pool therefore cannot deadlock on frames that will never be shown.
 
 ### Worker: reverse playback
 
-1. **Plan a stretch.** A *fresh* one (a new run, or the playhead fell below what is covered) ends at
-   E = the playhead minus a lead: live, |rate| × the last stretch's decode time, so it lands where the
-   playhead will be; offline, 0. Otherwise the stretch lies strictly below the stretch above. Seek to
-   E; the first decoded frame gives the keyframe time K. The frame count is
+1. **Plan a stretch.** A *fresh* one (a new run; the playhead fell below what is covered; or it has
+   stopped -- paused, or offline -- above the top of what is covered, where it would never arrive) ends
+   at E = the playhead minus a lead: live and moving, |rate| × the last stretch's decode time, so it
+   lands where the playhead will be; otherwise 0. Otherwise the stretch lies strictly below the stretch
+   above. Seek to E, landing where the stretch admits frames (so a prefetch never lands on the
+   keyframe above); the first decoded frame gives the keyframe time K. The frame count is
    n = floor((E − K) / frameDur) + 1, and `top` is the nominal time of the last one, on K's grid (live
    prefetch stretches anchor E half a frame below the stretch above).
 2. **Live:** the budget is M = pool / 2 frames.
@@ -398,8 +443,10 @@ The pool therefore cannot deadlock on frames that will never be shown.
    - Frames that are not kept are decoded but not converted.
    - This spacing uses the nominal frame duration; live reverse is best-effort.
 3. **Offline:** every frame in [K, E] is converted into a rolling ring of M buffers. The ring ends
-   holding exactly the last M frames ≤ E. The next stretch ends just before the earliest one kept,
-   which re-decodes from the same keyframe. That is slower, but frame-exact.
+   holding exactly the last M frames ≤ E, so the stretch covers only down to the earliest of them (to
+   K -- or the lap's start, when K is the lap's first frame -- only if nothing was evicted). The next
+   stretch ends just before the earliest one kept, which re-decodes from the same keyframe. That is
+   slower, but frame-exact.
 4. **Next stretch:** E′ = K − ε (live), which lands on the previous keyframe. Crossing below the start
    of a lap goes to the previous lap's end when looping, and holds the first frame otherwise.
 5. **Prefetch:** the next stretch starts once ≥ M buffers are free.
@@ -464,6 +511,7 @@ the UI keeps running.
 | Corrupt packets | skipped |
 | Truncated file | behaves like end of file (wrap or hold) |
 | `av_seek_frame` fails | seek to 0 and catch up to the target: slow but correct |
+| A seek lands late or finds no frame (decode-time indexes, MPEG-TS) | retried 1 s, 2 s, 4 s… earlier, down to the start of the file |
 | Frame dimensions change mid-file | those frames are skipped (conversion is sized at open) |
 | Anything thrown on the worker | caught at the top of the thread and turned into `Failed`; nothing escapes the thread |
 
@@ -506,6 +554,8 @@ the UI keeps running.
 - **`nextStep` rules added in planning:** a target in the next lap seeks (index or not) unless the gap
   is short; a short gap with a keyframe in it is decoded through; a pinned seek is not repeated.
 - **`videoStretchKeeps`:** an end between frames counts from the frame containing it.
+- **`nextStep` reverse:** a fresh stretch aims `lead` below a moving playhead; a moving playhead above
+  the covered stretch is left to arrive, a stopped one restarts there.
 - **The time model:** loop on runs past the end and below 0; loop off clamps to the lap captured
   before the step; paused does not move; unknown duration clamps at 0.
 - **`TimedAudio`:**
@@ -522,11 +572,18 @@ the UI keeps running.
   polls until the texture has colour.
 - The existing encoder round-trip checks keep `decodeFrame()`'s bottom-up output honest.
 - **`VideoDecoder` split decode:** `decodeNext()` + `convert()` equal `decodeFrame()` flipped,
-  byte for byte; the keyframe lookup; a second of audio read ahead after one video frame.
+  byte for byte; the keyframe lookup; a second of audio read ahead after one video frame; an FLV with
+  B-frames (first frame a frame in) counts from its first frame -- at 0, with the keyframe index, the
+  duration, `seek(0)` and the audio counting from it too.
 - **`VideoEncoder` keyframe interval:** with hard cuts every 10 frames, keyframes land exactly every
   50 frames (no scene-cut extras).
 - **`VideoStream`:** a missing file ends `Failed` with a reason; `test.mp4` opens with the right info;
   offline, the frame for 0.73 s is the one at 0.7 s, with audio before it.
+- **`VideoStream` reverse through awkward files** (written by the scenario with the indexed-clip
+  writer): offline reverse is exact through a first keyframe interval longer than the stretch ring (loop
+  on and off) and across the loop seam of an FLV with B-frames; live reverse over that FLV decodes a
+  handful of stretches in 2.5 s (a spinning worker decodes thousands) and follows the playhead across
+  the seam; paused, the picture settles on the playhead's frame and decoding stops.
 - **A new generated clip,** `build/_video_longgop.mp4`:
   - 160×90, 25 fps, 12 s (300 frames), keyframes 250 frames apart, with a 440 Hz tone;
   - written with `VideoEncoder`'s new keyframe interval;
