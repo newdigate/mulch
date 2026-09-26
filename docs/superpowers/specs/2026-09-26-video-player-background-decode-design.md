@@ -66,6 +66,20 @@ found these problems in the design as first approved, and changed it as follows:
    and 0.9–1.15 GB at 4K -- half of today's 1.7 GB, but not "512 MB plus a little": FFmpeg's
    frame-thread buffers, the packet queue and the GL textures add ~0.4 GB at 4K.
 
+### Revisions during execution (code review of Task 1)
+
+10. **Loop off stops just short of the lap's end** (lapLo + D − 2·10⁻⁶). The next lap's first frame,
+    decoded early while looping, sits at exactly lapLo + D, and "the frame for u" picked it: turning
+    loop off at the end showed the clip's first frame instead of its last.
+11. **Offline renders snap `dt` to the exact frame step** (`videoFrameStep`). The renderer passes
+    `1.0f / fps`; accumulating that float drifted off the frame grid by ~9·10⁻¹⁰ s a frame, past the
+    10⁻⁶ tolerance after ~45 s at 25 fps -- one duplicated frame, then every frame one late.
+12. **With loop off and the decoder already past the playhead's lap, the worker waits.** The planner
+    gets the lap's end (`lapHi`); before, it decoded and converted the rest of that lap only for each
+    frame to be recycled.
+13. **`videoSelectFrame` is the one frame-choice rule**, now a template over a time accessor, and the
+    worker uses it instead of three hand-written loops, so its unit tests cover the code that runs.
+
 ## Root cause
 
 Reproduced with a headless harness that compiles the real `VideoPlayerNode.cpp` and drives
@@ -161,19 +175,20 @@ At 2× speed, 4K HEVC will skip frames.
 functions, unit-tested in `core_tests` (the `StepSync.h` / `BarSync.h` pattern).
 - `videoNextStep(VideoPlanInput) → VideoStep`: one of `Wait`, `Fill`, `CatchUp{to}`, `Seek{to}`,
   `Wrap`, `Reverse{end, fresh}`. It is computed from:
-  - the target, direction (and whether it just changed), loop flag and the loop-off lap;
+  - the target, direction (and whether it just changed), loop flag and the loop-off lap's bounds;
   - D and the nominal frame duration;
   - the decoder head (time of the next frame), whether the lap has ended, and where it ends;
   - the next keyframe after the head, when known;
   - the earliest frame held, whether the last seek was pinned, the free and total buffer counts;
   - reverse: the range this run's stretches cover.
-- `videoSelectFrame(times, n, u) → index or -1`: the frame for u.
+- `videoSelectFrame(n, u, timeOf) → index or -1`: the frame for u among n ascending times.
 - `videoPlanStretch(keyTime, end, frameDur, budget, offline) → VideoStretch`, and
   `videoStretchKeeps(stretch, t, frameDur)`.
 - `videoPoolFrames(budgetBytes, w, h)` = clamp(budget / (w·h·4), 4, 64).
   With 512 MB that gives 16 at 4K, 64 at 1080p and 4 at 8K.
 - `videoLapStart(u, D)` = D·floor(u/D), `videoWrapped(u, D)` = u − videoLapStart(u, D).
-- The time model: `VideoPlayhead`, `videoAdvance(...)`, `videoPosition(...)`.
+- The time model: `VideoPlayhead`, `videoAdvance(...)`, `videoPosition(...)`, and `videoFrameStep(dt)`
+  (the exact offline step).
 - Constants: `kVideoPoolBytes`, `kVideoCatchUpFrames` (2), `kVideoSeekNoIndex` (2 s),
   `kVideoSeekMinJump` (1 s), `kVideoAudioLead` (1 s), `kVideoAudioKeep` (2 s), `kVideoCatchUpSlice`
   (0.1 s), `kVideoTimeEps` (1e-6).
@@ -264,9 +279,12 @@ with widely spaced keyframes.
 
 - Each frame, u advances by rate·dt while `play` is on.
 - **Loop on:** u runs freely, including below 0 in reverse. The displayed position is `wrapped(u, D)`.
-- **Loop off:** u is clamped to the lap it is in, [L·D, (L+1)·D], with L fixed when loop was switched
-  off (0 initially) -- taken from the position *before* that frame's step. The displayed position is
-  u − L·D, so the end holds the last frame.
+- **Loop off:** u is clamped to the lap it is in, [L·D, (L+1)·D − 2·10⁻⁶], with L fixed when loop was
+  switched off (0 initially) -- taken from the position *before* that frame's step. The displayed
+  position is u − L·D, and stopping just short of (L+1)·D means the end holds this lap's last frame,
+  not the next lap's first (which the worker may already have decoded).
+- **Offline:** u advances by `videoFrameStep(dt)`, the exact 1/fps, so long renders stay on the frame
+  grid.
 - **Start:** u does not advance until the first frame of the file is on screen, so opening and decoder
   warm-up do not skip the clip's first frames.
 - **D = 0 (unknown duration):** today's behaviour is kept. u is clamped at ≥ 0, there are no laps, and

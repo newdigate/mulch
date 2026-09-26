@@ -52,12 +52,10 @@
 
 using namespace oss;
 
-static const double kInf = std::numeric_limits<double>::infinity();
-
 TEST_CASE("videoPoolFrames: 512 MB holds 16 frames at 4K, caps at 64, floors at 4") {
     CHECK(videoPoolFrames(kVideoPoolBytes, 3840, 2160) == 16);
-    CHECK(videoPoolFrames(kVideoPoolBytes, 1920, 1080) == 64);   // 64.7 -> capped
-    CHECK(videoPoolFrames(kVideoPoolBytes, 1280, 720)  == 64);
+    CHECK(videoPoolFrames(kVideoPoolBytes, 1920, 1080) == 64);   // exactly 64 fit
+    CHECK(videoPoolFrames(kVideoPoolBytes, 1280, 720)  == 64);   // 145 fit: capped
     CHECK(videoPoolFrames(kVideoPoolBytes, 7680, 4320) == 4);    // 4.04
     CHECK(videoPoolFrames(kVideoPoolBytes, 15360, 8640) == 4);   // 1 would fit: floored at 4
     CHECK(videoPoolFrames(kVideoPoolBytes, 0, 0) == 4);
@@ -109,12 +107,42 @@ TEST_CASE("videoAdvance: paused does not move; unknown duration clamps at 0 only
 
 TEST_CASE("videoSelectFrame: greatest time at or before u, tolerant of float dt noise") {
     const double t[] = {0.0, 0.04, 0.08};
-    CHECK(videoSelectFrame(t, 3, 0.05) == 1);
-    CHECK(videoSelectFrame(t, 3, 0.08) == 2);
-    CHECK(videoSelectFrame(t, 3, 2 * 0.039999999105930328) == 2);   // 2 * (float)0.04 < 0.08
-    CHECK(videoSelectFrame(t, 3, 1.0) == 2);
-    CHECK(videoSelectFrame(t, 3, -0.01) == -1);
-    CHECK(videoSelectFrame(t, 0, 1.0) == -1);
+    auto timeOf = [&](int i) { return t[i]; };
+    CHECK(videoSelectFrame(3, 0.05, timeOf) == 1);
+    CHECK(videoSelectFrame(3, 0.08, timeOf) == 2);
+    CHECK(videoSelectFrame(3, 2 * 0.039999999105930328, timeOf) == 2);   // 2 * (float)0.04 < 0.08
+    CHECK(videoSelectFrame(3, 1.0, timeOf) == 2);
+    CHECK(videoSelectFrame(3, -0.01, timeOf) == -1);
+    CHECK(videoSelectFrame(0, 1.0, timeOf) == -1);
+}
+
+TEST_CASE("loop off at the end holds the last frame, not the next lap's first") {
+    // Looping, the worker decodes the next lap early: its first frame is tagged at exactly lapLo + D.
+    const double t[] = {1.92, 1.96, 2.0};                       // lap 0's last two frames, then lap 1's first
+    auto timeOf = [&](int i) { return t[i]; };
+    VideoPlayhead p; p.u = 1.9;
+    p = videoAdvance(p, true, 1.0, false, 0.2, 2.0);            // loop goes off on the step that crosses the end
+    CHECK(videoSelectFrame(3, p.u, timeOf) == 1);
+    CHECK(videoPosition(p, false, 2.0) == doctest::Approx(2.0));
+    p = videoAdvance(p, true, 1.0, false, 0.5, 2.0);            // and it stays there
+    CHECK(videoSelectFrame(3, p.u, timeOf) == 1);
+}
+
+TEST_CASE("videoFrameStep: an offline playhead stays on the frame grid for an hour at every render rate") {
+    for (int fps : {24, 25, 30, 50, 60}) {
+        const double step = videoFrameStep(1.0f / (float)fps);
+        double u = 0.0, worst = 0.0;
+        for (long k = 1; k <= 3600L * fps; ++k) {
+            u += step;
+            worst = std::max(worst, std::fabs(u - (double)k / fps));
+        }
+        CHECK(worst < kVideoTimeEps / 10);                      // an hour's rounding stays well inside the tolerance
+    }
+    double drift = 0.0;                                         // the float step itself: a frame off within a minute
+    for (int k = 0; k < 1500; ++k) drift += (double)(1.0f / 25.0f);
+    CHECK(std::fabs(drift - 60.0) > kVideoTimeEps);
+    CHECK(videoFrameStep(0.0123f) == doctest::Approx((double)0.0123f));   // not a whole rate: unchanged
+    CHECK(videoFrameStep(0.0f) == 0.0);
 }
 
 ```
@@ -166,7 +194,7 @@ constexpr double      kVideoSeekNoIndex   = 2.0;   // no keyframe index: seek wh
 constexpr double      kVideoSeekMinJump   = 1.0;   // a seek restarts the decoder's pipeline: only for longer jumps (s)
 constexpr double      kVideoAudioLead     = 1.0;   // keep decoded audio this far ahead of the playhead (s)
 constexpr double      kVideoAudioKeep     = 2.0;   // keep already-played audio this long (s)
-constexpr double      kVideoTimeEps       = 1e-6;  // frame-time comparisons (float dt accumulates error)
+constexpr double      kVideoTimeEps       = 1e-6;  // frame-time comparisons: absorbs rounding, not accumulated drift
 constexpr double      kVideoCatchUpSlice  = 0.1;   // live: show the best frame reached at least this often (s)
 
 // How many RGBA frames of w x h fit the budget, clamped to [kVideoPoolMinFrames, kVideoPoolMaxFrames].
@@ -183,27 +211,29 @@ inline double videoLapStart(double u, double duration) {
     return duration > 0.0 ? duration * std::floor(u / duration) : 0.0;
 }
 
-// Position within the clip of a looping playhead, in [0, D).
+// Position within the clip of a looping playhead, in [0, D) up to rounding.
 inline double videoWrapped(double u, double duration) { return u - videoLapStart(u, duration); }
 
 // The node's playhead: unwrapped, plus the lap it is clamped to while loop is off.
 struct VideoPlayhead {
     double u        = 0.0;
-    double lapLo    = 0.0;    // loop off: u stays within [lapLo, lapLo + D]
+    double lapLo    = 0.0;    // loop off: u stays within [lapLo, lapLo + D)
     bool   loopPrev = true;   // loop was on last frame (the lap is captured when loop goes off)
 };
 
-// Advance by rate * dt while playing, then apply the loop rule. Loop on runs freely (the display
-// wraps). Loop off clamps to the lap the playhead was in when loop went off -- pinned from the
-// position BEFORE this step, so a step that crosses the end holds the last frame rather than
-// pinning the next lap -- so the end holds the last frame. An unknown duration (0) has no laps:
-// the playhead only clamps at 0.
+// Advance by rate * dt while playing, then apply the loop rule.
+//  - Loop on runs freely (the display wraps).
+//  - Loop off clamps to the lap the playhead was in when loop went off, pinned from the position
+//    BEFORE this step, so a step that crosses the end cannot pin the next lap. The clamp stops just
+//    short of the lap's end: lapLo + D is where the next lap's first frame sits -- the worker decodes
+//    it early while looping -- so the end holds this lap's last frame.
+//  - An unknown duration (0) has no laps: the playhead only clamps at 0.
 inline VideoPlayhead videoAdvance(VideoPlayhead p, bool play, double rate, bool loop, double dt,
                                   double duration) {
     if (duration > 0.0 && !loop && p.loopPrev) p.lapLo = videoLapStart(p.u, duration);
     if (play) p.u += rate * dt;
     if (duration > 0.0) {
-        if (!loop) p.u = std::clamp(p.u, p.lapLo, p.lapLo + duration);
+        if (!loop) p.u = std::clamp(p.u, p.lapLo, p.lapLo + std::max(0.0, duration - 2.0 * kVideoTimeEps));
     } else if (p.u < 0.0) {
         p.u = 0.0;
     }
@@ -217,12 +247,23 @@ inline double videoPosition(const VideoPlayhead& p, bool loop, double duration) 
     return loop ? videoWrapped(p.u, duration) : p.u - p.lapLo;
 }
 
-// The frame to show for playhead u: index of the greatest time <= u in `times` (ascending), or -1
-// when every frame is later than u or there are none. The rule the node has always used.
-inline int videoSelectFrame(const double* times, int n, double u) {
+// Offline renders pass dt = 1.0f / fps. Accumulating that float drifts off the frame grid (at 25 fps
+// by ~9e-10 s a frame, past kVideoTimeEps after ~45 s), so the node snaps it back to the exact step
+// 1 / fps when fps is a whole number -- every rate the renderer offers is. Any other dt passes through.
+inline double videoFrameStep(float dt) {
+    if (!(dt > 0.0f)) return 0.0;
+    const double fps = 1.0 / (double)dt;
+    const double whole = std::round(fps);
+    return (whole >= 1.0 && std::fabs(fps - whole) < 1e-3) ? 1.0 / whole : (double)dt;
+}
+
+// The frame to show for playhead u: the index of the greatest time <= u among n ascending times
+// (`timeOf(i)` returns the i-th), or -1 when every frame is later than u or there are none.
+template <class TimeOf>
+inline int videoSelectFrame(int n, double u, TimeOf timeOf) {
     int best = -1;
     for (int i = 0; i < n; ++i) {
-        if (times[i] <= u + kVideoTimeEps) best = i;
+        if (timeOf(i) <= u + kVideoTimeEps) best = i;
         else break;
     }
     return best;
@@ -231,7 +272,7 @@ inline int videoSelectFrame(const double* times, int n, double u) {
 } // namespace oss
 ```
 
-- [ ] **Step 5: Build and run the tests (6 test cases)**
+- [ ] **Step 5: Build and run the tests (8 test cases)**
 
 ```bash
 cmake --build build --target core_tests -j8 && ./build/core_tests -tc='video*'
@@ -360,7 +401,7 @@ inline bool videoStretchKeeps(const VideoStretch& s, double t, double frameDur) 
 
 ```
 
-- [ ] **Step 4: Build and run the tests (10 test cases)**
+- [ ] **Step 4: Build and run the tests (12 test cases)**
 
 ```bash
 cmake --build build --target core_tests -j8 && ./build/core_tests -tc='video*'
@@ -390,6 +431,8 @@ EOF
 - [ ] **Step 1: Append the failing tests** — add to the end of `tests/test_video_plan.cpp`:
 
 ```cpp
+static const double kInf = std::numeric_limits<double>::infinity();
+
 // A forward input with a comfortable default state: the decoder is just past the target.
 static VideoPlanInput fwd(double target) {
     VideoPlanInput in;
@@ -465,6 +508,15 @@ TEST_CASE("videoNextStep forward: end of the lap wraps when looping, else waits"
     CHECK(videoNextStep(in).kind == VideoStepKind::Wait);
     in.duration = 10.0; in.target = 12.0;              // far into the next lap: wrap first
     CHECK(videoNextStep(in).kind == VideoStepKind::Wrap);
+}
+
+TEST_CASE("videoNextStep forward: loop off with the decoder already past the lap waits") {
+    VideoPlanInput in = fwd(1.99);                     // loop just went off near the end of lap 0...
+    in.loop = false; in.lapLo = 0.0; in.lapHi = 2.0;
+    in.head = 2.2;                                     // ...but the decoder had run on into lap 1
+    CHECK(videoNextStep(in).kind == VideoStepKind::Wait);
+    in.target = 1.9; in.lowest = 1.9; in.head = 1.94;  // still inside the lap: keep filling
+    CHECK(videoNextStep(in).kind == VideoStepKind::Fill);
 }
 
 TEST_CASE("videoNextStep forward: a direction change always seeks") {
@@ -552,7 +604,8 @@ struct VideoPlanInput {
     bool   loop        = true;
     double duration    = 0.0;      // D; 0 = unknown (no laps)
     double frameDur    = 1.0 / 30.0;
-    double lapLo       = -std::numeric_limits<double>::infinity();   // loop off: the playhead's lap
+    double lapLo       = -std::numeric_limits<double>::infinity();   // loop off: the playhead's lap...
+    double lapHi       =  std::numeric_limits<double>::infinity();   // ...and where it ends
     double head        = 0.0;      // time of the next frame the decoder will produce
     bool   eof         = false;    // the decoder has produced the last frame of this lap
     bool   keyKnown    = false;    // the stream has a keyframe index...
@@ -575,7 +628,8 @@ struct VideoPlanInput {
 //  is longer than kVideoSeekMinJump -- a seek restarts the decoder's frame-threading pipeline, which
 //  costs more than decoding through a short gap -- or, with no index, if it is more than
 //  kVideoSeekNoIndex away; otherwise catch up by decoding without converting. At the end of the lap
-//  wrap (loop) or wait; otherwise fill a free buffer, or wait.
+//  wrap (loop) or wait; with loop off and the decoder already past the playhead's lap (it had decoded
+//  ahead while looping), wait -- those frames can never be shown; otherwise fill a free buffer, or wait.
 //  Reverse: start a fresh stretch at the target when the run is new or the target left its coverage;
 //  otherwise prefetch the stretch below once half the pool is free; wait at the start of the clip
 //  when loop is off.
@@ -602,13 +656,14 @@ inline VideoStep videoNextStep(const VideoPlanInput& in) {
     }
     if (in.eof)
         return (in.loop && in.duration > 0.0) ? VideoStep{VideoStepKind::Wrap} : VideoStep{};
+    if (!in.loop && in.head > in.lapHi + eps) return VideoStep{};
     if (in.freeBuffers > 0) return VideoStep{VideoStepKind::Fill};
     return VideoStep{};
 }
 
 ```
 
-- [ ] **Step 4: Build and run the tests (21 test cases)**
+- [ ] **Step 4: Build and run the tests (24 test cases)**
 
 ```bash
 cmake --build build --target core_tests -j8 && ./build/core_tests -tc='video*'
@@ -1881,6 +1936,7 @@ private:
     void setFailed(const std::string& msg);
 
     // Under m_.
+    int  readyFrameLocked(double u) const;   // index in ready_ of the frame for u, or -1
     bool readyLocked(double u) const;
     int  acquireLocked();
     void releaseLocked(int buf);
@@ -1982,11 +2038,7 @@ bool VideoStream::frameAt(double u, FrameView& out) {
     {
         std::lock_guard<std::mutex> lk(m_);
         if (state_ != State::Ready) return false;
-        int idx = -1;
-        for (int i = 0; i < (int)ready_.size(); ++i) {
-            if (ready_[(std::size_t)i].t <= u + kVideoTimeEps) idx = i;
-            else break;
-        }
+        int idx = readyFrameLocked(u);
         if (idx < 0 && shown_.buf < 0 && !ready_.empty()) idx = 0;   // nothing up yet: the nearest
         const bool shownFits = shown_.buf >= 0 && shown_.t <= u + kVideoTimeEps;
         if (idx >= 0 && (!shownFits || ready_[(std::size_t)idx].t > shown_.t)) {
@@ -2027,12 +2079,15 @@ void VideoStream::readAudio(double u0, double u1, float* out, int n) const {
 
 // --- under m_ -------------------------------------------------------------------------------
 
+int VideoStream::readyFrameLocked(double u) const {
+    return videoSelectFrame((int)ready_.size(), u, [this](int i) { return ready_[(std::size_t)i].t; });
+}
+
 bool VideoStream::readyLocked(double u) const {
     if (state_ == State::Failed) return true;                 // nothing more will come
     if (state_ != State::Ready || !runValid_) return false;
     if (u < runLo_ - kVideoTimeEps || u >= runHi_ - kVideoTimeEps) return false;
-    bool held = shown_.buf >= 0 && shown_.t <= u + kVideoTimeEps;
-    for (const Slot& s : ready_) if (s.t <= u + kVideoTimeEps) { held = true; break; }
+    const bool held = (shown_.buf >= 0 && shown_.t <= u + kVideoTimeEps) || readyFrameLocked(u) >= 0;
     if (!held) return false;
     if (dir_ < 0 || !info_.hasAudio) return true;             // reverse: the stretch brought its audio
     return u < audioLapStart_ - kVideoTimeEps || audioSettledU_ >= u - kVideoTimeEps;
@@ -2066,7 +2121,8 @@ void VideoStream::flushReadyLocked() {
 // off anything outside the playhead's lap.
 void VideoStream::recycleLocked(const VideoRequest& r, int dir) {
     double frameT = (shown_.buf >= 0 && shown_.t <= r.u + kVideoTimeEps) ? shown_.t : -kInf;
-    for (const Slot& s : ready_) if (s.t <= r.u + kVideoTimeEps) frameT = std::max(frameT, s.t);
+    const int best = readyFrameLocked(r.u);
+    if (best >= 0) frameT = std::max(frameT, ready_[(std::size_t)best].t);
     for (std::size_t i = 0; i < ready_.size();) {
         const Slot& s = ready_[i];
         bool drop = dir >= 0 ? (std::isfinite(frameT) && s.t < frameT)
@@ -2167,6 +2223,7 @@ void VideoStream::step() {
     in.duration   = winfo_.duration;
     in.frameDur   = winfo_.frameDur;
     in.lapLo      = r.lapLo;
+    in.lapHi      = r.lapHi;
     in.head       = next_.valid() ? lapOffset_ + next_.t : lastT_ + winfo_.frameDur;
     in.eof        = eof_ && !next_.valid();
     double key = 0.0;
@@ -3152,8 +3209,10 @@ void VideoPlayerNode::evaluate(EvalContext& ctx) {
     // Hold the playhead at the start until the first frame is on screen: the worker's first frames
     // take a moment (open, decoder warm-up), and running the clock meanwhile would skip them.
     const bool advancing = play && shownSerial_ != 0;
+    // Offline, dt is 1.0f / fps: snap it to the exact frame step so a long render stays on the grid.
+    const double dt = offline_ ? videoFrameStep(ctx.dt) : (double)ctx.dt;
     const double prevU = ph_.u;
-    ph_ = videoAdvance(ph_, advancing, rate, loop, ctx.dt, duration_);
+    ph_ = videoAdvance(ph_, advancing, rate, loop, dt, duration_);
     stream_->request(makeRequest(ph_, play, rate, loop));
 
     // Offline renders are exact: wait for the frame for u (normally already there -- see below).
@@ -3176,7 +3235,7 @@ void VideoPlayerNode::evaluate(EvalContext& ctx) {
     // Offline, ask for the NEXT frame now: loading() reports it not ready, so the renderer's gate
     // waits between frames instead of this evaluate() blocking the UI.
     if (offline_) {
-        const VideoPlayhead next = videoAdvance(ph_, play, rate, loop, ctx.dt, duration_);
+        const VideoPlayhead next = videoAdvance(ph_, play, rate, loop, dt, duration_);
         pendingU_ = next.u;
         stream_->request(makeRequest(next, play, rate, loop));
     }
