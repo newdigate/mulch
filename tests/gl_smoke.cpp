@@ -939,8 +939,9 @@ static bool scenario_video_decoder_split_decode() {
         DecodedFrame pf;
         double probeKey = 0.0;
         if (!p.open(probes, err)) { return failed(("probes: open: " + err).c_str()); }
-        // Its clock starts 1.4 s in (the MPEG-TS muxer's delay): times still count from the first frame.
-        if (!p.decodeNext(pf) || pf.t != 0.0 || std::fabs(p.duration() - 12.0) > 0.1) {
+        // Its first frame is 0.04 s into the clock (the B-frame delay): times count from that frame, and so
+        // does the duration (counted from the clock's start it would read 12.04 s).
+        if (!p.decodeNext(pf) || pf.t != 0.0 || std::fabs(p.duration() - 12.0) > 0.02) {
             std::fprintf(stderr, "probes: first frame at %.4f, duration %.4f\n", pf.t, p.duration());
             return failed("probes: an MPEG-TS whose clock starts late must count from its first frame (at 0; 12 s long)");
         }
@@ -986,26 +987,37 @@ static bool remuxWithAudioHole(const std::string& src, const std::string& dst, d
     return ok;
 }
 
-// A 3 s clip -- 64x48 at 25 fps, a 440 Hz tone -- whose audio has a hole from 1.0 s to 1.6 s. VideoEncoder
-// cannot leave one, so it writes the clip whole and a remux drops those audio packets.
-static bool writeAudioHoleClip(const std::string& path) {
-    const std::string whole = path + ".whole.mkv";
-    {
-        VideoEncoder enc; std::string err;
-        if (!enc.open(whole, 64, 48, 25, 48000, 1, err)) {
-            std::fprintf(stderr, "writeAudioHoleClip: %s\n", err.c_str());
-            return false;
-        }
-        std::vector<unsigned char> px((std::size_t)64 * 48 * 4, 128);
-        std::vector<float> tone(48000 / 25);
-        for (int f = 0; f < 75; ++f) {
-            for (std::size_t i = 0; i < tone.size(); ++i)
-                tone[i] = 0.5f * (float)std::sin(6.283185307179586 * 440.0 * (double)(f * tone.size() + i) / 48000.0);
-            if (!enc.addVideoFrame(px.data(), f / 25.0) || !enc.addAudio(tone.data(), (int)tone.size())) return false;
-        }
-        if (!enc.close(err)) return false;
+// A 3 s clip: 64x48 at 25 fps, a 440 Hz tone at `rate`.
+static bool writeToneClip(const std::string& path, int rate = 48000) {
+    VideoEncoder enc; std::string err;
+    if (!enc.open(path, 64, 48, 25, rate, 1, err)) {
+        std::fprintf(stderr, "writeToneClip: %s\n", err.c_str());
+        return false;
     }
-    return remuxWithAudioHole(whole, path, 1.0, 1.6);
+    std::vector<unsigned char> px((std::size_t)64 * 48 * 4, 128);
+    std::vector<float> tone((std::size_t)rate / 25);
+    for (int f = 0; f < 75; ++f) {
+        for (std::size_t i = 0; i < tone.size(); ++i)
+            tone[i] = 0.5f * (float)std::sin(6.283185307179586 * 440.0 * (double)(f * tone.size() + i) / rate);
+        if (!enc.addVideoFrame(px.data(), f / 25.0) || !enc.addAudio(tone.data(), (int)tone.size())) return false;
+    }
+    return enc.close(err);
+}
+
+// writeToneClip's clip without the audio packets that start in [from, to) seconds: a hole in the audio's
+// timestamps -- by default from 1.0 s to 1.6 s -- which VideoEncoder cannot write.
+static bool writeAudioHoleClip(const std::string& path, double from = 1.0, double to = 1.6) {
+    const std::string whole = path + ".whole.mkv";
+    return writeToneClip(whole) && remuxWithAudioHole(whole, path, from, to);
+}
+
+// The runs of audio `d` hands out (see VideoDecoder::takeAudio).
+struct AudioRunSeen { double start, end; bool continues; };
+static std::vector<AudioRunSeen> takeRuns(VideoDecoder& d) {
+    std::vector<AudioRunSeen> runs;
+    std::vector<float> a; double s = 0.0; bool c = false;
+    while (d.takeAudio(a, s, c)) runs.push_back({s, s + a.size() / 48000.0, c});
+    return runs;
 }
 
 // Every frame VideoDecoder `d` has left: false unless their times rise strictly; `n` counts them, `last` is the last time.
@@ -1048,15 +1060,16 @@ static bool scenario_video_decoder_awkward_files() {
     }
 
     // A raw H.264 stream has no timestamps at all, and no times to seek by: a search by time read the whole
-    // file and failed, leaving nothing to decode. Its seeks go to the start instead.
+    // file and failed, leaving nothing to decode. Its seeks go to the start instead. At 30 fps: its demuxer
+    // knows only a default of 25, so the frame duration must come from the decoder.
     const std::string raw = "build/_raw.h264";
     bool rawWritten = false;
     {
         VideoEncoder enc;                                   // the raw H.264 muxer takes H.264 only
-        if (enc.open(raw, 64, 48, 25, 0, 0, err)) {
+        if (enc.open(raw, 64, 48, 30, 0, 0, err)) {
             for (int f = 0; f < 50; ++f) {
                 std::fill(px.begin(), px.end(), (unsigned char)(f * 5));
-                if (!enc.addVideoFrame(px.data(), f / 25.0)) { return failed("raw stream: encode a frame"); }
+                if (!enc.addVideoFrame(px.data(), f / 30.0)) { return failed("raw stream: encode a frame"); }
             }
             if (!enc.close(err)) { return failed(("raw stream: close: " + err).c_str()); }
             rawWritten = true;
@@ -1069,9 +1082,9 @@ static bool scenario_video_decoder_awkward_files() {
         if (!r.open(raw, err)) { return failed(("raw stream: open: " + err).c_str()); }
         int n = 0; double last = 0.0, key = 0.0;
         DecodedFrame g;
-        if (!decodeRest(r, n, last) || n != 50 || std::fabs(last - 1.96) > 1e-6) {
-            std::fprintf(stderr, "raw stream: %d frames, the last at %.4f\n", n, last);
-            return failed("raw stream: 50 frames, 0.04 s apart");
+        if (!decodeRest(r, n, last) || n != 50 || std::fabs(last - 49.0 / 30.0) > 1e-6 || std::fabs(r.frameDuration() - 1.0 / 30.0) > 1e-6) {
+            std::fprintf(stderr, "raw stream: %d frames, the last at %.4f; frameDuration %.5f\n", n, last, r.frameDuration());
+            return failed("raw stream: 50 frames, 1/30 s apart, and a frame duration of 1/30 s");
         }
         if (!r.seek(1.0) || !r.decodeNext(g) || g.t != 0.0) { return failed("raw stream: a seek goes back to the start"); }
         if (!r.nextKeyframeAfter(0.5, key) || std::isfinite(key)) { return failed("raw stream: its index is no guide to seeking"); }
@@ -1109,28 +1122,72 @@ static bool scenario_video_decoder_awkward_files() {
 
     // A hole in the audio's timestamps is kept: the audio after it resumes at its own time, as a new run
     // (it used to carry straight on from where the hole began, early by the hole's length ever after).
-    const std::string hole = "build/_audio_hole.mkv";
-    if (!writeAudioHoleClip(hole)) { return failed("audio hole: writing the clip failed"); }
-    VideoDecoder h;
-    if (!h.open(hole, err)) { return failed(("audio hole: open: " + err).c_str()); }
-    h.pumpAudio(1.3);
-    if (h.audioSettledUpTo() < 1.3) { return failed("audio hole: pumpAudio must settle the audio through the hole"); }
-    h.pumpAudio(2.5);
-    std::vector<double> starts, ends;
-    std::vector<bool> conts;
-    std::vector<float> ha; double hs = 0.0; bool hc = false;
-    while (h.takeAudio(ha, hs, hc)) { starts.push_back(hs); ends.push_back(hs + ha.size() / 48000.0); conts.push_back(hc); }
-    bool resumed = false;
-    for (std::size_t i = 1; i < starts.size(); ++i)
-        resumed = resumed || (!conts[i] && std::fabs(ends[i - 1] - 1.0) < 0.05 && std::fabs(starts[i] - 1.6) < 0.05);
-    if (!resumed) {
-        for (std::size_t i = 0; i < starts.size(); ++i)
-            std::fprintf(stderr, "audio hole: run %zu [%.4f, %.4f)%s\n", i, starts[i], ends[i], conts[i] ? " continues" : "");
-        return failed("audio hole: the audio after the hole must resume at 1.6 s, as a new run");
+    // So is a hole of 64 ms -- three AAC packets -- which is more than timestamp rounding.
+    for (const double to : {1.6, 1.06}) {
+        const std::string hole = to > 1.5 ? "build/_audio_hole.mkv" : "build/_audio_small_hole.mkv";
+        if (!writeAudioHoleClip(hole, 1.0, to)) { return failed("audio hole: writing the clip failed"); }
+        VideoDecoder h;
+        if (!h.open(hole, err)) { return failed(("audio hole: open: " + err).c_str()); }
+        h.pumpAudio(1.3);
+        if (h.audioSettledUpTo() < 1.3) { return failed("audio hole: pumpAudio must settle the audio through the hole"); }
+        h.pumpAudio(2.5);
+        const std::vector<AudioRunSeen> runs = takeRuns(h);
+        bool resumed = false;
+        for (std::size_t i = 1; i < runs.size(); ++i)
+            resumed = resumed || (!runs[i].continues && std::fabs(runs[i - 1].end - 1.0) < 0.03 && std::fabs(runs[i].start - to) < 0.03);
+        if (!resumed) {
+            for (std::size_t i = 0; i < runs.size(); ++i)
+                std::fprintf(stderr, "audio hole: run %zu [%.4f, %.4f)%s\n", i, runs[i].start, runs[i].end, runs[i].continues ? " continues" : "");
+            std::fprintf(stderr, "audio hole: expected a new run at %.2f s\n", to);
+            return failed("audio hole: the audio after a hole must resume at its own time, as a new run");
+        }
+        DecodedFrame hf;
+        while (h.decodeNext(hf)) {}
+        if (!std::isinf(h.audioSettledUpTo())) { return failed("audio hole: at the end of the input all the audio is settled"); }
     }
-    DecodedFrame hf;
-    while (h.decodeNext(hf)) {}
-    if (!std::isinf(h.audioSettledUpTo())) { return failed("audio hole: at the end of the input all the audio is settled"); }
+
+    // The read-ahead cap (1 byte here: full after a single packet), with audio that starts 1.5 s in. While
+    // packets are still being taken off the queue, pumpAudio waits at the cap -- audio that a file puts after
+    // a run of video (fragmented MOV) still arrives. Once none has been taken since it last stopped there,
+    // nothing will drain the queue: what was read counts as settled (an offline render would wait forever).
+    const std::string lateAudio = "build/_late_audio.mkv";
+    if (!writeAudioHoleClip(lateAudio, -1.0, 1.5)) { return failed("read-ahead cap: writing the clip failed"); }
+    VideoDecoder q;
+    q.setMaxQueuedBytes(1);
+    DecodedFrame q0, q1;
+    if (!q.open(lateAudio, err) || !q.decodeNext(q0)) { return failed("read-ahead cap: open"); }
+    q.pumpAudio(1.0);                                    // stops at the cap
+    const double atCap = q.audioSettledUpTo();
+    if (!q.decodeNext(q1)) { return failed("read-ahead cap: decode"); }
+    q.pumpAudio(1.0);                                    // a packet was taken since: still draining
+    const double draining = q.audioSettledUpTo();
+    q.pumpAudio(1.0);                                    // none since: stuck
+    const double stuck = q.audioSettledUpTo();
+    if (atCap >= 0.0 || draining >= 0.0 || !(stuck >= q1.t)) {
+        std::fprintf(stderr, "read-ahead cap: settled up to %.3f at the cap, %.3f while draining, %.3f once stuck\n",
+                     atCap, draining, stuck);
+        return failed("read-ahead cap: the audio must settle through the cap once, and only once, nothing drains the queue");
+    }
+
+    // A seek resets the resampler: the audio after seek(1.0) is the same whatever played before it (at
+    // 44.1 kHz the resampler holds samples from one call to the next).
+    const std::string tone441 = "build/_tone441.mkv";
+    if (!writeToneClip(tone441, 44100)) { return failed("resampler: writing the clip failed"); }
+    VideoDecoder played, fresh;
+    if (!played.open(tone441, err) || !fresh.open(tone441, err)) { return failed("resampler: open"); }
+    DecodedFrame rf;
+    for (int i = 0; i < 50 && played.decodeNext(rf); ++i) takeRuns(played);
+    std::vector<float> afterPlayed, afterFresh;
+    for (VideoDecoder* d : {&played, &fresh}) {
+        if (!d->seek(1.0) || !d->decodeNext(rf)) { return failed("resampler: seek"); }
+        d->pumpAudio(1.5);
+        std::vector<float> a; double st = 0.0; bool c = false;
+        if (!d->takeAudio(a, st, c)) { return failed("resampler: no audio after the seek"); }
+        (d == &played ? afterPlayed : afterFresh) = a;
+    }
+    if (afterPlayed.size() < 4800 || afterPlayed != afterFresh) {
+        return failed("resampler: the audio after a seek must not depend on what played before it");
+    }
 
     // Two MPEG-TS files end to end: stereo 64x48, then mono 80x64. The resampler is rebuilt for the new
     // format (one built for two channels read a second plane that mono audio does not have: a crash),
@@ -1168,8 +1225,9 @@ static bool scenario_video_decoder_awkward_files() {
         std::fprintf(stderr, "format change: %d converted, %d refused, %.2f s of audio\n", converted, refused, audio / 48000.0);
         return failed("format change: both halves must decode -- the second half's frames refused (another size), its audio resampled");
     }
-    std::fprintf(stderr, "gl_smoke OK: untimed frames follow the one before; a raw stream decodes and seeks to its start; "
-                 "a late start seeks from its first frame; an audio hole is kept; a format change mid-stream decodes\n");
+    std::fprintf(stderr, "gl_smoke OK: untimed frames follow the one before; %sa late start seeks from its first frame; "
+                 "audio holes are kept; the read-ahead cap settles only when stuck; a seek resets the resampler; "
+                 "a format change mid-stream decodes\n", rawWritten ? "a raw stream decodes and seeks to its start; " : "");
     return true;
 }
 

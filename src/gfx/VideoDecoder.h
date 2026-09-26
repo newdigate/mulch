@@ -91,7 +91,8 @@ public:
     int    audioChannels() const { return audioChannels_; }  // source channels (before our mono downmix)
     static constexpr int kOutRate = 48000;             // 48 kHz mono float out
 
-    // Nominal seconds per frame, from the stream's average (else real) frame rate; 1/30 if unknown.
+    // Nominal seconds per frame, from the stream's average (else real) frame rate -- a raw stream's
+    // from its decoder, which reads the rate from the stream itself -- or 1/30 if unknown.
     double frameDuration() const;
 
     // The first keyframe after time `t`, from the container's index -- possibly listed by its decode
@@ -120,12 +121,18 @@ public:
     // are waiting.
     void pumpAudio(double t);
 
+    // Tests only: cap the read-ahead at `bytes` instead of kMaxQueuedBytes.
+    void setMaxQueuedBytes(std::size_t bytes) { maxQueuedBytes_ = bytes; }
+
     // The time up to which no more audio will arrive: the end of the decoded audio, or -- once
     // the demuxer has read kAudioSettleSlack past a point without meeting audio for it -- that
-    // point. +inf at the end of the input or with no audio stream. When pumpAudio() stops at
-    // kMaxQueuedBytes, the audio counts as settled up to the latest packet read: reading further
-    // would take unbounded memory (4K ProRes runs past 64 MB in under a second), and a caller
-    // waiting for settled audio would otherwise wait forever.
+    // point. +inf at the end of the input or with no audio stream. When pumpAudio() finds the
+    // queue still at kMaxQueuedBytes with no packet taken off it since it last stopped there, the
+    // caller has stopped decoding -- it is waiting for this audio -- and nothing will ever drain
+    // the queue: the audio then counts as settled up to the latest packet read. (Reading further
+    // would take unbounded memory: 4K ProRes runs past 64 MB in under a second.) While the caller
+    // is still taking packets, it only waits: audio that a file puts after a long run of video
+    // (fragmented MOV writes each fragment's video, then its audio) still arrives.
     double audioSettledUpTo() const;
 
     // Move out the next run of audio decoded since the last call (48 kHz mono float): samples
@@ -147,9 +154,10 @@ public:
     static constexpr std::size_t kMaxQueuedBytes   = std::size_t(64) << 20;  // read-ahead cap
     static constexpr double      kAudioSettleSlack = 2.0;                    // seconds
     // Seconds an audio timestamp may stray from where the audio so far ends and still carry on
-    // back to back (FFmpeg's aresample uses the same threshold before it pads or trims): rounding
-    // (Matroska and FLV keep milliseconds) must not click.
-    static constexpr double      kAudioJitter      = 0.1;
+    // back to back: well above timestamp rounding (Matroska and FLV keep milliseconds), which must
+    // not click, and under the ~45 ms by which audio leading the picture starts to show -- a hole
+    // shorter than this is closed up, and what follows it plays that much early.
+    static constexpr double      kAudioJitter      = 0.04;
 
 private:
     // Decoded audio, samples back to back from `start` (container time).
@@ -178,6 +186,7 @@ private:
 
     std::deque<AVPacket*> vq_;             // video packets read ahead, not yet decoded
     std::size_t           queuedBytes_ = 0;
+    std::size_t           maxQueuedBytes_ = kMaxQueuedBytes;
 
     int    vstream_ = -1;
     int    astream_ = -1;
@@ -198,7 +207,9 @@ private:
     bool   vflushed_   = false; // sent the video decoder its end of stream
     double demuxedT_   = -std::numeric_limits<double>::infinity();   // latest packet time read (container time)
     double audioEndT_  = -std::numeric_limits<double>::infinity();   // end of the decoded audio (container time)
-    double capSettledT_ = -std::numeric_limits<double>::infinity();  // settled when pumpAudio stopped at the cap
+    double capSettledT_ = -std::numeric_limits<double>::infinity();  // settled when the read-ahead got stuck at the cap
+    std::uint64_t packetsTaken_ = 0;                                  // video packets taken off the queue so far...
+    std::uint64_t takenAtCap_   = ~std::uint64_t(0);                  // ...when pumpAudio last stopped at the cap
     double audioFloorT_ = -std::numeric_limits<double>::infinity();  // audio before this is dropped (the first frame)
     bool   runOpen_    = false; // the last audio decoded was kept: audio carrying on from it continues its run
 

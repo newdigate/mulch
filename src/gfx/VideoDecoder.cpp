@@ -78,6 +78,7 @@ void VideoDecoder::close() {
 void VideoDecoder::resetStreamState() {
     demuxEof_ = vflushed_ = runOpen_ = false;
     demuxedT_ = audioEndT_ = capSettledT_ = -kInf;
+    takenAtCap_ = ~std::uint64_t(0);
     audioRuns_.clear();
 }
 
@@ -192,7 +193,10 @@ bool VideoDecoder::open(const std::string& path, std::string& err, const std::at
 double VideoDecoder::frameDuration() const {
     if (!fmt_ || vstream_ < 0) return 1.0 / 30.0;
     const AVStream* vs = fmt_->streams[vstream_];
-    AVRational r = vs->avg_frame_rate;
+    // A raw stream's demuxer knows only a default rate (25 fps); its decoder read the real one from the
+    // stream (H.264 and HEVC timing) when open() decoded the first frame.
+    AVRational r = raw_ && vctx_ ? vctx_->framerate : vs->avg_frame_rate;
+    if (r.num <= 0 || r.den <= 0) r = vs->avg_frame_rate;
     if (r.num <= 0 || r.den <= 0) r = vs->r_frame_rate;
     if (r.num <= 0 || r.den <= 0) return 1.0 / 30.0;
     return (double)r.den / (double)r.num;
@@ -337,8 +341,10 @@ void VideoDecoder::placeAudio(double start, const float* s, std::size_t n) {
 void VideoDecoder::pumpAudio(double t) {
     if (!fmt_ || !actx_) return;
     while (audioSettledUpTo() < t) {
-        if (queuedBytes_ >= kMaxQueuedBytes) {     // full: what was read counts as settled (see the header)
-            capSettledT_ = std::max(capSettledT_, demuxedT_);
+        if (queuedBytes_ >= maxQueuedBytes_) {
+            // Full. Stuck -- nothing taken off the queue since the last time -- settles what was read.
+            if (packetsTaken_ == takenAtCap_) capSettledT_ = std::max(capSettledT_, demuxedT_);
+            takenAtCap_ = packetsTaken_;
             return;
         }
         if (!readPacket()) return;
@@ -395,6 +401,7 @@ bool VideoDecoder::decodeNext(DecodedFrame& out) {
         AVPacket* p = vq_.front();
         vq_.pop_front();
         queuedBytes_ -= (std::size_t)p->size;
+        ++packetsTaken_;
         avcodec_send_packet(vctx_, p);
         av_packet_free(&p);
     }
