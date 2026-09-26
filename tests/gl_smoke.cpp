@@ -54,6 +54,7 @@
 #include "core/OfflineRender.h"
 #include "app/OfflineRenderer.h"
 #include <cstdlib>
+#include <cstring>
 #include <fstream>
 #include <filesystem>
 #include <limits>
@@ -812,6 +813,134 @@ static bool scenario_draco_compressed_gltf() {
     }
     return true;
 }
+// --- Scenario: VideoDecoder's split decode -- decodeNext() + convert() match decodeFrame() ---
+// The worker decodes a frame, looks at its time, and only then converts it (threaded, top-down).
+// That must produce exactly decodeFrame()'s pixels, flipped; the keyframe index, the frame rate and
+// the audio read-ahead are what its decisions rest on.
+static bool scenario_video_decoder_split_decode() {
+    {
+        VideoDecoder a, b; std::string err;
+        if (!a.open("tests/assets/test.mp4", err) || !b.open("tests/assets/test.mp4", err)) {
+            return failed(("split decode: open: " + err).c_str());
+        }
+        if (std::fabs(a.frameDuration() - 0.1) > 1e-9) { return failed("split decode: test.mp4 is 10 fps"); }
+        const int W = a.width(), H = a.height();
+        std::vector<unsigned char> top((std::size_t)W * H * 4);
+        VideoFrame vf; std::vector<float> au; double aS = 0; bool aV = false;
+        for (int i = 0; i < 10; ++i) {
+            DecodedFrame f;
+            if (!a.decodeNext(f) || !b.decodeFrame(vf, au, aS, aV)) { return failed("split decode: ran out of frames"); }
+            if (f.t != vf.t) { return failed("split decode: decodeNext and decodeFrame disagree on the time"); }
+            if (!a.convert(f, top.data(), W * 4)) { return failed("split decode: convert failed"); }
+            for (int y = 0; y < H; ++y)
+                if (std::memcmp(top.data() + (std::size_t)y * W * 4, vf.rgba + (std::size_t)(H - 1 - y) * W * 4,
+                                (std::size_t)W * 4) != 0) {
+                    return failed("split decode: convert() is not decodeFrame() flipped top-down");
+                }
+        }
+        double key = 0.0;
+        if (!a.nextKeyframeAfter(0.1, key) || !(key > 0.1 && key <= 0.55)) { return failed("split decode: the next keyframe after 0.1 s is the one at 0.5 s"); }
+        if (!a.nextKeyframeAfter(1.0, key) || std::isfinite(key)) { return failed("split decode: nothing after the last keyframe should read +inf"); }
+
+        VideoDecoder c;                                   // one frame decoded, then the audio read ahead
+        if (!c.open("tests/assets/test.mp4", err)) { return failed("split decode: reopen"); }
+        DecodedFrame f;
+        if (!c.decodeNext(f)) { return failed("split decode: first frame"); }
+        c.pumpAudio(1.0);
+        std::vector<float> s; double st = 0.0;
+        if (!c.takeAudio(s, st) || s.size() < 48000 || c.audioSettledUpTo() < 1.0) {
+            return failed("split decode: pumpAudio did not read a second of audio ahead of one video frame");
+        }
+
+        // A file whose video starts late -- an FLV with B-frames puts its first frame a frame in --
+        // counts from that frame: it is at 0, and the keyframe index, the duration, seek() and the
+        // audio count from it too.
+        const std::string late = "build/_late_start.flv";
+        {
+            VideoEncoder enc;
+            if (!enc.open(late, 64, 48, 25, 48000, 1, err)) { return failed(("late start: encode: " + err).c_str()); }
+            std::vector<unsigned char> px((std::size_t)64 * 48 * 4);
+            std::vector<float> tone(48000 / 25);
+            for (int f = 0; f < 50; ++f) {
+                std::fill(px.begin(), px.end(), (unsigned char)(f * 5));
+                for (std::size_t i = 0; i < tone.size(); ++i)
+                    tone[i] = 0.5f * (float)std::sin(0.05 * (double)(f * tone.size() + i));
+                if (!enc.addVideoFrame(px.data(), f / 25.0) || !enc.addAudio(tone.data(), (int)tone.size())) {
+                    return failed("late start: encode a frame");
+                }
+            }
+            if (!enc.close(err)) { return failed(("late start: close: " + err).c_str()); }
+        }
+        VideoDecoder d;
+        if (!d.open(late, err)) { return failed(("late start: open: " + err).c_str()); }
+        DecodedFrame f0, f1;
+        if (!d.decodeNext(f0) || !d.decodeNext(f1) || f0.t != 0.0 || std::fabs(f1.t - 0.04) > 1e-6) {
+            std::fprintf(stderr, "late start: the first frames are at %.4f and %.4f\n", f0.t, f1.t);
+            return failed("late start: times must count from the first frame (0, then 0.04 s)");
+        }
+        double lateKey = 0.0;
+        if (!d.nextKeyframeAfter(0.1, lateKey) || !(lateKey > 0.9 && lateKey < 1.05)) {
+            return failed("late start: the keyframe index must count from the first frame (the next keyframe is at 1 s)");
+        }
+        if (std::fabs(d.duration() - 2.0) > 0.05) { return failed("late start: the duration must count from the first frame (2 s)"); }
+        d.seek(0.0);
+        DecodedFrame g;
+        if (!d.decodeNext(g) || g.t != 0.0) { return failed("late start: seek(0) must return to the first frame"); }
+        d.pumpAudio(1.0);
+        std::vector<float> la; double laStart = -1.0;
+        if (!d.takeAudio(la, laStart) || laStart < 0.0 || laStart > 0.05) {
+            return failed("late start: the audio must count from the first frame");
+        }
+
+        // A Matroska file's cues -- its keyframe index -- are read only when the demuxer is first asked to
+        // seek; open() asks, so keyframes past what probing read (about 5 s) are known from the start.
+        const std::string cues = "build/_cues.mkv";
+        {
+            VideoEncoder enc;
+            if (!enc.open(cues, 64, 48, 25, 0, 0, err)) { return failed(("cues: encode: " + err).c_str()); }
+            std::vector<unsigned char> px((std::size_t)64 * 48 * 4);
+            for (int f = 0; f < 300; ++f) {                // 12 s, keyframes every second or sooner
+                std::fill(px.begin(), px.end(), (unsigned char)(f % 256));
+                if (!enc.addVideoFrame(px.data(), f / 25.0)) { return failed("cues: encode a frame"); }
+            }
+            if (!enc.close(err)) { return failed(("cues: close: " + err).c_str()); }
+        }
+        VideoDecoder m;
+        double cueKey = 0.0;
+        if (!m.open(cues, err) || !m.nextKeyframeAfter(7.0, cueKey) || !(cueKey > 7.0 && cueKey < 12.0)) {
+            std::fprintf(stderr, "cues: the keyframe after 7 s reads %g\n", cueKey);
+            return failed("cues: a Matroska file's keyframe index must be read at open (there are keyframes after 7 s)");
+        }
+
+        // An MPEG-TS demuxer lists every packet it reads while searching for a seek position as a keyframe:
+        // the decoder must not pass those on -- the worker would seek towards keyframes that are not there.
+        const std::string probes = "build/_probes.ts";
+        {
+            VideoEncoder enc;
+            if (!enc.open(probes, 64, 48, 25, 0, 0, err)) { return failed(("probes: encode: " + err).c_str()); }
+            std::vector<unsigned char> px((std::size_t)64 * 48 * 4);
+            for (int f = 0; f < 300; ++f) {
+                std::fill(px.begin(), px.end(), (unsigned char)(f % 256));
+                if (!enc.addVideoFrame(px.data(), f / 25.0)) { return failed("probes: encode a frame"); }
+            }
+            if (!enc.close(err)) { return failed(("probes: close: " + err).c_str()); }
+        }
+        VideoDecoder p;
+        DecodedFrame pf;
+        double probeKey = 0.0;
+        if (!p.open(probes, err)) { return failed(("probes: open: " + err).c_str()); }
+        p.seek(5.5);                                        // the search reads packets around 5.5 s
+        if (!p.decodeNext(pf) || !p.nextKeyframeAfter(0.1, probeKey) || std::isfinite(probeKey)) {
+            std::fprintf(stderr, "probes: after a seek, the keyframe after 0.1 s reads %g\n", probeKey);
+            return failed("probes: an MPEG-TS index lists seek probes, not keyframes: it must read as none known");
+        }
+        std::fprintf(stderr, "gl_smoke OK: decodeNext+convert == decodeFrame flipped; keyframe lookup; %.2f s of audio read ahead; "
+                     "a late-starting file counts from its first frame; Matroska cues are read at open; "
+                     "MPEG-TS seek probes are not keyframes\n", s.size() / 48000.0);
+    }
+    return true;
+}
+
 // --- Scenario 10: Video Player decodes a file to texture + audio ---
 // Decodes tests/assets/test.mp4 (a 128x96 colour pattern with a 330 Hz tone),
 // first through the bare VideoDecoder, then through the VideoPlayerNode wired
@@ -3330,6 +3459,7 @@ static bool (*const kScenarios[])() = {
     scenario_load_mesh_data_diagnostics,
     scenario_meshopt_compressed_gltf,
     scenario_draco_compressed_gltf,
+    scenario_video_decoder_split_decode,
     scenario_video_player_decode,
     scenario_text_geometry_renderers,
     scenario_recorder_video_encoder,
