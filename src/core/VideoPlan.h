@@ -21,7 +21,7 @@ constexpr double      kVideoSeekNoIndex   = 2.0;   // no keyframe index: seek wh
 constexpr double      kVideoSeekMinJump   = 1.0;   // a seek restarts the decoder's pipeline: only for longer jumps (s)
 constexpr double      kVideoAudioLead     = 1.0;   // keep decoded audio this far ahead of the playhead (s)
 constexpr double      kVideoAudioKeep     = 2.0;   // keep already-played audio this long (s)
-constexpr double      kVideoTimeEps       = 1e-6;  // frame-time comparisons (float dt accumulates error)
+constexpr double      kVideoTimeEps       = 1e-6;  // frame-time comparisons: absorbs rounding, not accumulated drift
 constexpr double      kVideoCatchUpSlice  = 0.1;   // live: show the best frame reached at least this often (s)
 
 // How many RGBA frames of w x h fit the budget, clamped to [kVideoPoolMinFrames, kVideoPoolMaxFrames].
@@ -38,27 +38,29 @@ inline double videoLapStart(double u, double duration) {
     return duration > 0.0 ? duration * std::floor(u / duration) : 0.0;
 }
 
-// Position within the clip of a looping playhead, in [0, D).
+// Position within the clip of a looping playhead, in [0, D) up to rounding.
 inline double videoWrapped(double u, double duration) { return u - videoLapStart(u, duration); }
 
 // The node's playhead: unwrapped, plus the lap it is clamped to while loop is off.
 struct VideoPlayhead {
     double u        = 0.0;
-    double lapLo    = 0.0;    // loop off: u stays within [lapLo, lapLo + D]
+    double lapLo    = 0.0;    // loop off: u stays within [lapLo, lapLo + D)
     bool   loopPrev = true;   // loop was on last frame (the lap is captured when loop goes off)
 };
 
-// Advance by rate * dt while playing, then apply the loop rule. Loop on runs freely (the display
-// wraps). Loop off clamps to the lap the playhead was in when loop went off -- pinned from the
-// position BEFORE this step, so a step that crosses the end holds the last frame rather than
-// pinning the next lap -- so the end holds the last frame. An unknown duration (0) has no laps:
-// the playhead only clamps at 0.
+// Advance by rate * dt while playing, then apply the loop rule.
+//  - Loop on runs freely (the display wraps).
+//  - Loop off clamps to the lap the playhead was in when loop went off, pinned from the position
+//    BEFORE this step, so a step that crosses the end cannot pin the next lap. The clamp stops just
+//    short of the lap's end: lapLo + D is where the next lap's first frame sits -- the worker decodes
+//    it early while looping -- so the end holds this lap's last frame.
+//  - An unknown duration (0) has no laps: the playhead only clamps at 0.
 inline VideoPlayhead videoAdvance(VideoPlayhead p, bool play, double rate, bool loop, double dt,
                                   double duration) {
     if (duration > 0.0 && !loop && p.loopPrev) p.lapLo = videoLapStart(p.u, duration);
     if (play) p.u += rate * dt;
     if (duration > 0.0) {
-        if (!loop) p.u = std::clamp(p.u, p.lapLo, p.lapLo + duration);
+        if (!loop) p.u = std::clamp(p.u, p.lapLo, p.lapLo + std::max(0.0, duration - 2.0 * kVideoTimeEps));
     } else if (p.u < 0.0) {
         p.u = 0.0;
     }
@@ -72,12 +74,23 @@ inline double videoPosition(const VideoPlayhead& p, bool loop, double duration) 
     return loop ? videoWrapped(p.u, duration) : p.u - p.lapLo;
 }
 
-// The frame to show for playhead u: index of the greatest time <= u in `times` (ascending), or -1
-// when every frame is later than u or there are none. The rule the node has always used.
-inline int videoSelectFrame(const double* times, int n, double u) {
+// Offline renders pass dt = 1.0f / fps. Accumulating that float drifts off the frame grid (at 25 fps
+// by ~9e-10 s a frame, past kVideoTimeEps after ~45 s), so the node snaps it back to the exact step
+// 1 / fps when fps is a whole number -- every rate the renderer offers is. Any other dt passes through.
+inline double videoFrameStep(float dt) {
+    if (!(dt > 0.0f)) return 0.0;
+    const double fps = 1.0 / (double)dt;
+    const double whole = std::round(fps);
+    return (whole >= 1.0 && std::fabs(fps - whole) < 1e-3) ? 1.0 / whole : (double)dt;
+}
+
+// The frame to show for playhead u: the index of the greatest time <= u among n ascending times
+// (`timeOf(i)` returns the i-th), or -1 when every frame is later than u or there are none.
+template <class TimeOf>
+inline int videoSelectFrame(int n, double u, TimeOf timeOf) {
     int best = -1;
     for (int i = 0; i < n; ++i) {
-        if (times[i] <= u + kVideoTimeEps) best = i;
+        if (timeOf(i) <= u + kVideoTimeEps) best = i;
         else break;
     }
     return best;
