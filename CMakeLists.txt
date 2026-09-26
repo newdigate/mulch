@@ -360,6 +360,7 @@ add_executable(core_tests
   tests/test_offline_render.cpp
   tests/test_async_loader.cpp
   tests/test_video_plan.cpp
+  tests/test_timed_audio.cpp
   src/gfx/ImageLoader.cpp
   tests/test_image_loader.cpp
   tests/test_image_sequence.cpp
