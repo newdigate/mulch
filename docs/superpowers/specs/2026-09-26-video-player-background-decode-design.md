@@ -250,6 +250,64 @@ fixed.
     back-cut branch, both "never past the playhead" guards, farthest-first among whole chunks, and the
     grid tolerance in reverse trimming.
 
+### Revisions during execution (code review of Task 5)
+
+The reviewer drove the decoder, and the prototype worker through it, over about 30 generated files in
+20 containers (plus 4K and 1080p AVI/MP4 and a 4K ProRes clip); each finding reproduced before it was
+fixed, and each fix is pinned by a check that fails when it is reverted.
+
+48. **An uninitialised channel layout could be freed.** `drainAudio` handed an uninitialised
+    `AVChannelLayout` to `av_channel_layout_copy`, which frees its destination first: a SIGABRT on a
+    fragmented MP4 and on MP4/MPEG-TS files with late audio at `-O1`, depending on what was on the
+    stack. Both layouts are zero-initialised.
+49. **A frame with no timestamp follows the one before it.** Decoders flush the last frames of an AVI
+    (MPEG-4, H.264) or MPEG-PS with B-frames with no timestamp, and a raw H.264/HEVC stream has none at
+    all; such frames read as before the first frame. The worker took the decoder for a lap behind and
+    sought continuously (2,321 seeks in 10 s on a small AVI; a 4K AVI fell to 91% on time), offline
+    renders showed the wrong frame at every lap's end, and reverse from a lap's end nearly froze. Such a
+    frame now takes the previous frame's time plus its duration (the nominal frame duration when it has
+    none). One with no frame before it since a seek into the file cannot be placed and is skipped: after
+    a seek into the last keyframe interval of an MPEG-PS the decoder puts out nothing else, and placing
+    it at the seek's target made the worker plan the same reverse stretch forever. Measured: live 100% on
+    time with no seeks (the 4K AVI included), offline 220 of 220 frames exact, and reverse on AVI and PS
+    as smooth as on MP4.
+50. **A raw stream seeks by position, and a seek that cannot reach even the start fails the stream.**
+    A raw H.264/HEVC stream has no times to seek by: `open()`'s seek to the start read the whole file
+    (389 ms for 153 MB), failed, and left nothing to decode. A raw stream (`AVFMT_NOTIMESTAMPS`) now
+    always seeks to its first byte of data, and its index is no guide, so the worker catches up forward
+    instead of seeking ahead. Any failed seek falls back to the start by timestamp, then by position;
+    `seek()` returns false only when even that fails, and the worker then fails the stream ("cannot
+    seek in this file") rather than spin on a seek that achieves nothing. `open()` fails when no frame
+    decodes rather than opening a player that never shows one.
+51. **A full read-ahead settles the audio.** `pumpAudio()` stops at 64 MB of queued video, and an
+    offline render waits for the audio to settle: when 2 s of audio-free video (the slack) is more than
+    that -- 4K ProRes at 770 Mbps with its audio starting at 3 s -- frame 0 never became ready. When
+    `pumpAudio()` stops at the cap, the audio now counts as settled up to the latest packet read; audio
+    interleaved further behind than 64 MB of video would be given up, where waiting would never end.
+    Frame 0 is ready in 0.08 s, and the audio still starts at 3.000 s.
+52. **Audio follows its timestamps.** Decoded audio was appended as if it were continuous, so a 0.6 s
+    hole in an MKV's audio put everything after it 0.6 s early. The decoder now hands audio out in runs:
+    within 0.1 s of where the audio so far ends it carries straight on (FFmpeg's `aresample` uses the
+    same threshold; millisecond timestamps must not click), and further off -- a hole or an overlap -- a
+    new run starts at its own time. `takeAudio()` says whether a run continues the previous one, and
+    the worker begins a new chunk when it does not, so a hole reads as silence and costs no memory. The
+    click after the hole lands at 3.000 s (it landed at 2.403).
+53. **The resampler is rebuilt when the audio format changes, and reset by a seek.** One built for
+    stereo read a second plane that mono audio does not have: a crash on an MPEG-TS whose audio goes from
+    stereo to mono (broadcast recordings switch between 5.1 and stereo). Across a seek it also carried
+    samples from before the seek (up to 0.147 off on 44.1 kHz audio).
+54. **Smaller fixes.** The audio stream is the video's (`av_find_best_stream`'s related stream), and only
+    the chosen streams' packets count towards settled audio: a second program whose clock ran 1000 s
+    ahead made the audio read as settled at 998 s after 0.28 s. `pkt_timebase` is set on both decoders,
+    so a decoder re-times the samples it skips: Opus audio played 6.5 ms early (its pre-skip).
+    `convert()` refuses a stride shorter than a row.
+55. **Tests.** The decoder scenario also checks the MPEG-TS clock rebase and the short-stride refusal,
+    and SKIPs its FLV case where there is no H.264 encoder. A new scenario writes an AVI with a B-frame
+    tail, a raw H.264 stream (SKIPped without an H.264 encoder), a Matroska file whose video starts 1 s in,
+    a clip with a 0.6 s hole in its audio (remuxed without those packets through FFmpeg's API: `VideoEncoder`
+    cannot leave one), and two MPEG-TS files end to end that change audio format and picture size. The
+    `VideoStream` scenario renders the audio-hole clip offline and checks the silence and the tone after it.
+
 ## Root cause
 
 Reproduced with a headless harness that compiles the real `VideoPlayerNode.cpp` and drives
@@ -404,28 +462,40 @@ functions, unit-tested in `core_tests` (the `StepSync.h` / `BarSync.h` pattern).
 
 **`gfx/VideoDecoder`** — existing, small changes.
 - `open(path, err, const std::atomic<bool>* abort = nullptr)`:
-  - sets `thread_count = 0` (automatic) before `avcodec_open2`;
+  - sets `thread_count = 0` (automatic) and `pkt_timebase` before `avcodec_open2`;
   - allocates the format context first so it can install an `AVIOInterruptCB` that returns
-    `*abort`. A stop then aborts a stalled open or read.
+    `*abort`. A stop then aborts a stalled open or read;
+  - fails when no frame decodes.
 - Video packets are read into a bounded queue (64 MB) instead of being decoded straight away.
 - `decodeNext(DecodedFrame& out)`: decode the next video frame *without* converting it.
   - `DecodedFrame` is a move-only handle that owns a reference to the decoded picture, plus its time.
   - The FFmpeg type is forward-declared, so FFmpeg headers stay out of `VideoDecoder.h`.
-  - Audio met on the way is decoded into a pending buffer.
+  - Audio met on the way is decoded into pending runs.
   - Handles are cheap reference counts, so the worker can hold the previous and the next frame at once,
     which the catch-up rule needs.
+  - A frame with no timestamp takes the previous frame's time plus its duration; one with no frame
+    before it since a seek into the file cannot be placed, and is skipped.
+- `seek(t) → bool`: to the keyframe at or before t; failing that, the start of the file by timestamp,
+  then by byte position -- the only way a raw stream (`AVFMT_NOTIMESTAMPS`) seeks. False when even that
+  fails.
 - `pumpAudio(t)`: read ahead (queueing video packets) until the audio is settled up to source time t.
 - `audioSettledUpTo()`: the source time up to which no more audio will arrive -- the decoded audio's
-  end, or, once the demuxer has read 2 s past a point without audio for it, that point; +inf at the
-  end of the input or with no audio stream.
-- `takeAudio(out, startT)`: move out the audio decoded since the last call, with its start time.
+  end, or, once the demuxer has read 2 s past a point without audio for it (counting only the chosen
+  streams' packets), that point; when `pumpAudio()` stopped at the 64 MB cap, the latest packet read;
+  +inf at the end of the input or with no audio stream.
+- `takeAudio(out, startT, continues)`: move out the next run of audio decoded since the last call, with
+  its start time. Runs follow the source's timestamps: audio within 0.1 s of where the audio so far ends
+  carries straight on, and a hole or an overlap starts a new run (`continues` false). The resampler is
+  rebuilt whenever the audio's format changes, and reset by a seek.
 - `convert(const DecodedFrame&, uint8_t* dst, int stride)`: threaded, top-down conversion through the
-  portable path above. The conversion context is created lazily from the first frame's format.
+  portable path above (the stride at least a row). The conversion context is created lazily from the
+  first frame's format.
 - `frameDuration()`: taken from `avg_frame_rate`, then `r_frame_rate`, falling back to 1/30 s.
 - `nextKeyframeAfter(t, double& key)`: looked up through `avformat_index_get_entry_from_timestamp` /
   `avformat_index_get_entry`. Returns false when the stream has no index; `key` is +inf when none is
-  known after t, which includes MPEG-TS and MPEG-PS, whose indexes list seek probes as keyframes. An
-  entry may be a keyframe's decode time, a frame or two early.
+  known after t, which includes MPEG-TS and MPEG-PS, whose indexes list seek probes as keyframes, and
+  raw streams, which only seek to their start. An entry may be a keyframe's decode time, a frame or two
+  early.
 - `decodeFrame()` keeps its current behaviour, including single-threaded bottom-up output, for the
   15 `gl_smoke` call sites (it is now built on `decodeNext()` + `takeAudio()`).
 - `convert()` passes the caller's buffer to `sws_scale_frame()` wrapped in a reference-counted buffer
@@ -596,7 +666,9 @@ the UI keeps running.
 
 - The worker appends the decoder's 48 kHz mono audio to the `TimedAudio` store as it decodes,
   anchoring each new chunk from the first audio timestamp (today's `audioStartT` rule) plus the lap
-  offset.
+  offset. The decoder's runs follow the source's timestamps; where one does not continue the previous
+  run (a hole or an overlap in the source's audio), the worker begins a new chunk at its own time, so
+  a hole reads as silence.
 - **Playing forward, audio is read ahead** with `pumpAudio(u + 1 s)` every worker step and during
   catch-up, independent of how many frames the pool holds.
 - Seeks, wraps and reverse stretches begin a new chunk; a reverse stretch clips its audio at the start
@@ -640,11 +712,15 @@ the UI keeps running.
 
 | Case | Handling |
 |---|---|
-| Open fails (missing file, no video stream, unsupported codec) | `Failed` with the reason; the node shows "load failed: …" as today, publishes black and silence; the worker exits |
+| Open fails (missing file, no video stream, unsupported codec, no frame decodes) | `Failed` with the reason; the node shows "load failed: …" as today, publishes black and silence; the worker exits |
 | Frame buffers can't be allocated (`std::bad_alloc`) | `Failed`: "not enough memory for W×H frames" |
 | Corrupt packets | skipped |
 | Truncated file | behaves like end of file (wrap or hold) |
-| `av_seek_frame` fails | seek to 0 and catch up to the target: slow but correct |
+| `av_seek_frame` fails | seek to the start (by timestamp, then by byte position) and catch up to the target: slow but correct. A raw stream always seeks this way |
+| Not even the start can be reached | `Failed`: "cannot seek in this file" (the worker would otherwise seek again every step) |
+| Frames with no timestamp | placed after the previous frame; one with no frame before it since a seek into the file is skipped |
+| Holes or overlaps in the audio's timestamps | a new chunk at the audio's own time; a hole is silence |
+| The audio format changes mid-file | the resampler is rebuilt |
 | A seek lands late or finds no frame (decode-time indexes, MPEG-TS) | retried 1 s, 2 s, 4 s… earlier, down to the start of the file |
 | Frame dimensions change mid-file | those frames are skipped (conversion is sized at open) |
 | Anything thrown on the worker | caught at the top of the thread and turned into `Failed`; nothing escapes the thread |
@@ -712,13 +788,22 @@ the UI keeps running.
   polls until the texture has colour.
 - The existing encoder round-trip checks keep `decodeFrame()`'s bottom-up output honest.
 - **`VideoDecoder` split decode:** `decodeNext()` + `convert()` equal `decodeFrame()` flipped,
-  byte for byte; the keyframe lookup; a second of audio read ahead after one video frame; an FLV with
-  B-frames (first frame a frame in) counts from its first frame -- at 0, with the keyframe index, the
-  duration, `seek(0)` and the audio counting from it too.
+  byte for byte, and a stride shorter than a row is refused; the keyframe lookup; a second of audio read
+  ahead after one video frame; an FLV with B-frames (first frame a frame in; SKIPped without an H.264
+  encoder) counts from its first frame -- at 0, with the keyframe index, the duration, `seek(0)` and the
+  audio counting from it too; so does an MPEG-TS whose clock starts 1.4 s in.
+- **`VideoDecoder` on awkward files:** an AVI's untimed B-frame tail follows the frame before it, every
+  lap; a raw H.264 stream (SKIPped without an H.264 encoder) decodes 50 frames 0.04 s apart and seeks to
+  its start; in a Matroska file whose video starts 1 s in, `seek(2.02)` lands on the keyframe 2 s after
+  the first frame and the audio starts with that frame; a 0.6 s hole in the audio is kept -- the audio
+  after it resumes at its own time as a new run, and `pumpAudio` settles through it; two MPEG-TS files
+  end to end (stereo 64×48, then mono 80×64) decode through, the second half's frames refused by
+  `convert()`, its audio resampled.
 - **`VideoEncoder` keyframe interval:** with hard cuts every 10 frames, keyframes land exactly every
   50 frames (no scene-cut extras).
 - **`VideoStream`:** a missing file ends `Failed` with a reason; `test.mp4` opens with the right info;
-  offline, the frame for 0.73 s is the one at 0.7 s, with audio before it.
+  offline, the frame for 0.73 s is the one at 0.7 s, with audio before it; rendered offline, a clip with
+  a hole in its audio is silent across the hole and plays the tone after it.
 - **`VideoStream` reverse through awkward files** (written by the scenario with the indexed-clip
   writer): offline reverse is exact through a first keyframe interval longer than the stretch ring (loop
   on and off) and across the loop seam of an FLV with B-frames; live reverse over that FLV decodes a
@@ -785,6 +870,9 @@ Measured on the development machine, in Debug and Release, with the acceptance h
   millisecond (MKV, FLV), two stretches holding the same audio disagree by up to half a millisecond, so
   the switch between them can click however early decoding starts; that needs the chunks anchored on
   the codec's frame grid, or a short crossfade where one gives way to the next.
+- **Open-GOP MPEG-2 and MPEG-4 Part 2 after a seek.** FFmpeg's first frames after a seek into such a
+  file are the frame after the keyframe or broken B-frames, and in an MPEG-PS they can be labelled up to
+  0.1 s early, so reverse on those files can be a couple of frames off where a stretch starts.
 - Local build configuration. `build.sh` builds Debug; this design removes the Debug-only
   per-byte-free cost from the video path, and switching local builds to RelWithDebInfo is a separate
   choice.

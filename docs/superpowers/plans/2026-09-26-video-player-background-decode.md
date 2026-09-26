@@ -25,7 +25,7 @@
 |---|---|
 | `src/core/VideoPlan.h` (new) | Pure playback decisions: pool size, laps and the unwrapped playhead, frame selection, reverse stretches, the worker's next step |
 | `src/core/TimedAudio.h` (new) | Audio chunks tagged with unwrapped time; sampling identical to the old `emitAudio` |
-| `src/gfx/VideoDecoder.{h,cpp}` (rewrite) | FFmpeg: threaded decode, `decodeNext`/`convert`, packet queue + audio read-ahead, keyframe lookup; legacy `decodeFrame` unchanged |
+| `src/gfx/VideoDecoder.{h,cpp}` (rewrite) | FFmpeg: threaded decode, `decodeNext`/`convert`, packet queue + audio read-ahead, keyframe lookup; times from the first frame (untimed frames, raw streams), audio in runs that follow its timestamps; legacy `decodeFrame` unchanged |
 | `src/gfx/VideoEncoder.{h,cpp}` (small change) | Optional fixed keyframe interval, for test clips |
 | `src/gfx/VideoStream.{h,cpp}` (new) | The worker thread: pool, ready queue, audio, request/frameAt/readAudio, offline readiness |
 | `src/modules/VideoPlayerNode.{h,cpp}` (rewrite) | Playhead, requests, staging-texture upload + flipped blit, offline gating |
@@ -1456,7 +1456,7 @@ EOF
 - Modify (full rewrite): `src/gfx/VideoDecoder.h`, `src/gfx/VideoDecoder.cpp`
 - Modify: `tests/gl_smoke.cpp`
 
-The worker must decode a frame, look at its time, and only then decide to convert it; convert with threads; and keep audio ahead of the video however few frames it buffers. So: `decodeNext()` returns a `DecodedFrame` (a counted reference, nothing copied); `convert()` writes TOP-DOWN RGBA with threaded swscale (the portable FFmpeg ≥ 5 path rejects a negative-stride destination, and FFmpeg 5–7 allocate a new buffer for a destination frame with none — so the caller's buffer is wrapped in a no-op-free `AVBufferRef`); video packets are queued (≤ 64 MB) so `pumpAudio()` can read audio ahead; `thread_count = 0`; an interrupt callback lets a stop abort blocking I/O. The legacy `decodeFrame()` keeps its exact behaviour (bottom-up, single-threaded conversion) — the 15 `gl_smoke` uses rely on it. Every time in and out counts from the first video frame, which `open()` decodes (and the first `decodeNext()` hands out): a container that starts its clock late (MPEG-TS) or shows a B-frame delay with no edit list (FLV, fragmented MP4) would otherwise put the first frame after the playhead's 0 — an offline render could never have its first frame. `seek(t <= 0)` goes to the very start of the file, since a timestamp search (MPEG-TS) can overshoot the first frame's time by a keyframe interval; audio from before the first frame is dropped. `open()` seeks to the start before decoding that first frame, because some demuxers read their keyframe index only when first asked to seek (Matroska and WebM cues) — without it the worker could not seek ahead in the first lap. MPEG-TS and MPEG-PS indexes are ignored (`nextKeyframeAfter` reports none known): their demuxers list every packet they probe while seeking as a keyframe.
+The worker must decode a frame, look at its time, and only then decide to convert it; convert with threads; and keep audio ahead of the video however few frames it buffers. So: `decodeNext()` returns a `DecodedFrame` (a counted reference, nothing copied); `convert()` writes TOP-DOWN RGBA with threaded swscale (the portable FFmpeg ≥ 5 path rejects a negative-stride destination, and FFmpeg 5–7 allocate a new buffer for a destination frame with none — so the caller's buffer is wrapped in a no-op-free `AVBufferRef`); video packets are queued (≤ 64 MB) so `pumpAudio()` can read audio ahead; `thread_count = 0`; an interrupt callback lets a stop abort blocking I/O. The legacy `decodeFrame()` keeps its exact behaviour (bottom-up, single-threaded conversion) — the 15 `gl_smoke` uses rely on it. Every time in and out counts from the first video frame, which `open()` decodes (and the first `decodeNext()` hands out): a container that starts its clock late (MPEG-TS) or shows a B-frame delay with no edit list (FLV, fragmented MP4) would otherwise put the first frame after the playhead's 0 — an offline render could never have its first frame. `seek(t <= 0)` goes to the very start of the file, since a timestamp search (MPEG-TS) can overshoot the first frame's time by a keyframe interval; audio from before the first frame is dropped. `open()` seeks to the start before decoding that first frame, because some demuxers read their keyframe index only when first asked to seek (Matroska and WebM cues) — without it the worker could not seek ahead in the first lap. MPEG-TS and MPEG-PS indexes are ignored (`nextKeyframeAfter` reports none known): their demuxers list every packet they probe while seeking as a keyframe. A frame with no timestamp (the B-frame tail a decoder flushes from an AVI or MPEG-PS, every frame of a raw H.264 stream) takes the previous frame's time plus its duration; one with nothing before it since a seek into the file cannot be placed and is skipped. A raw stream has no times to seek by (a search reads the whole file, then fails), so `seek()` takes it to its first byte, falls back there whenever a seek fails, and returns false only when not even the start can be reached; `open()` fails when no frame decodes. Audio comes out in runs that follow its timestamps — a hole or an overlap starts a new run, which `takeAudio()` flags — the resampler is rebuilt when the audio format changes and reset by a seek, and when `pumpAudio()` stops at the 64 MB cap the audio counts as settled up to the last packet read, so an offline render cannot wait forever. The second scenario writes the awkward files itself; one needs FFmpeg's API directly (a remux that leaves a hole in the audio), and the FLV and raw H.264 cases SKIP where there is no H.264 encoder.
 
 - [ ] **Step 1: Add `#include <cstring>` to `tests/gl_smoke.cpp`, after `#include <cstdlib>`**. In `tests/gl_smoke.cpp`, replace:
 
@@ -1471,7 +1471,22 @@ with:
 #include <cstring>
 ```
 
-- [ ] **Step 2: Add the failing scenario, just above `// --- Scenario 10: Video Player decodes a file to texture + audio ---`**:
+- [ ] **Step 2: Include FFmpeg's `libavformat` in `tests/gl_smoke.cpp`, after `#include "gfx/VideoEncoder.h"` (one test clip needs a remux `VideoEncoder` cannot do)**. In `tests/gl_smoke.cpp`, replace:
+
+```cpp
+#include "gfx/VideoEncoder.h"
+```
+
+with:
+
+```cpp
+#include "gfx/VideoEncoder.h"
+extern "C" {
+#include <libavformat/avformat.h>   // remuxWithAudioHole: a clip VideoEncoder cannot write
+}
+```
+
+- [ ] **Step 3: Add the two failing scenarios (and the audio-hole clip writer the `VideoStream` scenarios reuse), just above `// --- Scenario 10: Video Player decodes a file to texture + audio ---`**:
 
 ```cpp
 // --- Scenario: VideoDecoder's split decode -- decodeNext() + convert() match decodeFrame() ---
@@ -1492,6 +1507,7 @@ static bool scenario_video_decoder_split_decode() {
             DecodedFrame f;
             if (!a.decodeNext(f) || !b.decodeFrame(vf, au, aS, aV)) { return failed("split decode: ran out of frames"); }
             if (f.t != vf.t) { return failed("split decode: decodeNext and decodeFrame disagree on the time"); }
+            if (a.convert(f, top.data(), W * 4 - 4)) { return failed("split decode: convert() must refuse a stride shorter than a row"); }
             if (!a.convert(f, top.data(), W * 4)) { return failed("split decode: convert failed"); }
             for (int y = 0; y < H; ++y)
                 if (std::memcmp(top.data() + (std::size_t)y * W * 4, vf.rgba + (std::size_t)(H - 1 - y) * W * 4,
@@ -1508,49 +1524,55 @@ static bool scenario_video_decoder_split_decode() {
         DecodedFrame f;
         if (!c.decodeNext(f)) { return failed("split decode: first frame"); }
         c.pumpAudio(1.0);
-        std::vector<float> s; double st = 0.0;
-        if (!c.takeAudio(s, st) || s.size() < 48000 || c.audioSettledUpTo() < 1.0) {
+        std::vector<float> s; double st = 0.0; bool cont = true;
+        if (!c.takeAudio(s, st, cont) || cont || s.size() < 48000 || c.audioSettledUpTo() < 1.0) {
             return failed("split decode: pumpAudio did not read a second of audio ahead of one video frame");
         }
 
         // A file whose video starts late -- an FLV with B-frames puts its first frame a frame in --
         // counts from that frame: it is at 0, and the keyframe index, the duration, seek() and the
-        // audio count from it too.
+        // audio count from it too. (FLV carries H.264, not VideoEncoder's MPEG-4 fallback.)
         const std::string late = "build/_late_start.flv";
+        bool flv = false;
         {
             VideoEncoder enc;
-            if (!enc.open(late, 64, 48, 25, 48000, 1, err)) { return failed(("late start: encode: " + err).c_str()); }
-            std::vector<unsigned char> px((std::size_t)64 * 48 * 4);
-            std::vector<float> tone(48000 / 25);
-            for (int f = 0; f < 50; ++f) {
-                std::fill(px.begin(), px.end(), (unsigned char)(f * 5));
-                for (std::size_t i = 0; i < tone.size(); ++i)
-                    tone[i] = 0.5f * (float)std::sin(0.05 * (double)(f * tone.size() + i));
-                if (!enc.addVideoFrame(px.data(), f / 25.0) || !enc.addAudio(tone.data(), (int)tone.size())) {
-                    return failed("late start: encode a frame");
+            if (enc.open(late, 64, 48, 25, 48000, 1, err)) {
+                std::vector<unsigned char> px((std::size_t)64 * 48 * 4);
+                std::vector<float> tone(48000 / 25);
+                for (int f = 0; f < 50; ++f) {
+                    std::fill(px.begin(), px.end(), (unsigned char)(f * 5));
+                    for (std::size_t i = 0; i < tone.size(); ++i)
+                        tone[i] = 0.5f * (float)std::sin(0.05 * (double)(f * tone.size() + i));
+                    if (!enc.addVideoFrame(px.data(), f / 25.0) || !enc.addAudio(tone.data(), (int)tone.size())) {
+                        return failed("late start: encode a frame");
+                    }
                 }
+                if (!enc.close(err)) { return failed(("late start: close: " + err).c_str()); }
+                flv = true;
             }
-            if (!enc.close(err)) { return failed(("late start: close: " + err).c_str()); }
         }
-        VideoDecoder d;
-        if (!d.open(late, err)) { return failed(("late start: open: " + err).c_str()); }
-        DecodedFrame f0, f1;
-        if (!d.decodeNext(f0) || !d.decodeNext(f1) || f0.t != 0.0 || std::fabs(f1.t - 0.04) > 1e-6) {
-            std::fprintf(stderr, "late start: the first frames are at %.4f and %.4f\n", f0.t, f1.t);
-            return failed("late start: times must count from the first frame (0, then 0.04 s)");
-        }
-        double lateKey = 0.0;
-        if (!d.nextKeyframeAfter(0.1, lateKey) || !(lateKey > 0.9 && lateKey < 1.05)) {
-            return failed("late start: the keyframe index must count from the first frame (the next keyframe is at 1 s)");
-        }
-        if (std::fabs(d.duration() - 2.0) > 0.05) { return failed("late start: the duration must count from the first frame (2 s)"); }
-        d.seek(0.0);
-        DecodedFrame g;
-        if (!d.decodeNext(g) || g.t != 0.0) { return failed("late start: seek(0) must return to the first frame"); }
-        d.pumpAudio(1.0);
-        std::vector<float> la; double laStart = -1.0;
-        if (!d.takeAudio(la, laStart) || laStart < 0.0 || laStart > 0.05) {
-            return failed("late start: the audio must count from the first frame");
+        if (!flv) {
+            std::fprintf(stderr, "gl_smoke SKIP: late-start FLV (no H.264 encoder: %s)\n", err.c_str());
+        } else {
+            VideoDecoder d;
+            if (!d.open(late, err)) { return failed(("late start: open: " + err).c_str()); }
+            DecodedFrame f0, f1;
+            if (!d.decodeNext(f0) || !d.decodeNext(f1) || f0.t != 0.0 || std::fabs(f1.t - 0.04) > 1e-6) {
+                std::fprintf(stderr, "late start: the first frames are at %.4f and %.4f\n", f0.t, f1.t);
+                return failed("late start: times must count from the first frame (0, then 0.04 s)");
+            }
+            double lateKey = 0.0;
+            if (!d.nextKeyframeAfter(0.1, lateKey) || !(lateKey > 0.9 && lateKey < 1.05)) {
+                return failed("late start: the keyframe index must count from the first frame (the next keyframe is at 1 s)");
+            }
+            if (std::fabs(d.duration() - 2.0) > 0.05) { return failed("late start: the duration must count from the first frame (2 s)"); }
+            DecodedFrame g;
+            if (!d.seek(0.0) || !d.decodeNext(g) || g.t != 0.0) { return failed("late start: seek(0) must return to the first frame"); }
+            d.pumpAudio(1.0);
+            std::vector<float> la; double laStart = -1.0; bool laCont = true;
+            if (!d.takeAudio(la, laStart, laCont) || laCont || laStart < 0.0 || laStart > 0.05) {
+                return failed("late start: the audio must count from the first frame");
+            }
         }
 
         // A Matroska file's cues -- its keyframe index -- are read only when the demuxer is first asked to
@@ -1590,6 +1612,11 @@ static bool scenario_video_decoder_split_decode() {
         DecodedFrame pf;
         double probeKey = 0.0;
         if (!p.open(probes, err)) { return failed(("probes: open: " + err).c_str()); }
+        // Its clock starts 1.4 s in (the MPEG-TS muxer's delay): times still count from the first frame.
+        if (!p.decodeNext(pf) || pf.t != 0.0 || std::fabs(p.duration() - 12.0) > 0.1) {
+            std::fprintf(stderr, "probes: first frame at %.4f, duration %.4f\n", pf.t, p.duration());
+            return failed("probes: an MPEG-TS whose clock starts late must count from its first frame (at 0; 12 s long)");
+        }
         p.seek(5.5);                                        // the search reads packets around 5.5 s
         if (!p.decodeNext(pf) || !p.nextKeyframeAfter(0.1, probeKey) || std::isfinite(probeKey)) {
             std::fprintf(stderr, "probes: after a seek, the keyframe after 0.1 s reads %g\n", probeKey);
@@ -1602,9 +1629,226 @@ static bool scenario_video_decoder_split_decode() {
     return true;
 }
 
+// Copy `src` to `dst` packet for packet, leaving out the audio packets that start in [from, to) seconds.
+static bool remuxWithAudioHole(const std::string& src, const std::string& dst, double from, double to) {
+    AVFormatContext* in = nullptr;
+    if (avformat_open_input(&in, src.c_str(), nullptr, nullptr) < 0) return false;
+    AVFormatContext* out = nullptr;
+    bool ok = avformat_find_stream_info(in, nullptr) >= 0 &&
+              avformat_alloc_output_context2(&out, nullptr, nullptr, dst.c_str()) >= 0;
+    for (unsigned i = 0; ok && i < in->nb_streams; ++i) {
+        AVStream* o = avformat_new_stream(out, nullptr);
+        ok = o && avcodec_parameters_copy(o->codecpar, in->streams[i]->codecpar) >= 0;
+        if (ok) { o->codecpar->codec_tag = 0; o->time_base = in->streams[i]->time_base; }
+    }
+    ok = ok && avio_open(&out->pb, dst.c_str(), AVIO_FLAG_WRITE) >= 0 && avformat_write_header(out, nullptr) >= 0;
+    AVPacket* p = av_packet_alloc();
+    while (ok && p && av_read_frame(in, p) >= 0) {
+        const AVStream* st = in->streams[p->stream_index];
+        const double t = p->pts * av_q2d(st->time_base);
+        if (!(st->codecpar->codec_type == AVMEDIA_TYPE_AUDIO && t >= from && t < to)) {
+            av_packet_rescale_ts(p, st->time_base, out->streams[p->stream_index]->time_base);
+            ok = av_interleaved_write_frame(out, p) >= 0;
+        }
+        av_packet_unref(p);
+    }
+    av_packet_free(&p);
+    ok = ok && av_write_trailer(out) >= 0;
+    if (out) { avio_closep(&out->pb); avformat_free_context(out); }
+    avformat_close_input(&in);
+    return ok;
+}
+
+// A 3 s clip -- 64x48 at 25 fps, a 440 Hz tone -- whose audio has a hole from 1.0 s to 1.6 s. VideoEncoder
+// cannot leave one, so it writes the clip whole and a remux drops those audio packets.
+static bool writeAudioHoleClip(const std::string& path) {
+    const std::string whole = path + ".whole.mkv";
+    {
+        VideoEncoder enc; std::string err;
+        if (!enc.open(whole, 64, 48, 25, 48000, 1, err)) {
+            std::fprintf(stderr, "writeAudioHoleClip: %s\n", err.c_str());
+            return false;
+        }
+        std::vector<unsigned char> px((std::size_t)64 * 48 * 4, 128);
+        std::vector<float> tone(48000 / 25);
+        for (int f = 0; f < 75; ++f) {
+            for (std::size_t i = 0; i < tone.size(); ++i)
+                tone[i] = 0.5f * (float)std::sin(6.283185307179586 * 440.0 * (double)(f * tone.size() + i) / 48000.0);
+            if (!enc.addVideoFrame(px.data(), f / 25.0) || !enc.addAudio(tone.data(), (int)tone.size())) return false;
+        }
+        if (!enc.close(err)) return false;
+    }
+    return remuxWithAudioHole(whole, path, 1.0, 1.6);
+}
+
+// Every frame VideoDecoder `d` has left: false unless their times rise strictly; `n` counts them, `last` is the last time.
+static bool decodeRest(VideoDecoder& d, int& n, double& last) {
+    DecodedFrame f;
+    bool rising = true;
+    n = 0; last = -1.0;
+    while (d.decodeNext(f)) { rising = rising && f.t > last; last = f.t; ++n; }
+    return rising;
+}
+
+// --- Scenario: VideoDecoder on awkward files ---
+// Frames with no timestamps (an AVI's B-frame tail, a raw stream), a seek in a file whose video starts
+// late, a hole in the audio, and a stream whose audio format and picture size change midway.
+static bool scenario_video_decoder_awkward_files() {
+    std::string err;
+    std::vector<unsigned char> px((std::size_t)64 * 48 * 4);
+
+    // An AVI with B-frames: the decoder flushes its last frames with no timestamp. They follow the frame
+    // before them (they used to read as before the first frame, and the worker sought forever).
+    const std::string avi = "build/_untimed_tail.avi";
+    {
+        VideoEncoder enc;
+        if (!enc.open(avi, 64, 48, 25, 0, 0, err)) { return failed(("untimed tail: encode: " + err).c_str()); }
+        for (int f = 0; f < 50; ++f) {
+            std::fill(px.begin(), px.end(), (unsigned char)(f * 5));
+            if (!enc.addVideoFrame(px.data(), f / 25.0)) { return failed("untimed tail: encode a frame"); }
+        }
+        if (!enc.close(err)) { return failed(("untimed tail: close: " + err).c_str()); }
+    }
+    VideoDecoder a;
+    if (!a.open(avi, err)) { return failed(("untimed tail: open: " + err).c_str()); }
+    for (int lap = 0; lap < 2; ++lap) {
+        int n = 0; double last = 0.0;
+        if (!decodeRest(a, n, last) || n != 50 || std::fabs(last - 1.96) > 1e-6) {
+            std::fprintf(stderr, "untimed tail: lap %d: %d frames, the last at %.4f\n", lap, n, last);
+            return failed("untimed tail: 50 frames, 0.04 s apart, the last at 1.96 s -- every lap");
+        }
+        if (!a.seek(0.0)) { return failed("untimed tail: seek(0)"); }
+    }
+
+    // A raw H.264 stream has no timestamps at all, and no times to seek by: a search by time read the whole
+    // file and failed, leaving nothing to decode. Its seeks go to the start instead.
+    const std::string raw = "build/_raw.h264";
+    bool rawWritten = false;
+    {
+        VideoEncoder enc;                                   // the raw H.264 muxer takes H.264 only
+        if (enc.open(raw, 64, 48, 25, 0, 0, err)) {
+            for (int f = 0; f < 50; ++f) {
+                std::fill(px.begin(), px.end(), (unsigned char)(f * 5));
+                if (!enc.addVideoFrame(px.data(), f / 25.0)) { return failed("raw stream: encode a frame"); }
+            }
+            if (!enc.close(err)) { return failed(("raw stream: close: " + err).c_str()); }
+            rawWritten = true;
+        }
+    }
+    if (!rawWritten) {
+        std::fprintf(stderr, "gl_smoke SKIP: raw stream (no H.264 encoder: %s)\n", err.c_str());
+    } else {
+        VideoDecoder r;
+        if (!r.open(raw, err)) { return failed(("raw stream: open: " + err).c_str()); }
+        int n = 0; double last = 0.0, key = 0.0;
+        DecodedFrame g;
+        if (!decodeRest(r, n, last) || n != 50 || std::fabs(last - 1.96) > 1e-6) {
+            std::fprintf(stderr, "raw stream: %d frames, the last at %.4f\n", n, last);
+            return failed("raw stream: 50 frames, 0.04 s apart");
+        }
+        if (!r.seek(1.0) || !r.decodeNext(g) || g.t != 0.0) { return failed("raw stream: a seek goes back to the start"); }
+        if (!r.nextKeyframeAfter(0.5, key) || std::isfinite(key)) { return failed("raw stream: its index is no guide to seeking"); }
+    }
+
+    // Video that starts 1 s into the file, its audio at 0: times count from the first frame, so seek(2.02)
+    // lands on the keyframe 2 s after it -- not on the one 2 s into the file -- and the audio before the
+    // first frame is dropped.
+    const std::string lateVideo = "build/_late_video.mkv";
+    {
+        VideoEncoder enc;
+        if (!enc.open(lateVideo, 64, 48, 25, 48000, 1, err)) { return failed(("late video: encode: " + err).c_str()); }
+        std::vector<float> tone(48000 / 25, 0.25f);
+        for (int f = 0; f < 100; ++f) {                    // audio from 0 s, video from 1 s (frame 25)
+            std::fill(px.begin(), px.end(), (unsigned char)(f * 2));
+            if ((f >= 25 && !enc.addVideoFrame(px.data(), f / 25.0)) || !enc.addAudio(tone.data(), (int)tone.size())) {
+                return failed("late video: encode a frame");
+            }
+        }
+        if (!enc.close(err)) { return failed(("late video: close: " + err).c_str()); }
+    }
+    VideoDecoder m;
+    DecodedFrame m0, m2;
+    std::vector<float> run; double runStart = -1.0; bool runCont = true;
+    if (!m.open(lateVideo, err) || !m.decodeNext(m0) || m0.t != 0.0) { return failed("late video: the first frame is at 0"); }
+    m.pumpAudio(0.5);
+    if (!m.takeAudio(run, runStart, runCont) || runCont || runStart < 0.0 || runStart > 0.001) {
+        std::fprintf(stderr, "late video: the first audio starts at %.4f\n", runStart);
+        return failed("late video: the audio must start with the first frame (what came before it is dropped)");
+    }
+    if (!m.seek(2.02) || !m.decodeNext(m2) || std::fabs(m2.t - 2.0) > 1e-6) {
+        std::fprintf(stderr, "late video: seek(2.02) landed at %.4f\n", m2.t);
+        return failed("late video: seek(2.02) must land on the keyframe 2 s after the first frame");
+    }
+
+    // A hole in the audio's timestamps is kept: the audio after it resumes at its own time, as a new run
+    // (it used to carry straight on from where the hole began, early by the hole's length ever after).
+    const std::string hole = "build/_audio_hole.mkv";
+    if (!writeAudioHoleClip(hole)) { return failed("audio hole: writing the clip failed"); }
+    VideoDecoder h;
+    if (!h.open(hole, err)) { return failed(("audio hole: open: " + err).c_str()); }
+    h.pumpAudio(1.3);
+    if (h.audioSettledUpTo() < 1.3) { return failed("audio hole: pumpAudio must settle the audio through the hole"); }
+    h.pumpAudio(2.5);
+    std::vector<double> starts, ends;
+    std::vector<bool> conts;
+    std::vector<float> ha; double hs = 0.0; bool hc = false;
+    while (h.takeAudio(ha, hs, hc)) { starts.push_back(hs); ends.push_back(hs + ha.size() / 48000.0); conts.push_back(hc); }
+    bool resumed = false;
+    for (std::size_t i = 1; i < starts.size(); ++i)
+        resumed = resumed || (!conts[i] && std::fabs(ends[i - 1] - 1.0) < 0.05 && std::fabs(starts[i] - 1.6) < 0.05);
+    if (!resumed) {
+        for (std::size_t i = 0; i < starts.size(); ++i)
+            std::fprintf(stderr, "audio hole: run %zu [%.4f, %.4f)%s\n", i, starts[i], ends[i], conts[i] ? " continues" : "");
+        return failed("audio hole: the audio after the hole must resume at 1.6 s, as a new run");
+    }
+    DecodedFrame hf;
+    while (h.decodeNext(hf)) {}
+    if (!std::isinf(h.audioSettledUpTo())) { return failed("audio hole: at the end of the input all the audio is settled"); }
+
+    // Two MPEG-TS files end to end: stereo 64x48, then mono 80x64. The resampler is rebuilt for the new
+    // format (one built for two channels read a second plane that mono audio does not have: a crash),
+    // and convert() refuses the frames of the new size.
+    const std::string partA = "build/_fmt_a.ts", partB = "build/_fmt_b.ts", joined = "build/_fmt_change.ts";
+    for (int part = 0; part < 2; ++part) {
+        const int w = part ? 80 : 64, hgt = part ? 64 : 48, ch = part ? 1 : 2;
+        VideoEncoder enc;
+        if (!enc.open(part ? partB : partA, w, hgt, 25, 48000, ch, err)) { return failed(("format change: encode: " + err).c_str()); }
+        std::vector<unsigned char> img((std::size_t)w * hgt * 4, 128);
+        std::vector<float> tone((std::size_t)(48000 / 25) * ch, 0.25f);
+        for (int f = 0; f < 25; ++f) {
+            if (!enc.addVideoFrame(img.data(), f / 25.0) || !enc.addAudio(tone.data(), (int)tone.size())) {
+                return failed("format change: encode a frame");
+            }
+        }
+        if (!enc.close(err)) { return failed(("format change: close: " + err).c_str()); }
+    }
+    {
+        std::ofstream out(joined, std::ios::binary);
+        for (const std::string& part : {partA, partB}) { std::ifstream in(part, std::ios::binary); out << in.rdbuf(); }
+    }
+    VideoDecoder x;
+    if (!x.open(joined, err)) { return failed(("format change: open: " + err).c_str()); }
+    DecodedFrame xf;
+    int converted = 0, refused = 0;
+    std::size_t audio = 0;
+    std::vector<float> xa; double xs = 0.0; bool xc = false;
+    while (x.decodeNext(xf)) {
+        ++(x.convert(xf, px.data(), 64 * 4) ? converted : refused);
+        while (x.takeAudio(xa, xs, xc)) audio += xa.size();
+    }
+    while (x.takeAudio(xa, xs, xc)) audio += xa.size();
+    if (converted < 20 || refused < 20 || audio < (std::size_t)(1.6 * 48000)) {
+        std::fprintf(stderr, "format change: %d converted, %d refused, %.2f s of audio\n", converted, refused, audio / 48000.0);
+        return failed("format change: both halves must decode -- the second half's frames refused (another size), its audio resampled");
+    }
+    std::fprintf(stderr, "gl_smoke OK: untimed frames follow the one before; a raw stream decodes and seeks to its start; "
+                 "a late start seeks from its first frame; an audio hole is kept; a format change mid-stream decodes\n");
+    return true;
+}
+
 ```
 
-- [ ] **Step 3: Register it in `kScenarios`, just above `scenario_video_player_decode,`**. In `tests/gl_smoke.cpp`, replace:
+- [ ] **Step 4: Register them in `kScenarios`, just above `scenario_video_player_decode,`**. In `tests/gl_smoke.cpp`, replace:
 
 ```cpp
     scenario_video_player_decode,
@@ -1614,10 +1858,11 @@ with:
 
 ```cpp
     scenario_video_decoder_split_decode,
+    scenario_video_decoder_awkward_files,
     scenario_video_player_decode,
 ```
 
-- [ ] **Step 4: Build to verify it fails**
+- [ ] **Step 5: Build to verify it fails**
 
 ```bash
 cmake --build build --target gl_smoke -j8
@@ -1625,7 +1870,7 @@ cmake --build build --target gl_smoke -j8
 
 Expected: the build FAILS, with an error mentioning `no member named 'decodeNext'`.
 
-- [ ] **Step 5: Replace `src/gfx/VideoDecoder.h`** — `src/gfx/VideoDecoder.h` (complete file)
+- [ ] **Step 6: Replace `src/gfx/VideoDecoder.h`** — `src/gfx/VideoDecoder.h` (complete file)
 
 ```cpp
 #pragma once
@@ -1694,7 +1939,10 @@ private:
 // Every time in and out -- frames, audio, seek(), the keyframe index, duration() -- counts from the
 // first video frame, which is at 0: a container may start its clock late (MPEG-TS), or a B-frame delay
 // with no edit list to hide it (FLV, fragmented MP4) may put the first frame a frame or two in, and a
-// playhead starts at 0. Audio from before the first frame is dropped.
+// playhead starts at 0. Audio from before the first frame is dropped. A frame with no timestamp -- the
+// last few a decoder flushes from an AVI or MPEG-PS with B-frames, or every frame of a raw H.264 or
+// HEVC stream -- follows the one before it; one that follows nothing since a seek into the file cannot
+// be placed, and is skipped.
 class VideoDecoder {
 public:
     VideoDecoder() = default;
@@ -1703,10 +1951,10 @@ public:
     VideoDecoder& operator=(const VideoDecoder&) = delete;
 
     // Open `path`. Returns false and fills `err` on failure (bad path, no video
-    // stream, unsupported codec). A file with no audio stream still opens. `abort` (optional)
-    // is polled by FFmpeg during blocking I/O: once it reads true, opening or reading gives up
-    // promptly (VideoStream uses it to stop its worker). Decodes the first frame, to learn when
-    // it is; the first decodeNext() hands it out.
+    // stream, unsupported codec, no frame that decodes). A file with no audio stream still opens.
+    // `abort` (optional) is polled by FFmpeg during blocking I/O: once it reads true, opening or
+    // reading gives up promptly (VideoStream uses it to stop its worker). Decodes the first frame,
+    // to learn when it is; the first decodeNext() hands it out.
     bool open(const std::string& path, std::string& err, const std::atomic<bool>* abort = nullptr);
 
     bool   isOpen()   const { return fmt_ != nullptr; }
@@ -1723,21 +1971,23 @@ public:
 
     // The first keyframe after time `t`, from the container's index -- possibly listed by its decode
     // time, a frame or two early. `key` is +inf when none is known after `t`: the index holds none, or it
-    // is no guide (MPEG-TS and MPEG-PS list every packet they probe while seeking). False when the stream
-    // has no index (yet).
+    // is no guide (MPEG-TS and MPEG-PS list every packet they probe while seeking; a raw stream only
+    // ever seeks to its start). False when the stream has no index (yet).
     bool nextKeyframeAfter(double t, double& key) const;
 
-    // Seek so the next decodeNext() resumes at the keyframe at or before time
-    // `t` (seconds; at or before 0, the start of the file). Flushes the decoders, the queued
-    // packets and the pending audio, so nothing stale leaks across.
-    void seek(double t);
+    // Seek so the next decodeNext() resumes at the keyframe at or before time `t` (seconds; at or
+    // before 0, the start of the file). Where that fails -- or in a raw stream, which has no times to
+    // search by -- it goes to the start of the file instead, and the caller decodes forward to its
+    // target: slow, but right. Flushes the decoders, the queued packets and the pending audio, so
+    // nothing stale leaks across. False when not even the start could be reached.
+    bool seek(double t);
 
     // Decode the next video frame in source order WITHOUT converting it. Audio met on the way is
     // decoded into the pending buffer (see takeAudio). False at the end of the stream.
     bool decodeNext(DecodedFrame& out);
 
-    // Convert a decoded frame to RGBA8 -- rows TOP-DOWN, `dstStride` bytes apart -- with threaded
-    // swscale. False on failure (e.g. the frame's size changed mid-stream).
+    // Convert a decoded frame to RGBA8 -- rows TOP-DOWN, `dstStride` (at least width * 4) bytes
+    // apart -- with threaded swscale. False on failure (e.g. the frame's size changed mid-stream).
     bool convert(const DecodedFrame& f, std::uint8_t* dst, int dstStride);
 
     // Read ahead -- queueing video packets instead of decoding them -- until the audio is settled up
@@ -1747,31 +1997,45 @@ public:
 
     // The time up to which no more audio will arrive: the end of the decoded audio, or -- once
     // the demuxer has read kAudioSettleSlack past a point without meeting audio for it -- that
-    // point. +inf at the end of the input or with no audio stream.
+    // point. +inf at the end of the input or with no audio stream. When pumpAudio() stops at
+    // kMaxQueuedBytes, the audio counts as settled up to the latest packet read: reading further
+    // would take unbounded memory (4K ProRes runs past 64 MB in under a second), and a caller
+    // waiting for settled audio would otherwise wait forever.
     double audioSettledUpTo() const;
 
-    // Move out the audio decoded since the last call (48 kHz mono float); `startT` is the time of
-    // its first sample. False when there is none.
-    bool takeAudio(std::vector<float>& out, double& startT);
+    // Move out the next run of audio decoded since the last call (48 kHz mono float): samples
+    // back to back from `startT`, the time of the first. The source's timestamps are followed --
+    // a gap or an overlap of more than kAudioJitter starts a new run where the audio resumes --
+    // and `continues` says whether this run carries straight on from the previous one (false for
+    // the first run after open() or a seek). False when there is none: call until then.
+    bool takeAudio(std::vector<float>& out, double& startT, bool& continues);
 
     // Decode the next video frame in source order into `out`, converted to bottom-up RGBA. Any
     // audio decoded on the way (audio packets interleaved before this video frame) is appended
-    // to `audio` as 48 kHz mono float. The first time audio is appended into a freshly-cleared
-    // `audio`, `audioStartT` is set to that audio's time and `audioStartValid` to true
-    // (left untouched on later calls so a multi-call fill keeps one contiguous timeline).
-    // Returns false at end of stream.
+    // to `audio` as 48 kHz mono float, its runs back to back. The first time audio is appended
+    // into a freshly-cleared `audio`, `audioStartT` is set to that audio's time and
+    // `audioStartValid` to true (left untouched on later calls so a multi-call fill keeps one
+    // contiguous timeline). Returns false at end of stream.
     bool decodeFrame(VideoFrame& out, std::vector<float>& audio,
                      double& audioStartT, bool& audioStartValid);
 
     static constexpr std::size_t kMaxQueuedBytes   = std::size_t(64) << 20;  // read-ahead cap
     static constexpr double      kAudioSettleSlack = 2.0;                    // seconds
+    // Seconds an audio timestamp may stray from where the audio so far ends and still carry on
+    // back to back (FFmpeg's aresample uses the same threshold before it pads or trims): rounding
+    // (Matroska and FLV keep milliseconds) must not click.
+    static constexpr double      kAudioJitter      = 0.1;
 
 private:
+    // Decoded audio, samples back to back from `start` (container time).
+    struct AudioRun { double start = 0.0; bool continues = false; std::vector<float> s; };
+
     void close();
     void resetStreamState();
     void clearQueue();
     bool readPacket();
     void drainAudio();
+    void placeAudio(double start, const float* s, std::size_t n);
 
     AVFormatContext* fmt_     = nullptr;
     AVCodecContext*  vctx_    = nullptr;   // video decoder
@@ -1779,7 +2043,10 @@ private:
     SwsContext*      sws_     = nullptr;   // decodeFrame(): -> RGBA, single-threaded, bottom-up
     SwsContext*      swsThr_  = nullptr;   // convert(): -> RGBA, threaded, top-down
     int              swsThrFmt_ = -1;      // the pixel format swsThr_ was built for
-    SwrContext*      swr_     = nullptr;   // -> 48 kHz mono float
+    SwrContext*      swr_     = nullptr;   // -> 48 kHz mono float, for the input below
+    int              swrFormat_ = -1, swrRate_ = 0;
+    std::uint64_t    swrLayout_ = 0;       // the input channel mask (0: not a mask)...
+    int              swrChannels_ = 0;     // ...and count
     AVFrame*         frame_   = nullptr;   // reused decode target (video or audio)
     AVFrame*         dstFrame_ = nullptr;  // convert()'s destination wrapper
     AVPacket*        pkt_     = nullptr;
@@ -1794,18 +2061,23 @@ private:
     double duration_   = 0.0;
     int    audioChannels_ = 0;  // source audio channel count (0 if no audio)
     double vTimeBase_  = 0.0;   // seconds per video stream tick
+    bool   raw_        = false; // a raw stream (H.264, HEVC...): no times to seek by
     bool   indexUsable_ = true; // false: the container's index lists more than keyframes (MPEG-TS/-PS)
     double startT_     = 0.0;   // the container's time of the first video frame: subtracted from
                                 // every time handed out, added to every time taken in
+    double nextT_      = 0.0;   // container time a frame with no timestamp is given: just after the
+                                // last; NaN when unknown (see decodeNext)
     DecodedFrame first_;        // decoded by open() to find startT_; the first decodeNext() returns it
     double aTimeBase_  = 0.0;   // seconds per audio stream tick
     bool   demuxEof_   = false; // read the last packet (and flushed the audio decoder)
     bool   vflushed_   = false; // sent the video decoder its end of stream
     double demuxedT_   = -std::numeric_limits<double>::infinity();   // latest packet time read (container time)
     double audioEndT_  = -std::numeric_limits<double>::infinity();   // end of the decoded audio (container time)
+    double capSettledT_ = -std::numeric_limits<double>::infinity();  // settled when pumpAudio stopped at the cap
+    double audioFloorT_ = -std::numeric_limits<double>::infinity();  // audio before this is dropped (the first frame)
+    bool   runOpen_    = false; // the last audio decoded was kept: audio carrying on from it continues its run
 
-    std::vector<float>        pendingAudio_;          // decoded since the last takeAudio()
-    double                    pendingAudioStart_ = 0.0;   // container time
+    std::deque<AudioRun>      audioRuns_;             // decoded since the last takeAudio(), oldest first
     std::vector<std::uint8_t> rgba_;                  // decodeFrame()'s RGBA target
     std::vector<float>        aScratch_;              // reused swr output scratch
     std::vector<float>        legacyAudio_;           // decodeFrame()'s takeAudio scratch
@@ -1814,7 +2086,7 @@ private:
 } // namespace oss
 ```
 
-- [ ] **Step 6: Replace `src/gfx/VideoDecoder.cpp`** — `src/gfx/VideoDecoder.cpp` (complete file)
+- [ ] **Step 7: Replace `src/gfx/VideoDecoder.cpp`** — `src/gfx/VideoDecoder.cpp` (complete file)
 
 ```cpp
 #include "gfx/VideoDecoder.h"
@@ -1837,6 +2109,7 @@ namespace oss {
 namespace {
 
 constexpr double kInf = std::numeric_limits<double>::infinity();
+constexpr double kNaN = std::numeric_limits<double>::quiet_NaN();
 
 // FFmpeg polls this during blocking I/O; returning 1 aborts the read.
 int abortRequested(void* opaque) {
@@ -1877,6 +2150,7 @@ void VideoDecoder::close() {
     if (swsThr_)   { sws_freeContext(swsThr_); swsThr_ = nullptr; }
     swsThrFmt_ = -1;
     if (swr_)      { swr_free(&swr_); }
+    swrFormat_ = -1; swrRate_ = 0; swrLayout_ = 0; swrChannels_ = 0;
     if (vctx_)     avcodec_free_context(&vctx_);
     if (actx_)     avcodec_free_context(&actx_);
     if (pkt_)      av_packet_free(&pkt_);
@@ -1886,15 +2160,16 @@ void VideoDecoder::close() {
     vstream_ = astream_ = -1;
     width_ = height_ = 0;
     audioChannels_ = 0;
-    duration_ = vTimeBase_ = aTimeBase_ = startT_ = 0.0;
+    duration_ = vTimeBase_ = aTimeBase_ = startT_ = nextT_ = 0.0;
+    raw_ = false;
+    audioFloorT_ = -kInf;
     resetStreamState();
 }
 
 void VideoDecoder::resetStreamState() {
-    demuxEof_ = vflushed_ = false;
-    demuxedT_ = audioEndT_ = -kInf;
-    pendingAudio_.clear();
-    pendingAudioStart_ = 0.0;
+    demuxEof_ = vflushed_ = runOpen_ = false;
+    demuxedT_ = audioEndT_ = capSettledT_ = -kInf;
+    audioRuns_.clear();
 }
 
 void VideoDecoder::clearQueue() {
@@ -1921,7 +2196,7 @@ bool VideoDecoder::open(const std::string& path, std::string& err, const std::at
 
     vstream_ = av_find_best_stream(fmt_, AVMEDIA_TYPE_VIDEO, -1, -1, nullptr, 0);
     if (vstream_ < 0) { err = "no video stream"; close(); return false; }
-    astream_ = av_find_best_stream(fmt_, AVMEDIA_TYPE_AUDIO, -1, -1, nullptr, 0);  // may be < 0
+    astream_ = av_find_best_stream(fmt_, AVMEDIA_TYPE_AUDIO, -1, vstream_, nullptr, 0);  // the video's; may be < 0
 
     // --- Video decoder ---
     AVStream* vs = fmt_->streams[vstream_];
@@ -1929,6 +2204,7 @@ bool VideoDecoder::open(const std::string& path, std::string& err, const std::at
     if (!vcodec) { err = "unsupported video codec"; close(); return false; }
     vctx_ = avcodec_alloc_context3(vcodec);
     avcodec_parameters_to_context(vctx_, vs->codecpar);
+    vctx_->pkt_timebase = vs->time_base;
     vctx_->thread_count = 0;   // automatic: a decode thread per core (libavcodec defaults to one)
     if (avcodec_open2(vctx_, vcodec, nullptr) < 0) {
         err = "could not open video decoder"; close(); return false;
@@ -1952,6 +2228,7 @@ bool VideoDecoder::open(const std::string& path, std::string& err, const std::at
         if (acodec) {
             actx_ = avcodec_alloc_context3(acodec);
             avcodec_parameters_to_context(actx_, as->codecpar);
+            actx_->pkt_timebase = as->time_base;   // lets it re-time what it skips (AAC priming)
             if (avcodec_open2(actx_, acodec, nullptr) == 0) {
                 aTimeBase_ = av_q2d(as->time_base);
                 audioChannels_ = as->codecpar->ch_layout.nb_channels;
@@ -1964,10 +2241,13 @@ bool VideoDecoder::open(const std::string& path, std::string& err, const std::at
     }
 
     duration_ = (fmt_->duration > 0) ? (double)fmt_->duration / AV_TIME_BASE : 0.0;
-    // MPEG-TS and MPEG-PS demuxers add every packet they read while searching for a seek position to the
-    // index, flagged as a keyframe: those entries say nothing about where keyframes are.
+    // A raw stream (H.264, HEVC, MPEG-2 video...) has no times to seek by: a search reads the whole file
+    // and then fails. seek() takes it back to the start instead, so its index is no guide either; nor are
+    // the MPEG-TS and MPEG-PS demuxers', which add every packet they read while searching for a seek
+    // position to the index, flagged as a keyframe.
     const char* format = fmt_->iformat && fmt_->iformat->name ? fmt_->iformat->name : "";
-    indexUsable_ = std::strncmp(format, "mpegts", 6) != 0 && std::strcmp(format, "mpeg") != 0;
+    raw_ = fmt_->iformat && (fmt_->iformat->flags & AVFMT_NOTIMESTAMPS);
+    indexUsable_ = !raw_ && std::strncmp(format, "mpegts", 6) != 0 && std::strcmp(format, "mpeg") != 0;
 
     frame_    = av_frame_alloc();
     dstFrame_ = av_frame_alloc();
@@ -1983,13 +2263,20 @@ bool VideoDecoder::open(const std::string& path, std::string& err, const std::at
     // FLV's duration counts from 0 instead: its laps end a B-frame delay late -- the last frame is held
     // a frame or two longer, never lost.)
     DecodedFrame f;
-    if (decodeNext(f)) {
-        startT_ = f.t;
-        f.t = 0.0;
-        first_ = std::move(f);
-        const double clockStart = fmt_->start_time != AV_NOPTS_VALUE ? (double)fmt_->start_time / AV_TIME_BASE : 0.0;
-        if (duration_ > 0.0) duration_ = std::max(0.0, duration_ - (startT_ - clockStart));
-    }
+    if (!decodeNext(f)) { err = "no video frame decodes"; close(); return false; }
+    startT_ = f.t;
+    f.t = 0.0;
+    first_ = std::move(f);
+    const double clockStart = fmt_->start_time != AV_NOPTS_VALUE ? (double)fmt_->start_time / AV_TIME_BASE : 0.0;
+    if (duration_ > 0.0) duration_ = std::max(0.0, duration_ - (startT_ - clockStart));
+
+    // Audio read while looking for that frame was kept whatever its time: keep only what follows it.
+    audioFloorT_ = startT_;
+    std::deque<AudioRun> early;
+    early.swap(audioRuns_);
+    audioEndT_ = -kInf;
+    runOpen_ = false;
+    for (const AudioRun& r : early) placeAudio(r.start, r.s.data(), r.s.size());
     return true;
 }
 
@@ -2013,22 +2300,34 @@ bool VideoDecoder::nextKeyframeAfter(double t, double& key) const {
     return true;
 }
 
-void VideoDecoder::seek(double t) {
-    if (!fmt_) return;
+bool VideoDecoder::seek(double t) {
+    if (!fmt_) return false;
     first_.reset();
     // At or before 0, the very start of the file rather than the first frame's time: a demuxer that
     // searches by timestamp (MPEG-TS) can overshoot that by a keyframe interval.
     const double src = t > 0.0 ? t + startT_ : 0.0;
     int64_t ts = (int64_t)(src / (vTimeBase_ > 0 ? vTimeBase_ : 1.0));
-    // BACKWARD lands on the keyframe at or before ts -- exactly the GOP start the
-    // caller decodes forward from. If that fails (e.g. a stream it cannot seek), restart
-    // from the beginning: the caller then decodes forward to its target -- slow, but right.
-    if (av_seek_frame(fmt_, vstream_, ts, AVSEEK_FLAG_BACKWARD) < 0)
-        av_seek_frame(fmt_, vstream_, 0, AVSEEK_FLAG_BACKWARD);
+    // BACKWARD lands on the keyframe at or before ts -- exactly the GOP start the caller decodes
+    // forward from. If that fails, restart from the beginning; and if even that fails -- or in a raw
+    // stream, where a search by time reads the whole file and fails -- from the first byte of data.
+    bool ok = !raw_ && av_seek_frame(fmt_, vstream_, ts, AVSEEK_FLAG_BACKWARD) >= 0;
+    bool atStart = t <= 0.0;
+    if (!ok && !raw_ && t > 0.0) {
+        ok = av_seek_frame(fmt_, vstream_, 0, AVSEEK_FLAG_BACKWARD) >= 0;
+        atStart = true;
+    }
+    if (!ok) {
+        ok = av_seek_frame(fmt_, -1, 0, AVSEEK_FLAG_BYTE) >= 0;
+        atStart = true;
+    }
     if (vctx_) avcodec_flush_buffers(vctx_);
     if (actx_) avcodec_flush_buffers(actx_);
+    if (swr_) swr_free(&swr_);   // it holds samples from before the seek
+    swrFormat_ = -1;
     clearQueue();
     resetStreamState();
+    nextT_ = atStart ? startT_ : kNaN;   // a first frame with no timestamp: the file's first, or unknown
+    return ok;
 }
 
 // Read one packet: a video packet joins the queue, an audio packet is decoded into the pending
@@ -2042,7 +2341,8 @@ bool VideoDecoder::readPacket() {
     }
     const AVStream* st = fmt_->streams[pkt_->stream_index];
     const int64_t ts = pkt_->pts != AV_NOPTS_VALUE ? pkt_->pts : pkt_->dts;
-    if (ts != AV_NOPTS_VALUE) demuxedT_ = std::max(demuxedT_, ts * av_q2d(st->time_base));
+    const bool ours = pkt_->stream_index == vstream_ || pkt_->stream_index == astream_;   // not another program's
+    if (ours && ts != AV_NOPTS_VALUE) demuxedT_ = std::max(demuxedT_, ts * av_q2d(st->time_base));
     if (pkt_->stream_index == vstream_) {
         if (AVPacket* q = av_packet_alloc()) {
             av_packet_move_ref(q, pkt_);
@@ -2059,15 +2359,21 @@ bool VideoDecoder::readPacket() {
 }
 
 // Receive every audio frame the decoder has buffered, resample each to 48 kHz mono float, and
-// append it to the pending buffer, noting the source time of the buffer's first sample.
+// place it in the pending runs at its source time.
 void VideoDecoder::drainAudio() {
     if (!actx_) return;
     while (avcodec_receive_frame(actx_, frame_) == 0) {
-        if (!swr_) {
-            AVChannelLayout outLayout; av_channel_layout_default(&outLayout, 1);  // mono
-            AVChannelLayout inLayout;
-            if (frame_->ch_layout.nb_channels > 0) av_channel_layout_copy(&inLayout, &frame_->ch_layout);
-            else                                   av_channel_layout_default(&inLayout, 1);
+        // (Re)build the resampler for this frame's format: a stream can change it midway (a broadcast
+        // recording going from 5.1 to stereo), and one built for more channels reads planes that are gone.
+        const AVChannelLayout& cl = frame_->ch_layout;
+        const std::uint64_t mask = cl.order == AV_CHANNEL_ORDER_NATIVE ? cl.u.mask : 0;
+        if (!swr_ || frame_->format != swrFormat_ || frame_->sample_rate != swrRate_ ||
+            cl.nb_channels != swrChannels_ || mask != swrLayout_) {
+            if (swr_) swr_free(&swr_);
+            AVChannelLayout outLayout{}, inLayout{};
+            av_channel_layout_default(&outLayout, 1);   // mono
+            if (cl.nb_channels > 0) av_channel_layout_copy(&inLayout, &cl);
+            else                    av_channel_layout_default(&inLayout, 1);
             int rc = swr_alloc_set_opts2(&swr_, &outLayout, AV_SAMPLE_FMT_FLT, kOutRate,
                                          &inLayout, (AVSampleFormat)frame_->format,
                                          frame_->sample_rate, 0, nullptr);
@@ -2075,9 +2381,12 @@ void VideoDecoder::drainAudio() {
             av_channel_layout_uninit(&inLayout);
             if (rc < 0 || !swr_ || swr_init(swr_) < 0) {
                 if (swr_) swr_free(&swr_);
+                swrFormat_ = -1;
                 av_frame_unref(frame_);
                 continue;   // can't resample this frame; skip it
             }
+            swrFormat_ = frame_->format; swrRate_ = frame_->sample_rate;
+            swrChannels_ = cl.nb_channels; swrLayout_ = mask;
         }
         const double start = frame_->pts != AV_NOPTS_VALUE ? frame_->pts * aTimeBase_
                            : (std::isfinite(audioEndT_) ? audioEndT_ : 0.0);
@@ -2087,37 +2396,59 @@ void VideoDecoder::drainAudio() {
             uint8_t* outptr = (uint8_t*)aScratch_.data();
             int got = swr_convert(swr_, &outptr, outCount,
                                   (const uint8_t**)frame_->extended_data, frame_->nb_samples);
-            if (got > 0) {
-                if (pendingAudio_.empty()) pendingAudioStart_ = start;
-                pendingAudio_.insert(pendingAudio_.end(), aScratch_.data(), aScratch_.data() + got);
-                audioEndT_ = start + (double)got / kOutRate;
-            }
+            if (got > 0) placeAudio(start, aScratch_.data(), (std::size_t)got);
         }
         av_frame_unref(frame_);
     }
 }
 
+// Queue `n` samples whose first is at container time `start`, following the source's timestamps: within
+// kAudioJitter of where the audio so far ends they carry straight on; further off -- a gap, or an overlap
+// -- they start a new run at their own time. What precedes the first video frame is dropped.
+void VideoDecoder::placeAudio(double start, const float* s, std::size_t n) {
+    const bool near = std::isfinite(audioEndT_) && std::fabs(start - audioEndT_) <= kAudioJitter;
+    if (near) start = audioEndT_;
+    audioEndT_ = start + (double)n / kOutRate;
+    std::size_t skip = 0;
+    if (start < audioFloorT_) {
+        skip = std::min(n, (std::size_t)std::llround((audioFloorT_ - start) * kOutRate));
+        start = std::max(audioFloorT_, start + (double)skip / kOutRate);
+    }
+    const bool continues = near && runOpen_ && skip == 0;
+    runOpen_ = skip < n;
+    if (skip == n) return;
+    if (continues && !audioRuns_.empty()) {
+        std::vector<float>& run = audioRuns_.back().s;
+        run.insert(run.end(), s + skip, s + n);
+    } else {
+        audioRuns_.push_back(AudioRun{start, continues, std::vector<float>(s + skip, s + n)});
+    }
+}
+
 void VideoDecoder::pumpAudio(double t) {
     if (!fmt_ || !actx_) return;
-    while (audioSettledUpTo() < t && queuedBytes_ < kMaxQueuedBytes && readPacket()) {}
+    while (audioSettledUpTo() < t && readPacket()) {
+        if (queuedBytes_ >= kMaxQueuedBytes) {     // full: what was read counts as settled (see the header)
+            capSettledT_ = std::max(capSettledT_, demuxedT_);
+            break;
+        }
+    }
 }
 
 double VideoDecoder::audioSettledUpTo() const {
     if (!actx_ || demuxEof_) return kInf;
-    return std::max(audioEndT_, demuxedT_ - kAudioSettleSlack) - startT_;
+    return std::max({audioEndT_, demuxedT_ - kAudioSettleSlack, capSettledT_}) - startT_;
 }
 
-bool VideoDecoder::takeAudio(std::vector<float>& out, double& startT) {
+bool VideoDecoder::takeAudio(std::vector<float>& out, double& startT, bool& continues) {
     out.clear();
-    if (pendingAudio_.empty()) return false;
-    out.swap(pendingAudio_);
-    startT = pendingAudioStart_ - startT_;
-    if (startT < 0.0) {                            // from before the first frame: the clip starts later
-        const std::size_t skip = std::min(out.size(), (std::size_t)std::llround(-startT * kOutRate));
-        out.erase(out.begin(), out.begin() + (std::ptrdiff_t)skip);
-        startT = std::max(0.0, startT + (double)skip / kOutRate);
-    }
-    return !out.empty();
+    if (audioRuns_.empty()) return false;
+    AudioRun& run = audioRuns_.front();
+    out.swap(run.s);
+    startT = run.start - startT_;
+    continues = run.continues;
+    audioRuns_.pop_front();
+    return true;
 }
 
 bool VideoDecoder::decodeNext(DecodedFrame& out) {
@@ -2130,7 +2461,13 @@ bool VideoDecoder::decodeNext(DecodedFrame& out) {
         if (r == 0) {
             const int64_t ts = (frame_->best_effort_timestamp != AV_NOPTS_VALUE)
                              ? frame_->best_effort_timestamp : frame_->pts;
-            out.t = ((ts != AV_NOPTS_VALUE) ? ts * vTimeBase_ : 0.0) - startT_;
+            // A frame with no timestamp follows the one before it. With none before it since a seek into
+            // the file there is no telling where it is: skip it (after a seek into the last keyframe interval
+            // of an MPEG-PS, the decoder may put out nothing else).
+            if (ts == AV_NOPTS_VALUE && std::isnan(nextT_)) { av_frame_unref(frame_); continue; }
+            const double t = ts != AV_NOPTS_VALUE ? ts * vTimeBase_ : nextT_;
+            nextT_ = t + (frame_->duration > 0 ? frame_->duration * vTimeBase_ : frameDuration());
+            out.t = t - startT_;
             out.frame_ = av_frame_alloc();
             if (!out.frame_) { av_frame_unref(frame_); return false; }
             av_frame_move_ref(out.frame_, frame_);
@@ -2155,7 +2492,7 @@ bool VideoDecoder::decodeNext(DecodedFrame& out) {
 
 bool VideoDecoder::convert(const DecodedFrame& f, std::uint8_t* dst, int dstStride) {
     const AVFrame* src = f.frame_;
-    if (!src || !dst || src->width != width_ || src->height != height_) return false;
+    if (!src || !dst || dstStride < width_ * 4 || src->width != width_ || src->height != height_) return false;
     if (!swsThr_ || swsThrFmt_ != src->format) {
         if (swsThr_) sws_freeContext(swsThr_);
         swsThr_ = sws_alloc_context();
@@ -2191,7 +2528,8 @@ bool VideoDecoder::decodeFrame(VideoFrame& out, std::vector<float>& audio,
     DecodedFrame f;
     const bool ok = decodeNext(f);
     double start = 0.0;
-    if (takeAudio(legacyAudio_, start)) {
+    bool continues = false;
+    while (takeAudio(legacyAudio_, start, continues)) {
         if (!audioStartValid) { audioStartT = start; audioStartValid = true; }
         audio.insert(audio.end(), legacyAudio_.begin(), legacyAudio_.end());
     }
@@ -2213,15 +2551,15 @@ bool VideoDecoder::decodeFrame(VideoFrame& out, std::vector<float>& audio,
 } // namespace oss
 ```
 
-- [ ] **Step 7: Build and run the scenario**
+- [ ] **Step 8: Build and run the scenarios (the second prints only if the first passed: `gl_smoke` stops at a failure)**
 
 ```bash
-cmake --build build --target gl_smoke -j8 && ./build/gl_smoke 2>&1 | grep -E 'decodeNext|FAIL'
+cmake --build build --target gl_smoke -j8 && ./build/gl_smoke 2>&1 | grep -E 'decodeNext|untimed frames|FAIL'
 ```
 
-Expected output includes: `decodeNext+convert == decodeFrame flipped`
+Expected output includes: `untimed frames follow the one before`
 
-- [ ] **Step 8: Run everything: the old Video Player still builds on the legacy API and every existing scenario (encoder round-trips, offline renders) still passes**
+- [ ] **Step 9: Run everything: the old Video Player still builds on the legacy API and every existing scenario (encoder round-trips, offline renders) still passes**
 
 ```bash
 cmake --build build -j8 && ctest --test-dir build --output-on-failure
@@ -2229,7 +2567,7 @@ cmake --build build -j8 && ctest --test-dir build --output-on-failure
 
 Expected output includes: `100% tests passed`
 
-- [ ] **Step 9: Commit**
+- [ ] **Step 10: Commit**
 
 ```bash
 git add src/gfx/VideoDecoder.h src/gfx/VideoDecoder.cpp tests/gl_smoke.cpp
@@ -2392,7 +2730,7 @@ EOF
 - Modify: `CMakeLists.txt` (`APP_SOURCES` and the `gl_smoke` sources)
 - Modify: `tests/gl_smoke.cpp`
 
-One worker thread per file. It opens the file, sizes a pool of RGBA buffers from the 512 MB budget, then loops: snapshot the request, recycle frames that can never be shown, read audio ahead, ask `videoNextStep()` what to do, and do it — never holding the mutex while decoding or converting. The graph thread only calls `request()`, `frameAt()` (the frame it returns is *checked out* until the next call), `readAudio()`, and offline `frameReadyFor()` / `waitForFrame()`. Details that the prototype showed matter: live catch-up is sliced to 100 ms so a decoder slower than the playhead still moves the picture; a seek keeps the newest frame at or before its target; a seek lands where its decode loop admits frames, retrying further back (1 s, 2 s, 4 s… to the file's start) when it lands late — a decode-time index lands a seek just below a keyframe ON it, a timestamp search (MPEG-TS) overshoots a keyframe interval, and some demuxers find nothing near the end — and is *pinned* only if even the start lands late; reverse stretches are published whole (they decode forwards); offline, a stretch whose ring evicted its lower frames covers only down to its oldest; a frame at or past the duration ends the lap. With loop off, frames past the playhead's lap are kept (they are the next ones if loop comes back on) and what reverse covered below the lap is dropped with its frames; runs end at the lap's end whether looping or not; a wrap forgets what the last seek taught about keyframes (`noSeekBelow`), which was about the old lap. An offline render that starts in reverse restarts the run — live stretches kept every stride-th frame — and until an offline stretch lands, reverse readiness says no. The new scenarios write the awkward files themselves — a long first keyframe interval, an FLV with B-frames, a one-keyframe clip for loop toggles — and count reverse stretches (`reverseStretches()`; `seeks()` is its forward twin) to prove live reverse cannot spin.
+One worker thread per file. It opens the file, sizes a pool of RGBA buffers from the 512 MB budget, then loops: snapshot the request, recycle frames that can never be shown, read audio ahead, ask `videoNextStep()` what to do, and do it — never holding the mutex while decoding or converting. The graph thread only calls `request()`, `frameAt()` (the frame it returns is *checked out* until the next call), `readAudio()`, and offline `frameReadyFor()` / `waitForFrame()`. Details that the prototype showed matter: live catch-up is sliced to 100 ms so a decoder slower than the playhead still moves the picture; a seek keeps the newest frame at or before its target; a seek lands where its decode loop admits frames, retrying further back (1 s, 2 s, 4 s… to the file's start) when it lands late — a decode-time index lands a seek just below a keyframe ON it, a timestamp search (MPEG-TS) overshoots a keyframe interval, and some demuxers find nothing near the end — and is *pinned* only if even the start lands late; reverse stretches are published whole (they decode forwards); offline, a stretch whose ring evicted its lower frames covers only down to its oldest; a frame at or past the duration ends the lap. With loop off, frames past the playhead's lap are kept (they are the next ones if loop comes back on) and what reverse covered below the lap is dropped with its frames; runs end at the lap's end whether looping or not; a wrap forgets what the last seek taught about keyframes (`noSeekBelow`), which was about the old lap. An offline render that starts in reverse restarts the run — live stretches kept every stride-th frame — and until an offline stretch lands, reverse readiness says no. The decoder's audio runs follow its timestamps: the worker begins a new chunk wherever a run does not continue the one before (a hole in the source's audio then reads as silence), and a seek that cannot reach even the file's start fails the stream rather than being tried again every step. The new scenarios write the awkward files themselves — a long first keyframe interval, an FLV with B-frames, a one-keyframe clip for loop toggles — and count reverse stretches (`reverseStretches()`; `seeks()` is its forward twin) to prove live reverse cannot spin.
 
 - [ ] **Step 1: Add `#include "gfx/VideoStream.h"` to `tests/gl_smoke.cpp`, after `#include "gfx/VideoDecoder.h"`**. In `tests/gl_smoke.cpp`, replace:
 
@@ -2477,6 +2815,36 @@ static bool scenario_video_stream_basics() {
         bool loud = false;
         for (float v : a) if (v > 0.01f || v < -0.01f) { loud = true; break; }
         if (!loud) { return failed("video stream: no audio for the slice before the playhead"); }
+
+        // Audio with a hole in its timestamps plays with the hole: silent across it, and what follows at
+        // its own time. Rendered offline from 0, reading each frame's audio the way the node does: the
+        // slice since the last frame, up to the playhead (as far as readiness says it is settled).
+        const std::string hole = "build/_stream_audio_hole.mkv";
+        if (!writeAudioHoleClip(hole)) { return failed("video stream: writing the audio-hole clip failed"); }
+        VideoStream h(hole);
+        while (h.state() == VideoStream::State::Opening && secondsSince(t0) < 20.0)
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        if (h.state() != VideoStream::State::Ready) { return failed("video stream: the audio-hole clip did not open"); }
+        std::vector<float> out, blk(1920);
+        for (int k = 1; k <= 50; ++k) {
+            VideoRequest hr;
+            hr.u = k / 25.0; hr.rate = 1.0f; hr.offline = true;
+            h.request(hr);
+            VideoStream::FrameView hv;
+            if (!h.waitForFrame(hr.u, 5.0) || !h.frameAt(hr.u, hv)) { return failed("video stream: the audio-hole clip stalled"); }
+            h.readAudio(hr.u - 0.04, hr.u, blk.data(), (int)blk.size());
+            out.insert(out.end(), blk.begin(), blk.end());
+        }
+        auto rms = [&](double t0s, double t1s) {
+            double e = 0.0;
+            const std::size_t i0 = (std::size_t)(t0s * 48000), i1 = (std::size_t)(t1s * 48000);
+            for (std::size_t i = i0; i < i1; ++i) e += (double)out[i] * out[i];
+            return std::sqrt(e / (double)(i1 - i0));
+        };
+        if (rms(1.1, 1.5) > 1e-3 || rms(1.7, 1.9) < 0.1) {
+            std::fprintf(stderr, "video stream: audio RMS %.4f inside the hole, %.4f after it\n", rms(1.1, 1.5), rms(1.7, 1.9));
+            return failed("video stream: the audio after a hole must play at its own time, with silence across the hole");
+        }
         std::fprintf(stderr, "gl_smoke OK: VideoStream opens, reports its info, fails cleanly, and serves the exact frame + audio\n");
     }
     return true;
@@ -2826,6 +3194,7 @@ private:
     bool peekNext();
     void takeAudio();
     void pumpAudio(double u);
+    void seekDecoder(double t);
     bool seekLanding(double end, double slack);
     void seekTo(double target);
     void catchUp(double target);
@@ -2909,6 +3278,7 @@ private:
 #include <cmath>
 #include <exception>
 #include <new>
+#include <stdexcept>
 
 namespace oss {
 
@@ -3199,18 +3569,20 @@ bool VideoStream::peekNext() {
     return ok;
 }
 
-// Move the decoder's pending audio into the store (a new chunk after a seek or wrap), clipped below
-// audioClipHi_, and publish how far the audio is settled.
+// Move the decoder's pending audio into the store -- a new chunk after a seek or wrap, and wherever the
+// source's audio jumps (a gap, or an overlap) -- clipped below audioClipHi_, and publish how far the
+// audio is settled.
 void VideoStream::takeAudio() {
     double start = 0.0;
-    const bool got = dec_.takeAudio(audioTmp_, start);
+    bool continues = false;
+    while (dec_.takeAudio(audioTmp_, start, continues)) {
+        std::lock_guard<std::mutex> lk(m_);
+        if (!audioChunkOpen_ || !continues) { audio_.beginChunk(lapOffset_ + start); audioChunkOpen_ = true; }
+        audio_.append(audioTmp_.data(), audioTmp_.size(), audioClipHi_);
+    }
     const double settled = dec_.audioSettledUpTo();
     {
         std::lock_guard<std::mutex> lk(m_);
-        if (got) {
-            if (!audioChunkOpen_) { audio_.beginChunk(lapOffset_ + start); audioChunkOpen_ = true; }
-            audio_.append(audioTmp_.data(), audioTmp_.size(), audioClipHi_);
-        }
         audioSettledU_ = lapOffset_ + settled;
         audioLapStart_ = lapOffset_;
     }
@@ -3223,6 +3595,12 @@ void VideoStream::pumpAudio(double u) {
     takeAudio();
 }
 
+// Seek the decoder. One that cannot even get back to the start of its file can neither loop nor play in
+// reverse, and every step would seek again: fail instead of spinning.
+void VideoStream::seekDecoder(double t) {
+    if (!dec_.seek(t) && !stop_) throw std::runtime_error("cannot seek in this file");
+}
+
 // Seek in the decoder's lap so the next frame is at or before unwrapped time `end` (+ `slack`: callers
 // pass the rule their decode loop admits frames by). A seek can land late: where the index holds
 // decode times (FLV, fragmented MP4, B-frames without an edit list) a seek just below a keyframe lands
@@ -3233,7 +3611,7 @@ bool VideoStream::seekLanding(double end, double slack) {
     const double src = end - lapOffset_;
     for (double back = 0.0;; back = back > 0.0 ? 2.0 * back : 1.0) {
         const double at = std::max(0.0, src - back);
-        dec_.seek(at);
+        seekDecoder(at);
         next_.reset();
         eof_ = false;
         audioChunkOpen_ = false;
@@ -3320,7 +3698,7 @@ void VideoStream::fill() {
 void VideoStream::wrap() {
     lapOffset_ += winfo_.duration;
     noSeekBelow_ = -kInf;                          // what a seek taught about keyframes was in the old lap
-    dec_.seek(0.0);
+    seekDecoder(0.0);
     next_.reset();
     eof_ = false;
     audioChunkOpen_ = false;
@@ -4355,6 +4733,13 @@ with:
   its clock late (MPEG-TS) or shows a B-frame delay (FLV, fragmented MP4) still plays from 0;
   `open()` also seeks to the start first, so indexes read only on a seek (Matroska cues) are there,
   and MPEG-TS/-PS indexes are ignored: their demuxers list every packet a seek probes as a keyframe.
+  A frame with no timestamp (the B-frame tail of an AVI or MPEG-PS, a raw H.264 stream) follows
+  the one before it, and is skipped when nothing precedes it since a seek into the file. A raw
+  stream has no times to seek by, so `seek()` sends it to its first byte (the fallback for any
+  failed seek; `seek()` returns false only when not even the start is reachable). Audio comes out
+  in runs that follow its timestamps (`takeAudio(out, startT, continues)`: a hole or an overlap
+  starts a new run), the resampler is rebuilt when the audio format changes, and when `pumpAudio()`
+  stops at the 64 MB cap the audio counts as settled up to the last packet read.
 - **The Video Player decodes on a worker** (`src/gfx/VideoStream.{h,cpp}`, one per node,
   GL-free): it opens the file, keeps a fixed pool of RGBA frames (512 MB budget:
   `core/VideoPlan.h` `videoPoolFrames`) decoded ahead of the requested playhead, and reads
@@ -4364,7 +4749,10 @@ with:
   unit-tested `videoNextStep()`. A seek lands where its decode loop admits frames, backing off
   1 s, 2 s, 4 s… to the file's start when it lands late (decode-time indexes, MPEG-TS), and a
   seek ahead that landed behind the decoder is not repeated nearby (`videoNoSeekBelow`). An
-  offline render starting in reverse restarts the run: live stretches keep every stride-th frame. The node's playhead is UNWRAPPED (lap × D + position,
+  offline render starting in reverse restarts the run: live stretches keep every stride-th frame.
+  A new audio chunk begins wherever the decoder's audio jumps, and a file it cannot seek in at all
+  fails the stream ("cannot seek in this file") rather than spinning.
+  The node's playhead is UNWRAPPED (lap × D + position,
   `videoAdvance`), so the worker decodes the next lap early and loops are seamless; it is held
   at the start until the first frame is on screen. The node uploads the newest frame at or
   before the playhead into a staging texture and flips it into the published texture with
