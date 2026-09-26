@@ -48,6 +48,7 @@
 #include <doctest/doctest.h>
 #include <limits>
 #include <vector>
+#include "core/OfflineRender.h"
 #include "core/VideoPlan.h"
 
 using namespace oss;
@@ -128,19 +129,22 @@ TEST_CASE("videoAdvance: loop off at the end holds the last frame, not the next 
     CHECK(videoSelectFrame(3, p.u, timeOf) == 1);
 }
 
-TEST_CASE("videoFrameStep: an offline playhead stays on the frame grid for an hour at every render rate") {
-    for (int fps : {24, 25, 30, 50, 60}) {
-        const double step = videoFrameStep(1.0f / (float)fps);
-        double u = 0.0, worst = 0.0;
-        for (long k = 1; k <= 3600L * fps; ++k) {
-            u += step;
-            worst = std::max(worst, std::fabs(u - (double)k / fps));
-        }
-        CHECK(worst < kVideoTimeEps / 10);                      // an hour's rounding stays well inside the tolerance
+// How many of `frames` offline steps land the playhead on the wrong frame of a `fps` grid: after step
+// k the frame for u (the greatest k'/fps <= u + kVideoTimeEps) must be frame k.
+static long offGridFrames(int fps, double step, long frames) {
+    VideoPlayhead p;
+    long wrong = 0;
+    for (long k = 1; k <= frames; ++k) {
+        p = videoAdvance(p, true, 1.0, true, step, 0.0);
+        if ((long)std::floor((p.u + kVideoTimeEps) * fps) != k) ++wrong;
     }
-    double drift = 0.0;                                         // the float step itself: a frame off within a minute
-    for (int k = 0; k < 1500; ++k) drift += (double)(1.0f / 25.0f);
-    CHECK(std::fabs(drift - 60.0) > kVideoTimeEps);
+    return wrong;
+}
+
+TEST_CASE("videoFrameStep: an offline playhead stays on the frame grid for an hour at every render rate") {
+    for (int fps : kRenderFrameRates)                           // every rate the renderer offers
+        CHECK(offGridFrames(fps, videoFrameStep(1.0f / (float)fps), 3600L * fps) == 0);
+    CHECK(offGridFrames(25, (double)(1.0f / 25.0f), 1500) > 0); // the renderer's float step: wrong within a minute
     CHECK(videoFrameStep(0.0123f) == doctest::Approx((double)0.0123f));   // not a whole rate: unchanged
     CHECK(videoFrameStep(0.0f) == 0.0);
 }
@@ -513,7 +517,9 @@ TEST_CASE("videoNextStep forward: end of the lap wraps when looping, else waits"
 TEST_CASE("videoNextStep forward: loop off with the decoder already past the lap waits") {
     VideoPlanInput in = fwd(1.99);                     // loop just went off near the end of lap 0...
     in.loop = false; in.lapLo = 0.0; in.lapHi = 2.0;
-    in.head = 2.2;                                     // ...but the decoder had run on into lap 1
+    in.head = 2.2;                                     // ...but the decoder had run on into lap 1,
+    CHECK(videoNextStep(in).kind == VideoStepKind::Wait);
+    in.head = 2.0;                                     // ...or had just wrapped to its start
     CHECK(videoNextStep(in).kind == VideoStepKind::Wait);
     in.target = 1.9; in.lowest = 1.9; in.head = 1.94;  // still inside the lap: keep filling
     CHECK(videoNextStep(in).kind == VideoStepKind::Fill);
@@ -628,8 +634,9 @@ struct VideoPlanInput {
 //  is longer than kVideoSeekMinJump -- a seek restarts the decoder's frame-threading pipeline, which
 //  costs more than decoding through a short gap -- or, with no index, if it is more than
 //  kVideoSeekNoIndex away; otherwise catch up by decoding without converting. At the end of the lap
-//  wrap (loop) or wait; with loop off and the decoder already past the playhead's lap (it had decoded
-//  ahead while looping), wait -- those frames can never be shown; otherwise fill a free buffer, or wait.
+//  wrap (loop) or wait; with loop off and the decoder at or past the end of the playhead's lap (it had
+//  decoded ahead, or just wrapped, while looping), wait -- those frames can never be shown; otherwise
+//  fill a free buffer, or wait.
 //  Reverse: start a fresh stretch at the target when the run is new or the target left its coverage;
 //  otherwise prefetch the stretch below once half the pool is free; wait at the start of the clip
 //  when loop is off.
@@ -656,7 +663,7 @@ inline VideoStep videoNextStep(const VideoPlanInput& in) {
     }
     if (in.eof)
         return (in.loop && in.duration > 0.0) ? VideoStep{VideoStepKind::Wrap} : VideoStep{};
-    if (!in.loop && in.head > in.lapHi + eps) return VideoStep{};
+    if (!in.loop && in.head >= in.lapHi - eps) return VideoStep{};
     if (in.freeBuffers > 0) return VideoStep{VideoStepKind::Fill};
     return VideoStep{};
 }
@@ -2118,7 +2125,8 @@ void VideoStream::flushReadyLocked() {
 
 // Release queued frames that can never be shown for this request: in forward play those older than
 // the frame for the target, in reverse those after it (the playhead has passed them), and with loop
-// off anything outside the playhead's lap.
+// off anything outside the playhead's lap -- including a frame at its very end, which is the next
+// lap's first (the loop-off playhead stops just short of it).
 void VideoStream::recycleLocked(const VideoRequest& r, int dir) {
     double frameT = (shown_.buf >= 0 && shown_.t <= r.u + kVideoTimeEps) ? shown_.t : -kInf;
     const int best = readyFrameLocked(r.u);
@@ -2127,7 +2135,7 @@ void VideoStream::recycleLocked(const VideoRequest& r, int dir) {
         const Slot& s = ready_[i];
         bool drop = dir >= 0 ? (std::isfinite(frameT) && s.t < frameT)
                              : (std::isfinite(frameT) ? s.t > frameT : s.t > r.u + kVideoTimeEps);
-        if (!r.loop && (s.t < r.lapLo - kVideoTimeEps || s.t > r.lapHi + kVideoTimeEps)) drop = true;
+        if (!r.loop && (s.t < r.lapLo - kVideoTimeEps || s.t >= r.lapHi - kVideoTimeEps)) drop = true;
         if (drop) { releaseLocked(s.buf); ready_.erase(ready_.begin() + (std::ptrdiff_t)i); }
         else ++i;
     }

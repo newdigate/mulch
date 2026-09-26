@@ -74,9 +74,10 @@ found these problems in the design as first approved, and changed it as follows:
 11. **Offline renders snap `dt` to the exact frame step** (`videoFrameStep`). The renderer passes
     `1.0f / fps`; accumulating that float drifted off the frame grid by ~9·10⁻¹⁰ s a frame, past the
     10⁻⁶ tolerance after ~45 s at 25 fps -- one duplicated frame, then every frame one late.
-12. **With loop off and the decoder already past the playhead's lap, the worker waits.** The planner
-    gets the lap's end (`lapHi`); before, it decoded and converted the rest of that lap only for each
-    frame to be recycled.
+12. **With loop off and the decoder at or past the end of the playhead's lap, the worker waits.** The
+    planner gets the lap's end (`lapHi`); before, it decoded and converted the rest of that lap only for
+    each frame to be recycled. "At" matters: just after a wrap the head sits exactly on `lapHi`, and a
+    frame there is the next lap's first, so recycling drops frames at or past `lapHi` too.
 13. **`videoSelectFrame` is the one frame-choice rule**, now a template over a time accessor, and the
     worker uses it instead of three hand-written loops, so its unit tests cover the code that runs.
 
