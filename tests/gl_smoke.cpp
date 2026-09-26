@@ -40,6 +40,9 @@
 #include "core/VertexShaders.h"
 #include "gfx/VideoDecoder.h"
 #include "gfx/VideoEncoder.h"
+extern "C" {
+#include <libavformat/avformat.h>   // remuxWithAudioHole: a clip VideoEncoder cannot write
+}
 #include "gfx/TextGeometry.h"
 #define STB_IMAGE_WRITE_IMPLEMENTATION
 #include "stb_image_write.h"
@@ -831,6 +834,7 @@ static bool scenario_video_decoder_split_decode() {
             DecodedFrame f;
             if (!a.decodeNext(f) || !b.decodeFrame(vf, au, aS, aV)) { return failed("split decode: ran out of frames"); }
             if (f.t != vf.t) { return failed("split decode: decodeNext and decodeFrame disagree on the time"); }
+            if (a.convert(f, top.data(), W * 4 - 4)) { return failed("split decode: convert() must refuse a stride shorter than a row"); }
             if (!a.convert(f, top.data(), W * 4)) { return failed("split decode: convert failed"); }
             for (int y = 0; y < H; ++y)
                 if (std::memcmp(top.data() + (std::size_t)y * W * 4, vf.rgba + (std::size_t)(H - 1 - y) * W * 4,
@@ -847,49 +851,55 @@ static bool scenario_video_decoder_split_decode() {
         DecodedFrame f;
         if (!c.decodeNext(f)) { return failed("split decode: first frame"); }
         c.pumpAudio(1.0);
-        std::vector<float> s; double st = 0.0;
-        if (!c.takeAudio(s, st) || s.size() < 48000 || c.audioSettledUpTo() < 1.0) {
+        std::vector<float> s; double st = 0.0; bool cont = true;
+        if (!c.takeAudio(s, st, cont) || cont || s.size() < 48000 || c.audioSettledUpTo() < 1.0) {
             return failed("split decode: pumpAudio did not read a second of audio ahead of one video frame");
         }
 
         // A file whose video starts late -- an FLV with B-frames puts its first frame a frame in --
         // counts from that frame: it is at 0, and the keyframe index, the duration, seek() and the
-        // audio count from it too.
+        // audio count from it too. (FLV carries H.264, not VideoEncoder's MPEG-4 fallback.)
         const std::string late = "build/_late_start.flv";
+        bool flv = false;
         {
             VideoEncoder enc;
-            if (!enc.open(late, 64, 48, 25, 48000, 1, err)) { return failed(("late start: encode: " + err).c_str()); }
-            std::vector<unsigned char> px((std::size_t)64 * 48 * 4);
-            std::vector<float> tone(48000 / 25);
-            for (int f = 0; f < 50; ++f) {
-                std::fill(px.begin(), px.end(), (unsigned char)(f * 5));
-                for (std::size_t i = 0; i < tone.size(); ++i)
-                    tone[i] = 0.5f * (float)std::sin(0.05 * (double)(f * tone.size() + i));
-                if (!enc.addVideoFrame(px.data(), f / 25.0) || !enc.addAudio(tone.data(), (int)tone.size())) {
-                    return failed("late start: encode a frame");
+            if (enc.open(late, 64, 48, 25, 48000, 1, err)) {
+                std::vector<unsigned char> px((std::size_t)64 * 48 * 4);
+                std::vector<float> tone(48000 / 25);
+                for (int f = 0; f < 50; ++f) {
+                    std::fill(px.begin(), px.end(), (unsigned char)(f * 5));
+                    for (std::size_t i = 0; i < tone.size(); ++i)
+                        tone[i] = 0.5f * (float)std::sin(0.05 * (double)(f * tone.size() + i));
+                    if (!enc.addVideoFrame(px.data(), f / 25.0) || !enc.addAudio(tone.data(), (int)tone.size())) {
+                        return failed("late start: encode a frame");
+                    }
                 }
+                if (!enc.close(err)) { return failed(("late start: close: " + err).c_str()); }
+                flv = true;
             }
-            if (!enc.close(err)) { return failed(("late start: close: " + err).c_str()); }
         }
-        VideoDecoder d;
-        if (!d.open(late, err)) { return failed(("late start: open: " + err).c_str()); }
-        DecodedFrame f0, f1;
-        if (!d.decodeNext(f0) || !d.decodeNext(f1) || f0.t != 0.0 || std::fabs(f1.t - 0.04) > 1e-6) {
-            std::fprintf(stderr, "late start: the first frames are at %.4f and %.4f\n", f0.t, f1.t);
-            return failed("late start: times must count from the first frame (0, then 0.04 s)");
-        }
-        double lateKey = 0.0;
-        if (!d.nextKeyframeAfter(0.1, lateKey) || !(lateKey > 0.9 && lateKey < 1.05)) {
-            return failed("late start: the keyframe index must count from the first frame (the next keyframe is at 1 s)");
-        }
-        if (std::fabs(d.duration() - 2.0) > 0.05) { return failed("late start: the duration must count from the first frame (2 s)"); }
-        d.seek(0.0);
-        DecodedFrame g;
-        if (!d.decodeNext(g) || g.t != 0.0) { return failed("late start: seek(0) must return to the first frame"); }
-        d.pumpAudio(1.0);
-        std::vector<float> la; double laStart = -1.0;
-        if (!d.takeAudio(la, laStart) || laStart < 0.0 || laStart > 0.05) {
-            return failed("late start: the audio must count from the first frame");
+        if (!flv) {
+            std::fprintf(stderr, "gl_smoke SKIP: late-start FLV (no H.264 encoder: %s)\n", err.c_str());
+        } else {
+            VideoDecoder d;
+            if (!d.open(late, err)) { return failed(("late start: open: " + err).c_str()); }
+            DecodedFrame f0, f1;
+            if (!d.decodeNext(f0) || !d.decodeNext(f1) || f0.t != 0.0 || std::fabs(f1.t - 0.04) > 1e-6) {
+                std::fprintf(stderr, "late start: the first frames are at %.4f and %.4f\n", f0.t, f1.t);
+                return failed("late start: times must count from the first frame (0, then 0.04 s)");
+            }
+            double lateKey = 0.0;
+            if (!d.nextKeyframeAfter(0.1, lateKey) || !(lateKey > 0.9 && lateKey < 1.05)) {
+                return failed("late start: the keyframe index must count from the first frame (the next keyframe is at 1 s)");
+            }
+            if (std::fabs(d.duration() - 2.0) > 0.05) { return failed("late start: the duration must count from the first frame (2 s)"); }
+            DecodedFrame g;
+            if (!d.seek(0.0) || !d.decodeNext(g) || g.t != 0.0) { return failed("late start: seek(0) must return to the first frame"); }
+            d.pumpAudio(1.0);
+            std::vector<float> la; double laStart = -1.0; bool laCont = true;
+            if (!d.takeAudio(la, laStart, laCont) || laCont || laStart < 0.0 || laStart > 0.05) {
+                return failed("late start: the audio must count from the first frame");
+            }
         }
 
         // A Matroska file's cues -- its keyframe index -- are read only when the demuxer is first asked to
@@ -929,6 +939,11 @@ static bool scenario_video_decoder_split_decode() {
         DecodedFrame pf;
         double probeKey = 0.0;
         if (!p.open(probes, err)) { return failed(("probes: open: " + err).c_str()); }
+        // Its clock starts 1.4 s in (the MPEG-TS muxer's delay): times still count from the first frame.
+        if (!p.decodeNext(pf) || pf.t != 0.0 || std::fabs(p.duration() - 12.0) > 0.1) {
+            std::fprintf(stderr, "probes: first frame at %.4f, duration %.4f\n", pf.t, p.duration());
+            return failed("probes: an MPEG-TS whose clock starts late must count from its first frame (at 0; 12 s long)");
+        }
         p.seek(5.5);                                        // the search reads packets around 5.5 s
         if (!p.decodeNext(pf) || !p.nextKeyframeAfter(0.1, probeKey) || std::isfinite(probeKey)) {
             std::fprintf(stderr, "probes: after a seek, the keyframe after 0.1 s reads %g\n", probeKey);
@@ -938,6 +953,223 @@ static bool scenario_video_decoder_split_decode() {
                      "a late-starting file counts from its first frame; Matroska cues are read at open; "
                      "MPEG-TS seek probes are not keyframes\n", s.size() / 48000.0);
     }
+    return true;
+}
+
+// Copy `src` to `dst` packet for packet, leaving out the audio packets that start in [from, to) seconds.
+static bool remuxWithAudioHole(const std::string& src, const std::string& dst, double from, double to) {
+    AVFormatContext* in = nullptr;
+    if (avformat_open_input(&in, src.c_str(), nullptr, nullptr) < 0) return false;
+    AVFormatContext* out = nullptr;
+    bool ok = avformat_find_stream_info(in, nullptr) >= 0 &&
+              avformat_alloc_output_context2(&out, nullptr, nullptr, dst.c_str()) >= 0;
+    for (unsigned i = 0; ok && i < in->nb_streams; ++i) {
+        AVStream* o = avformat_new_stream(out, nullptr);
+        ok = o && avcodec_parameters_copy(o->codecpar, in->streams[i]->codecpar) >= 0;
+        if (ok) { o->codecpar->codec_tag = 0; o->time_base = in->streams[i]->time_base; }
+    }
+    ok = ok && avio_open(&out->pb, dst.c_str(), AVIO_FLAG_WRITE) >= 0 && avformat_write_header(out, nullptr) >= 0;
+    AVPacket* p = av_packet_alloc();
+    while (ok && p && av_read_frame(in, p) >= 0) {
+        const AVStream* st = in->streams[p->stream_index];
+        const double t = p->pts * av_q2d(st->time_base);
+        if (!(st->codecpar->codec_type == AVMEDIA_TYPE_AUDIO && t >= from && t < to)) {
+            av_packet_rescale_ts(p, st->time_base, out->streams[p->stream_index]->time_base);
+            ok = av_interleaved_write_frame(out, p) >= 0;
+        }
+        av_packet_unref(p);
+    }
+    av_packet_free(&p);
+    ok = ok && av_write_trailer(out) >= 0;
+    if (out) { avio_closep(&out->pb); avformat_free_context(out); }
+    avformat_close_input(&in);
+    return ok;
+}
+
+// A 3 s clip -- 64x48 at 25 fps, a 440 Hz tone -- whose audio has a hole from 1.0 s to 1.6 s. VideoEncoder
+// cannot leave one, so it writes the clip whole and a remux drops those audio packets.
+static bool writeAudioHoleClip(const std::string& path) {
+    const std::string whole = path + ".whole.mkv";
+    {
+        VideoEncoder enc; std::string err;
+        if (!enc.open(whole, 64, 48, 25, 48000, 1, err)) {
+            std::fprintf(stderr, "writeAudioHoleClip: %s\n", err.c_str());
+            return false;
+        }
+        std::vector<unsigned char> px((std::size_t)64 * 48 * 4, 128);
+        std::vector<float> tone(48000 / 25);
+        for (int f = 0; f < 75; ++f) {
+            for (std::size_t i = 0; i < tone.size(); ++i)
+                tone[i] = 0.5f * (float)std::sin(6.283185307179586 * 440.0 * (double)(f * tone.size() + i) / 48000.0);
+            if (!enc.addVideoFrame(px.data(), f / 25.0) || !enc.addAudio(tone.data(), (int)tone.size())) return false;
+        }
+        if (!enc.close(err)) return false;
+    }
+    return remuxWithAudioHole(whole, path, 1.0, 1.6);
+}
+
+// Every frame VideoDecoder `d` has left: false unless their times rise strictly; `n` counts them, `last` is the last time.
+static bool decodeRest(VideoDecoder& d, int& n, double& last) {
+    DecodedFrame f;
+    bool rising = true;
+    n = 0; last = -1.0;
+    while (d.decodeNext(f)) { rising = rising && f.t > last; last = f.t; ++n; }
+    return rising;
+}
+
+// --- Scenario: VideoDecoder on awkward files ---
+// Frames with no timestamps (an AVI's B-frame tail, a raw stream), a seek in a file whose video starts
+// late, a hole in the audio, and a stream whose audio format and picture size change midway.
+static bool scenario_video_decoder_awkward_files() {
+    std::string err;
+    std::vector<unsigned char> px((std::size_t)64 * 48 * 4);
+
+    // An AVI with B-frames: the decoder flushes its last frames with no timestamp. They follow the frame
+    // before them (they used to read as before the first frame, and the worker sought forever).
+    const std::string avi = "build/_untimed_tail.avi";
+    {
+        VideoEncoder enc;
+        if (!enc.open(avi, 64, 48, 25, 0, 0, err)) { return failed(("untimed tail: encode: " + err).c_str()); }
+        for (int f = 0; f < 50; ++f) {
+            std::fill(px.begin(), px.end(), (unsigned char)(f * 5));
+            if (!enc.addVideoFrame(px.data(), f / 25.0)) { return failed("untimed tail: encode a frame"); }
+        }
+        if (!enc.close(err)) { return failed(("untimed tail: close: " + err).c_str()); }
+    }
+    VideoDecoder a;
+    if (!a.open(avi, err)) { return failed(("untimed tail: open: " + err).c_str()); }
+    for (int lap = 0; lap < 2; ++lap) {
+        int n = 0; double last = 0.0;
+        if (!decodeRest(a, n, last) || n != 50 || std::fabs(last - 1.96) > 1e-6) {
+            std::fprintf(stderr, "untimed tail: lap %d: %d frames, the last at %.4f\n", lap, n, last);
+            return failed("untimed tail: 50 frames, 0.04 s apart, the last at 1.96 s -- every lap");
+        }
+        if (!a.seek(0.0)) { return failed("untimed tail: seek(0)"); }
+    }
+
+    // A raw H.264 stream has no timestamps at all, and no times to seek by: a search by time read the whole
+    // file and failed, leaving nothing to decode. Its seeks go to the start instead.
+    const std::string raw = "build/_raw.h264";
+    bool rawWritten = false;
+    {
+        VideoEncoder enc;                                   // the raw H.264 muxer takes H.264 only
+        if (enc.open(raw, 64, 48, 25, 0, 0, err)) {
+            for (int f = 0; f < 50; ++f) {
+                std::fill(px.begin(), px.end(), (unsigned char)(f * 5));
+                if (!enc.addVideoFrame(px.data(), f / 25.0)) { return failed("raw stream: encode a frame"); }
+            }
+            if (!enc.close(err)) { return failed(("raw stream: close: " + err).c_str()); }
+            rawWritten = true;
+        }
+    }
+    if (!rawWritten) {
+        std::fprintf(stderr, "gl_smoke SKIP: raw stream (no H.264 encoder: %s)\n", err.c_str());
+    } else {
+        VideoDecoder r;
+        if (!r.open(raw, err)) { return failed(("raw stream: open: " + err).c_str()); }
+        int n = 0; double last = 0.0, key = 0.0;
+        DecodedFrame g;
+        if (!decodeRest(r, n, last) || n != 50 || std::fabs(last - 1.96) > 1e-6) {
+            std::fprintf(stderr, "raw stream: %d frames, the last at %.4f\n", n, last);
+            return failed("raw stream: 50 frames, 0.04 s apart");
+        }
+        if (!r.seek(1.0) || !r.decodeNext(g) || g.t != 0.0) { return failed("raw stream: a seek goes back to the start"); }
+        if (!r.nextKeyframeAfter(0.5, key) || std::isfinite(key)) { return failed("raw stream: its index is no guide to seeking"); }
+    }
+
+    // Video that starts 1 s into the file, its audio at 0: times count from the first frame, so seek(2.02)
+    // lands on the keyframe 2 s after it -- not on the one 2 s into the file -- and the audio before the
+    // first frame is dropped.
+    const std::string lateVideo = "build/_late_video.mkv";
+    {
+        VideoEncoder enc;
+        if (!enc.open(lateVideo, 64, 48, 25, 48000, 1, err)) { return failed(("late video: encode: " + err).c_str()); }
+        std::vector<float> tone(48000 / 25, 0.25f);
+        for (int f = 0; f < 100; ++f) {                    // audio from 0 s, video from 1 s (frame 25)
+            std::fill(px.begin(), px.end(), (unsigned char)(f * 2));
+            if ((f >= 25 && !enc.addVideoFrame(px.data(), f / 25.0)) || !enc.addAudio(tone.data(), (int)tone.size())) {
+                return failed("late video: encode a frame");
+            }
+        }
+        if (!enc.close(err)) { return failed(("late video: close: " + err).c_str()); }
+    }
+    VideoDecoder m;
+    DecodedFrame m0, m2;
+    std::vector<float> run; double runStart = -1.0; bool runCont = true;
+    if (!m.open(lateVideo, err) || !m.decodeNext(m0) || m0.t != 0.0) { return failed("late video: the first frame is at 0"); }
+    m.pumpAudio(0.5);
+    if (!m.takeAudio(run, runStart, runCont) || runCont || runStart < 0.0 || runStart > 0.001) {
+        std::fprintf(stderr, "late video: the first audio starts at %.4f\n", runStart);
+        return failed("late video: the audio must start with the first frame (what came before it is dropped)");
+    }
+    if (!m.seek(2.02) || !m.decodeNext(m2) || std::fabs(m2.t - 2.0) > 1e-6) {
+        std::fprintf(stderr, "late video: seek(2.02) landed at %.4f\n", m2.t);
+        return failed("late video: seek(2.02) must land on the keyframe 2 s after the first frame");
+    }
+
+    // A hole in the audio's timestamps is kept: the audio after it resumes at its own time, as a new run
+    // (it used to carry straight on from where the hole began, early by the hole's length ever after).
+    const std::string hole = "build/_audio_hole.mkv";
+    if (!writeAudioHoleClip(hole)) { return failed("audio hole: writing the clip failed"); }
+    VideoDecoder h;
+    if (!h.open(hole, err)) { return failed(("audio hole: open: " + err).c_str()); }
+    h.pumpAudio(1.3);
+    if (h.audioSettledUpTo() < 1.3) { return failed("audio hole: pumpAudio must settle the audio through the hole"); }
+    h.pumpAudio(2.5);
+    std::vector<double> starts, ends;
+    std::vector<bool> conts;
+    std::vector<float> ha; double hs = 0.0; bool hc = false;
+    while (h.takeAudio(ha, hs, hc)) { starts.push_back(hs); ends.push_back(hs + ha.size() / 48000.0); conts.push_back(hc); }
+    bool resumed = false;
+    for (std::size_t i = 1; i < starts.size(); ++i)
+        resumed = resumed || (!conts[i] && std::fabs(ends[i - 1] - 1.0) < 0.05 && std::fabs(starts[i] - 1.6) < 0.05);
+    if (!resumed) {
+        for (std::size_t i = 0; i < starts.size(); ++i)
+            std::fprintf(stderr, "audio hole: run %zu [%.4f, %.4f)%s\n", i, starts[i], ends[i], conts[i] ? " continues" : "");
+        return failed("audio hole: the audio after the hole must resume at 1.6 s, as a new run");
+    }
+    DecodedFrame hf;
+    while (h.decodeNext(hf)) {}
+    if (!std::isinf(h.audioSettledUpTo())) { return failed("audio hole: at the end of the input all the audio is settled"); }
+
+    // Two MPEG-TS files end to end: stereo 64x48, then mono 80x64. The resampler is rebuilt for the new
+    // format (one built for two channels read a second plane that mono audio does not have: a crash),
+    // and convert() refuses the frames of the new size.
+    const std::string partA = "build/_fmt_a.ts", partB = "build/_fmt_b.ts", joined = "build/_fmt_change.ts";
+    for (int part = 0; part < 2; ++part) {
+        const int w = part ? 80 : 64, hgt = part ? 64 : 48, ch = part ? 1 : 2;
+        VideoEncoder enc;
+        if (!enc.open(part ? partB : partA, w, hgt, 25, 48000, ch, err)) { return failed(("format change: encode: " + err).c_str()); }
+        std::vector<unsigned char> img((std::size_t)w * hgt * 4, 128);
+        std::vector<float> tone((std::size_t)(48000 / 25) * ch, 0.25f);
+        for (int f = 0; f < 25; ++f) {
+            if (!enc.addVideoFrame(img.data(), f / 25.0) || !enc.addAudio(tone.data(), (int)tone.size())) {
+                return failed("format change: encode a frame");
+            }
+        }
+        if (!enc.close(err)) { return failed(("format change: close: " + err).c_str()); }
+    }
+    {
+        std::ofstream out(joined, std::ios::binary);
+        for (const std::string& part : {partA, partB}) { std::ifstream in(part, std::ios::binary); out << in.rdbuf(); }
+    }
+    VideoDecoder x;
+    if (!x.open(joined, err)) { return failed(("format change: open: " + err).c_str()); }
+    DecodedFrame xf;
+    int converted = 0, refused = 0;
+    std::size_t audio = 0;
+    std::vector<float> xa; double xs = 0.0; bool xc = false;
+    while (x.decodeNext(xf)) {
+        ++(x.convert(xf, px.data(), 64 * 4) ? converted : refused);
+        while (x.takeAudio(xa, xs, xc)) audio += xa.size();
+    }
+    while (x.takeAudio(xa, xs, xc)) audio += xa.size();
+    if (converted < 20 || refused < 20 || audio < (std::size_t)(1.6 * 48000)) {
+        std::fprintf(stderr, "format change: %d converted, %d refused, %.2f s of audio\n", converted, refused, audio / 48000.0);
+        return failed("format change: both halves must decode -- the second half's frames refused (another size), its audio resampled");
+    }
+    std::fprintf(stderr, "gl_smoke OK: untimed frames follow the one before; a raw stream decodes and seeks to its start; "
+                 "a late start seeks from its first frame; an audio hole is kept; a format change mid-stream decodes\n");
     return true;
 }
 
@@ -3460,6 +3692,7 @@ static bool (*const kScenarios[])() = {
     scenario_meshopt_compressed_gltf,
     scenario_draco_compressed_gltf,
     scenario_video_decoder_split_decode,
+    scenario_video_decoder_awkward_files,
     scenario_video_player_decode,
     scenario_text_geometry_renderers,
     scenario_recorder_video_encoder,
