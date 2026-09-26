@@ -102,3 +102,54 @@ TEST_CASE("videoFrameStep: an offline playhead stays on the frame grid for an ho
     CHECK(videoFrameStep(0.0f) == 0.0);
 }
 
+// The frames a live stretch keeps, as indices counted back from `end` (0 = end).
+static std::vector<long> keptBack(const VideoStretch& s, double key, double fd) {
+    std::vector<long> k;
+    for (double t = key; t <= s.end + 1e-9; t += fd)
+        if (videoStretchKeeps(s, t, fd)) k.push_back(std::lround((s.end - t) / fd));
+    return k;
+}
+
+TEST_CASE("videoPlanStretch: every frame when the stretch fits the budget") {
+    const double fd = 1.0 / 30.0;
+    VideoStretch s = videoPlanStretch(0.0, 29 * fd, fd, 32, false);   // 30 frames, budget 32
+    CHECK(s.stride == 1);
+    CHECK(keptBack(s, 0.0, fd).size() == 30);
+}
+
+TEST_CASE("videoPlanStretch: every n-th frame otherwise, always keeping the end, within budget") {
+    const double fd = 1.0 / 30.0;
+    VideoStretch s = videoPlanStretch(0.0, 29 * fd, fd, 8, false);    // 30 frames, budget 8
+    CHECK(s.stride == 4);
+    std::vector<long> k = keptBack(s, 0.0, fd);
+    CHECK(k.size() == 8);
+    CHECK(k.front() == 28);                                           // ascending time: earliest first...
+    CHECK(k.back() == 0);                                             // ...and the end frame is kept
+
+    VideoStretch l = videoPlanStretch(0.0, 249 * fd, fd, 8, false);   // a 250-frame keyframe interval
+    CHECK(l.stride == 32);
+    std::vector<long> kl = keptBack(l, 0.0, fd);
+    CHECK(kl.size() <= 8);
+    CHECK(kl.back() == 0);
+    CHECK(249 - kl.front() < l.stride);                               // no gap wider than the stride
+}
+
+TEST_CASE("videoStretchKeeps: an end between frames counts from the frame containing it") {
+    const double fd = 1.0 / 30.0;
+    const double end = 29 * fd - 1e-6;                 // just below a keyframe: the stretch above's start
+    VideoStretch s = videoPlanStretch(0.0, end, fd, 8, false);
+    CHECK(s.stride == 4);                              // 29 frames in [0, end]
+    CHECK(videoStretchKeeps(s, 28 * fd, fd));          // the frame just below the boundary is kept
+    CHECK_FALSE(videoStretchKeeps(s, 27 * fd, fd));
+    CHECK(videoStretchKeeps(s, 24 * fd, fd));
+}
+
+TEST_CASE("videoPlanStretch: offline keeps consecutive frames (a ring of the newest)") {
+    const double fd = 1.0 / 30.0;
+    VideoStretch s = videoPlanStretch(0.0, 249 * fd, fd, 8, true);
+    CHECK(s.contiguous);
+    CHECK(s.stride == 1);
+    CHECK(s.keep == 8);
+    CHECK(keptBack(s, 0.0, fd).size() == 250);                        // all converted; the ring keeps 8
+}
+

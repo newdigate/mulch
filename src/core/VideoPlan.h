@@ -96,4 +96,37 @@ inline int videoSelectFrame(int n, double u, TimeOf timeOf) {
     return best;
 }
 
+// A reverse stretch: the frames from a keyframe up to `end`, decoded forward in one pass. Live keeps
+// every `stride`-th frame counting back from `end`, so `end` is always kept and the stretch stays
+// evenly covered within the `keep` budget. Offline (`contiguous`) keeps the `keep` frames nearest
+// `end`, all of them, so reverse renders are frame-exact.
+struct VideoStretch {
+    double end        = 0.0;
+    int    keep       = 1;
+    int    stride     = 1;
+    bool   contiguous = false;
+};
+
+inline VideoStretch videoPlanStretch(double keyTime, double end, double frameDur, int budget,
+                                     bool offline) {
+    VideoStretch s;
+    s.end        = end;
+    s.keep       = budget < 1 ? 1 : budget;
+    s.contiguous = offline;
+    if (offline || frameDur <= 0.0) return s;
+    long n = (long)std::floor((end - keyTime) / frameDur + kVideoTimeEps) + 1;   // frames in [keyTime, end]
+    if (n < 1) n = 1;
+    s.stride = (int)((n + s.keep - 1) / s.keep);            // ceil(n / keep)
+    return s;
+}
+
+// Whether a live stretch keeps the frame at time t, counting frames back from `end` -- which is a
+// boundary, not necessarily a frame time: k = 0 is the frame whose interval contains `end`.
+// Contiguous stretches convert every frame (their ring then keeps only the newest `keep`).
+inline bool videoStretchKeeps(const VideoStretch& s, double t, double frameDur) {
+    if (s.contiguous || s.stride <= 1 || frameDur <= 0.0) return true;
+    const long k = (long)std::floor((s.end - t) / frameDur + kVideoTimeEps);
+    return k >= 0 && k % s.stride == 0;
+}
+
 } // namespace oss
