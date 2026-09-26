@@ -359,6 +359,7 @@ add_executable(core_tests
   tests/test_bar_sync.cpp
   tests/test_offline_render.cpp
   tests/test_async_loader.cpp
+  tests/test_video_plan.cpp
   src/gfx/ImageLoader.cpp
   tests/test_image_loader.cpp
   tests/test_image_sequence.cpp
