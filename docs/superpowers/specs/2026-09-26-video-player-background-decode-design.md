@@ -179,6 +179,22 @@ one more (31) turned up while writing the tests for them.
     loop toggles, the Matroska-cues check, and an offline-after-live-reverse check; an MPEG-TS jump in
     the acceptance steps.
 
+### Revisions during execution (second code review of Task 3)
+
+34. **An index keyframe counts as between the decoder and the target only when it lies three frames
+    (`kVideoIndexLead`) before the target.** Indexes list B-frame streams' keyframes by decode time --
+    MP4 and FLV from x264 list the keyframe shown at 20.0 at 19.92 -- so a seek decided with the target
+    inside that window landed a whole keyframe interval back, and the seek guard (26) then held off the
+    corrective seek: recovery took 0.39–0.62 s instead of 0.13–0.23 s.
+35. **MPEG-TS and MPEG-PS indexes are ignored** (`nextKeyframeAfter` reports none known): their
+    demuxers add every packet they read while searching for a seek position to the index, flagged as a
+    keyframe. With 10 s keyframes the guard's window could not outrun those phantoms: the acceptance
+    step's own clip took 1.6–2.4 s in 10 runs of 10, each with a seek landing 8 s back. Catching up
+    instead: 0.04–0.25 s, no seeks.
+36. **A wrap forgets what the last seek taught** (`noSeekBelow`): that was about the old lap.
+37. **Tests**: a B-frame index window case; the reverse direction change checked in full; the
+    MPEG-TS probe check in `gl_smoke`; the acceptance step's bound is 0.5 s.
+
 ## Root cause
 
 Reproduced with a headless harness that compiles the real `VideoPlayerNode.cpp` and drives
@@ -347,7 +363,9 @@ functions, unit-tested in `core_tests` (the `StepSync.h` / `BarSync.h` pattern).
   portable path above. The conversion context is created lazily from the first frame's format.
 - `frameDuration()`: taken from `avg_frame_rate`, then `r_frame_rate`, falling back to 1/30 s.
 - `nextKeyframeAfter(t, double& key)`: looked up through `avformat_index_get_entry_from_timestamp` /
-  `avformat_index_get_entry`. Returns false when the stream has no index.
+  `avformat_index_get_entry`. Returns false when the stream has no index; `key` is +inf when none is
+  known after t, which includes MPEG-TS and MPEG-PS, whose indexes list seek probes as keyframes. An
+  entry may be a keyframe's decode time, a frame or two early.
 - `decodeFrame()` keeps its current behaviour, including single-threaded bottom-up output, for the
   15 `gl_smoke` call sites (it is now built on `decodeNext()` + `takeAudio()`).
 - `convert()` passes the caller's buffer to `sws_scale_frame()` wrapped in a reference-counted buffer
@@ -434,6 +452,9 @@ The rules below are checked in order after each snapshot of the request.
    - If a keyframe lies between the head and the target (the next lap's start counts) and the gap is
      more than 1 s: `Seek{target}`. A seek restarts FFmpeg's frame-threading pipeline, which costs more
      than decoding through a shorter gap.
+   - An index keyframe counts only if it lies three frames before the target: B-frame streams'
+     indexes list keyframes by decode time, and a seek for a target just below the one shown would land
+     a whole interval back.
    - If there is no keyframe index and the target is more than 2 s ahead: `Seek{target}`.
    - Not, though, within the lap while an earlier seek ahead has landed at or behind the decoder and
      the target has not moved on by the gap it revealed (`videoNoSeekBelow`): a seek would land there
@@ -678,8 +699,8 @@ Measured on the development machine, in Debug and Release, with the acceptance h
 6. `ctest` passes on all three CI platforms.
 7. A local ThreadSanitizer build of `gl_smoke` reports no data races [zero reports].
 7a. MPEG-TS with 10 s keyframes: after reverse and a 4 s jump ahead, the picture is back in step
-    within 0.3 s with at most one seek [0.05–0.08 s, no seeks; without the seek guard, 3 runs in 5
-    never caught up].
+    within 0.5 s with at most one seek [0.04–0.25 s, no seeks, in 10 runs; trusting the MPEG-TS index
+    took 1.6–2.4 s].
 8. CLAUDE.md's Video Player and `VideoDecoder` notes describe the worker design. They currently
    describe synchronous decoding and the sliding keyframe window.
 

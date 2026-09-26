@@ -215,6 +215,8 @@ constexpr double      kVideoTimeEps       = 1e-6;  // frame-time comparisons: ab
 constexpr double      kVideoCatchUpSlice  = 0.1;   // live: show the best frame reached at least this often (s)
 constexpr double      kVideoRestartLeads  = 3.0;   // reverse: a moving playhead further above what is covered than
                                                    // this many leads (plus a frame) restarts rather than waits
+constexpr double      kVideoIndexLead     = 3.0;   // an index may list a keyframe by its decode time: this many
+                                                   // frames early (a B-frame reorder delay)
 
 // How many RGBA frames of w x h fit the budget, clamped to [kVideoPoolMinFrames, kVideoPoolMaxFrames].
 inline int videoPoolFrames(std::size_t budgetBytes, int w, int h) {
@@ -520,7 +522,7 @@ EOF
 - Modify: `src/core/VideoPlan.h` (append before the closing namespace)
 - Modify: `tests/test_video_plan.cpp` (append)
 
-`videoNextStep()` is the worker's whole decision table. Forward: seek when the target is behind everything held (unless the last seek was *pinned* because the target precedes the file's first frame); when the target is more than 2 frames ahead of the decoder, seek only if a keyframe lies between (the next lap's start counts) **and** the gap is over 1 s (a seek restarts FFmpeg's frame-threading pipeline), else catch up; wrap or wait at the lap's end; fill a free buffer; else wait. With loop off, a decoder left a lap behind the playhead (it fell behind while looping) seeks into the playhead's lap — `lapEnd` is the decoder's lap end whether looping or not. A seek ahead that landed at or behind the decoder (no index, or MPEG-TS's, which lists its seek probes as keyframes) is not repeated within the lap until the target has moved on by the gap it revealed (`videoNoSeekBelow`). Reverse: a fresh stretch when the run is new, the target fell below what is covered, or the playhead is *stranded* above it — stopped (paused or offline: no lead), or more than `kVideoRestartLeads` leads above — aimed `lead` below a moving playhead; prefetch the stretch below once a stretch's budget (`videoStretchBudget`, half the pool) is free; wait at the start of the clip with loop off. First, one line of Task 2's anchor test changes so it admits frames exactly as the worker's prefetch does (strictly below the stretch above) — it passes before and after.
+`videoNextStep()` is the worker's whole decision table. Forward: seek when the target is behind everything held (unless the last seek was *pinned* because the target precedes the file's first frame); when the target is more than 2 frames ahead of the decoder, seek only if a keyframe lies between (the next lap's start counts) **and** the gap is over 1 s (a seek restarts FFmpeg's frame-threading pipeline), else catch up; wrap or wait at the lap's end; fill a free buffer; else wait. With loop off, a decoder left a lap behind the playhead (it fell behind while looping) seeks into the playhead's lap — `lapEnd` is the decoder's lap end whether looping or not. An index keyframe counts as between only when it lies `kVideoIndexLead` frames before the target: indexes list B-frame streams' keyframes by decode time, a frame or two early, and a seek decided inside that window lands a whole keyframe interval back. A seek ahead that landed at or behind the decoder anyway (no index) is not repeated within the lap until the target has moved on by the gap it revealed (`videoNoSeekBelow`). Reverse: a fresh stretch when the run is new, the target fell below what is covered, or the playhead is *stranded* above it — stopped (paused or offline: no lead), or more than `kVideoRestartLeads` leads above — aimed `lead` below a moving playhead; prefetch the stretch below once a stretch's budget (`videoStretchBudget`, half the pool) is free; wait at the start of the clip with loop off. First, one line of Task 2's anchor test changes so it admits frames exactly as the worker's prefetch does (strictly below the stretch above) — it passes before and after.
 
 - [ ] **Step 1: In Task 2's anchor test, admit frames the way the worker's prefetch does: strictly below the stretch above, not up to the anchor**. In `tests/test_video_plan.cpp`, replace:
 
@@ -559,7 +561,7 @@ TEST_CASE("videoStretchBudget: half the pool, at least one frame") {
 TEST_CASE("videoNoSeekBelow: a seek ahead that landed at or behind the decoder is not worth repeating") {
     CHECK(videoNoSeekBelow(6.5, 2.56, 0.0) == 6.5 + 6.5);      // landed a whole gap back: wait that long again
     CHECK(videoNoSeekBelow(6.5, 5.0, 4.8) == 6.5 + kVideoSeekNoIndex);   // a short way back: at least this long
-    CHECK(videoNoSeekBelow(6.5, 2.56, 2.56) == 6.5 + 6.5 - 2.56);        // exactly at the head counts
+    CHECK(videoNoSeekBelow(6.5, 2.56, 2.56) == 6.5 + (6.5 - 2.56));      // exactly at the head counts
     CHECK(videoNoSeekBelow(6.5, 2.56, 6.0) == -kInf);          // it got ahead: seeking works here
     CHECK(videoNoSeekBelow(1.0, 2.56, 0.0) == -kInf);          // a seek back is meant to land behind
     CHECK(videoNoSeekBelow(6.5, 2.56, kInf) == -kInf);         // it found no frame at all
@@ -585,6 +587,15 @@ TEST_CASE("videoNextStep forward: far behind -> catch up, or seek when a keyfram
     CHECK(videoNextStep(in).kind == VideoStepKind::CatchUp);
     in.head = 2.95;                                    // within kVideoCatchUpFrames: just fill
     CHECK(videoNextStep(in).kind == VideoStepKind::Fill);
+}
+
+TEST_CASE("videoNextStep forward: an index keyframe just below the target may be a frame or two later") {
+    VideoPlanInput in = fwd(19.95);                    // x264's B-frames: the keyframe shown at 20.0 is
+    in.duration = 30.0; in.lapEnd = 30.0;              // listed at its decode time, 19.92
+    in.head = 12.04; in.lowest = 12.0; in.nextKey = 19.92;
+    CHECK(videoNextStep(in).kind == VideoStepKind::CatchUp);   // a seek for 19.95 would land at 10
+    in.target = 20.1;                                  // well past it: the keyframe is surely between
+    CHECK(videoNextStep(in).kind == VideoStepKind::Seek);
 }
 
 TEST_CASE("videoNextStep forward: the seek thresholds are strict") {
@@ -725,7 +736,10 @@ TEST_CASE("videoNextStep reverse: a new run starts a fresh stretch at the target
     CHECK(s.fresh);
     CHECK(s.to == 5.0);
     in = rev(5.0); in.dirChanged = true;
-    CHECK(videoNextStep(in).fresh);
+    s = videoNextStep(in);
+    CHECK(s.kind == VideoStepKind::Reverse);
+    CHECK(s.fresh);
+    CHECK(s.to == 5.0);
 }
 
 TEST_CASE("videoNextStep reverse: falling below the covered stretch jumps with a fresh stretch") {
@@ -856,8 +870,9 @@ struct VideoPlanInput {
     double head        = 0.0;      // time of the next frame the decoder will produce
     bool   eof         = false;    // the decoder has produced the last frame of this lap
     bool   keyKnown    = false;    // the stream has a keyframe index...
-    double nextKey     = 0.0;      // ...and this is the first keyframe in it after `head` (+inf: none -- an
-                                   // index built as the file is read, FLV's or NUT's, may not have got there)
+    double nextKey     = 0.0;      // ...and this is the first keyframe in it after `head`, maybe listed by its
+                                   // decode time (kVideoIndexLead); +inf: none known (an index built as the
+                                   // file is read, NUT's, may not have got there)
     double lapEnd      = std::numeric_limits<double>::infinity();   // where the decoder's lap ends, loop or
                                    // not (+inf: unknown duration) -- the next lap starts with a keyframe
     double lowest      = 0.0;      // earliest frame held (on screen or queued); `head` if none
@@ -879,7 +894,8 @@ struct VideoPlanInput {
 //  seek was pinned there), or -- loop off -- when the decoder is in an earlier lap than the playhead (it
 //  fell behind while looping): nothing it decodes there can be shown. When the target is ahead of the
 //  decoder by more than kVideoCatchUpFrames, seek if a keyframe lies between (the next lap's start
-//  counts) and the jump is longer than kVideoSeekMinJump -- a seek restarts the decoder's
+//  counts; an index keyframe must be kVideoIndexLead frames before the target, since it may be listed by
+//  its decode time) and the jump is longer than kVideoSeekMinJump -- a seek restarts the decoder's
 //  frame-threading pipeline, which costs more than decoding through a short gap -- or, with no index, if
 //  it is more than kVideoSeekNoIndex away; but within the lap not while noSeekBelow says a seek would
 //  land behind the decoder again (no index, or a wrong one); otherwise catch up by decoding without
@@ -913,11 +929,12 @@ inline VideoStep videoNextStep(const VideoPlanInput& in) {
     if (!loops && in.lapEnd <= in.lapLo + eps)                             // the decoder is a lap behind
         return VideoStep{VideoStepKind::Seek, in.target};
     if (!in.eof && in.target > in.head + kVideoCatchUpFrames * in.frameDur) {
-        const bool   known  = in.keyKnown || in.target >= in.lapEnd;
-        const double key    = std::min(in.keyKnown ? in.nextKey : std::numeric_limits<double>::infinity(), in.lapEnd);
-        const double gap    = in.target - in.head;
-        const bool   jump   = known ? (key <= in.target && gap > kVideoSeekMinJump) : gap > kVideoSeekNoIndex;
-        const bool   futile = in.target < in.lapEnd && in.target < in.noSeekBelow;
+        const bool   known   = in.keyKnown || in.target >= in.lapEnd;
+        const double key     = std::min(in.keyKnown ? in.nextKey : std::numeric_limits<double>::infinity(), in.lapEnd);
+        const double gap     = in.target - in.head;
+        const bool   between = key <= in.target - kVideoIndexLead * in.frameDur;
+        const bool   jump    = known ? (between && gap > kVideoSeekMinJump) : gap > kVideoSeekNoIndex;
+        const bool   futile  = in.target < in.lapEnd && in.target < in.noSeekBelow;
         return VideoStep{jump && !futile ? VideoStepKind::Seek : VideoStepKind::CatchUp, in.target};
     }
     if (in.eof) return loops ? VideoStep{VideoStepKind::Wrap} : VideoStep{};
@@ -928,7 +945,7 @@ inline VideoStep videoNextStep(const VideoPlanInput& in) {
 
 ```
 
-- [ ] **Step 5: Build and run the tests (38 test cases)**
+- [ ] **Step 5: Build and run the tests (39 test cases)**
 
 ```bash
 cmake --build build --target core_tests -j8 && ./build/core_tests -tc='video*'
@@ -1211,7 +1228,7 @@ EOF
 - Modify (full rewrite): `src/gfx/VideoDecoder.h`, `src/gfx/VideoDecoder.cpp`
 - Modify: `tests/gl_smoke.cpp`
 
-The worker must decode a frame, look at its time, and only then decide to convert it; convert with threads; and keep audio ahead of the video however few frames it buffers. So: `decodeNext()` returns a `DecodedFrame` (a counted reference, nothing copied); `convert()` writes TOP-DOWN RGBA with threaded swscale (the portable FFmpeg ≥ 5 path rejects a negative-stride destination, and FFmpeg 5–7 allocate a new buffer for a destination frame with none — so the caller's buffer is wrapped in a no-op-free `AVBufferRef`); video packets are queued (≤ 64 MB) so `pumpAudio()` can read audio ahead; `thread_count = 0`; an interrupt callback lets a stop abort blocking I/O. The legacy `decodeFrame()` keeps its exact behaviour (bottom-up, single-threaded conversion) — the 15 `gl_smoke` uses rely on it. Every time in and out counts from the first video frame, which `open()` decodes (and the first `decodeNext()` hands out): a container that starts its clock late (MPEG-TS) or shows a B-frame delay with no edit list (FLV, fragmented MP4) would otherwise put the first frame after the playhead's 0 — an offline render could never have its first frame. `seek(t <= 0)` goes to the very start of the file, since a timestamp search (MPEG-TS) can overshoot the first frame's time by a keyframe interval; audio from before the first frame is dropped. `open()` seeks to the start before decoding that first frame, because some demuxers read their keyframe index only when first asked to seek (Matroska and WebM cues) — without it the worker could not seek ahead in the first lap.
+The worker must decode a frame, look at its time, and only then decide to convert it; convert with threads; and keep audio ahead of the video however few frames it buffers. So: `decodeNext()` returns a `DecodedFrame` (a counted reference, nothing copied); `convert()` writes TOP-DOWN RGBA with threaded swscale (the portable FFmpeg ≥ 5 path rejects a negative-stride destination, and FFmpeg 5–7 allocate a new buffer for a destination frame with none — so the caller's buffer is wrapped in a no-op-free `AVBufferRef`); video packets are queued (≤ 64 MB) so `pumpAudio()` can read audio ahead; `thread_count = 0`; an interrupt callback lets a stop abort blocking I/O. The legacy `decodeFrame()` keeps its exact behaviour (bottom-up, single-threaded conversion) — the 15 `gl_smoke` uses rely on it. Every time in and out counts from the first video frame, which `open()` decodes (and the first `decodeNext()` hands out): a container that starts its clock late (MPEG-TS) or shows a B-frame delay with no edit list (FLV, fragmented MP4) would otherwise put the first frame after the playhead's 0 — an offline render could never have its first frame. `seek(t <= 0)` goes to the very start of the file, since a timestamp search (MPEG-TS) can overshoot the first frame's time by a keyframe interval; audio from before the first frame is dropped. `open()` seeks to the start before decoding that first frame, because some demuxers read their keyframe index only when first asked to seek (Matroska and WebM cues) — without it the worker could not seek ahead in the first lap. MPEG-TS and MPEG-PS indexes are ignored (`nextKeyframeAfter` reports none known): their demuxers list every packet they probe while seeking as a keyframe.
 
 - [ ] **Step 1: Add `#include <cstring>` to `tests/gl_smoke.cpp`, after `#include <cstdlib>`**. In `tests/gl_smoke.cpp`, replace:
 
@@ -1327,8 +1344,32 @@ static bool scenario_video_decoder_split_decode() {
             std::fprintf(stderr, "cues: the keyframe after 7 s reads %g\n", cueKey);
             return failed("cues: a Matroska file's keyframe index must be read at open (there are keyframes after 7 s)");
         }
+
+        // An MPEG-TS demuxer lists every packet it reads while searching for a seek position as a keyframe:
+        // the decoder must not pass those on -- the worker would seek towards keyframes that are not there.
+        const std::string probes = "build/_probes.ts";
+        {
+            VideoEncoder enc;
+            if (!enc.open(probes, 64, 48, 25, 0, 0, err)) { return failed(("probes: encode: " + err).c_str()); }
+            std::vector<unsigned char> px((std::size_t)64 * 48 * 4);
+            for (int f = 0; f < 300; ++f) {
+                std::fill(px.begin(), px.end(), (unsigned char)(f % 256));
+                if (!enc.addVideoFrame(px.data(), f / 25.0)) { return failed("probes: encode a frame"); }
+            }
+            if (!enc.close(err)) { return failed(("probes: close: " + err).c_str()); }
+        }
+        VideoDecoder p;
+        DecodedFrame pf;
+        double probeKey = 0.0;
+        if (!p.open(probes, err)) { return failed(("probes: open: " + err).c_str()); }
+        p.seek(5.5);                                        // the search reads packets around 5.5 s
+        if (!p.decodeNext(pf) || !p.nextKeyframeAfter(0.1, probeKey) || std::isfinite(probeKey)) {
+            std::fprintf(stderr, "probes: after a seek, the keyframe after 0.1 s reads %g\n", probeKey);
+            return failed("probes: an MPEG-TS index lists seek probes, not keyframes: it must read as none known");
+        }
         std::fprintf(stderr, "gl_smoke OK: decodeNext+convert == decodeFrame flipped; keyframe lookup; %.2f s of audio read ahead; "
-                     "a late-starting file counts from its first frame; Matroska cues are read at open\n", s.size() / 48000.0);
+                     "a late-starting file counts from its first frame; Matroska cues are read at open; "
+                     "MPEG-TS seek probes are not keyframes\n", s.size() / 48000.0);
     }
     return true;
 }
@@ -1452,8 +1493,10 @@ public:
     // Nominal seconds per frame, from the stream's average (else real) frame rate; 1/30 if unknown.
     double frameDuration() const;
 
-    // The first keyframe after time `t`, from the container's index. `key` is +inf when the
-    // index holds none after `t`. False when the stream has no index (yet).
+    // The first keyframe after time `t`, from the container's index -- possibly listed by its decode
+    // time, a frame or two early. `key` is +inf when none is known after `t`: the index holds none, or it
+    // is no guide (MPEG-TS and MPEG-PS list every packet they probe while seeking). False when the stream
+    // has no index (yet).
     bool nextKeyframeAfter(double t, double& key) const;
 
     // Seek so the next decodeNext() resumes at the keyframe at or before time
@@ -1523,6 +1566,7 @@ private:
     double duration_   = 0.0;
     int    audioChannels_ = 0;  // source audio channel count (0 if no audio)
     double vTimeBase_  = 0.0;   // seconds per video stream tick
+    bool   indexUsable_ = true; // false: the container's index lists more than keyframes (MPEG-TS/-PS)
     double startT_     = 0.0;   // the container's time of the first video frame: subtracted from
                                 // every time handed out, added to every time taken in
     DecodedFrame first_;        // decoded by open() to find startT_; the first decodeNext() returns it
@@ -1548,6 +1592,7 @@ private:
 #include "gfx/VideoDecoder.h"
 #include <algorithm>
 #include <cmath>
+#include <cstring>
 
 extern "C" {
 #include <libavformat/avformat.h>
@@ -1691,6 +1736,10 @@ bool VideoDecoder::open(const std::string& path, std::string& err, const std::at
     }
 
     duration_ = (fmt_->duration > 0) ? (double)fmt_->duration / AV_TIME_BASE : 0.0;
+    // MPEG-TS and MPEG-PS demuxers add every packet they read while searching for a seek position to the
+    // index, flagged as a keyframe: those entries say nothing about where keyframes are.
+    const char* format = fmt_->iformat && fmt_->iformat->name ? fmt_->iformat->name : "";
+    indexUsable_ = std::strncmp(format, "mpegts", 6) != 0 && std::strcmp(format, "mpeg") != 0;
 
     frame_    = av_frame_alloc();
     dstFrame_ = av_frame_alloc();
@@ -1727,6 +1776,7 @@ double VideoDecoder::frameDuration() const {
 
 bool VideoDecoder::nextKeyframeAfter(double t, double& key) const {
     if (!fmt_ || vstream_ < 0 || vTimeBase_ <= 0.0) return false;
+    if (!indexUsable_) { key = kInf; return true; }
     AVStream* vs = fmt_->streams[vstream_];
     if (avformat_index_get_entries_count(vs) <= 0) return false;
     const int64_t ts = (int64_t)std::floor((t + startT_) / vTimeBase_) + 1;   // strictly after t
@@ -2114,7 +2164,7 @@ EOF
 - Modify: `CMakeLists.txt` (`APP_SOURCES` and the `gl_smoke` sources)
 - Modify: `tests/gl_smoke.cpp`
 
-One worker thread per file. It opens the file, sizes a pool of RGBA buffers from the 512 MB budget, then loops: snapshot the request, recycle frames that can never be shown, read audio ahead, ask `videoNextStep()` what to do, and do it — never holding the mutex while decoding or converting. The graph thread only calls `request()`, `frameAt()` (the frame it returns is *checked out* until the next call), `readAudio()`, and offline `frameReadyFor()` / `waitForFrame()`. Details that the prototype showed matter: live catch-up is sliced to 100 ms so a decoder slower than the playhead still moves the picture; a seek keeps the newest frame at or before its target; a seek lands where its decode loop admits frames, retrying further back (1 s, 2 s, 4 s… to the file's start) when it lands late — a decode-time index lands a seek just below a keyframe ON it, a timestamp search (MPEG-TS) overshoots a keyframe interval, and some demuxers find nothing near the end — and is *pinned* only if even the start lands late; reverse stretches are published whole (they decode forwards); offline, a stretch whose ring evicted its lower frames covers only down to its oldest; a frame at or past the duration ends the lap. With loop off, frames past the playhead's lap are kept (they are the next ones if loop comes back on) and what reverse covered below the lap is dropped with its frames; runs end at the lap's end whether looping or not. An offline render that starts in reverse restarts the run — live stretches kept every stride-th frame — and until an offline stretch lands, reverse readiness says no. The new scenarios write the awkward files themselves — a long first keyframe interval, an FLV with B-frames, a one-keyframe clip for loop toggles — and count reverse stretches (`reverseStretches()`; `seeks()` is its forward twin) to prove live reverse cannot spin.
+One worker thread per file. It opens the file, sizes a pool of RGBA buffers from the 512 MB budget, then loops: snapshot the request, recycle frames that can never be shown, read audio ahead, ask `videoNextStep()` what to do, and do it — never holding the mutex while decoding or converting. The graph thread only calls `request()`, `frameAt()` (the frame it returns is *checked out* until the next call), `readAudio()`, and offline `frameReadyFor()` / `waitForFrame()`. Details that the prototype showed matter: live catch-up is sliced to 100 ms so a decoder slower than the playhead still moves the picture; a seek keeps the newest frame at or before its target; a seek lands where its decode loop admits frames, retrying further back (1 s, 2 s, 4 s… to the file's start) when it lands late — a decode-time index lands a seek just below a keyframe ON it, a timestamp search (MPEG-TS) overshoots a keyframe interval, and some demuxers find nothing near the end — and is *pinned* only if even the start lands late; reverse stretches are published whole (they decode forwards); offline, a stretch whose ring evicted its lower frames covers only down to its oldest; a frame at or past the duration ends the lap. With loop off, frames past the playhead's lap are kept (they are the next ones if loop comes back on) and what reverse covered below the lap is dropped with its frames; runs end at the lap's end whether looping or not; a wrap forgets what the last seek taught about keyframes (`noSeekBelow`), which was about the old lap. An offline render that starts in reverse restarts the run — live stretches kept every stride-th frame — and until an offline stretch lands, reverse readiness says no. The new scenarios write the awkward files themselves — a long first keyframe interval, an FLV with B-frames, a one-keyframe clip for loop toggles — and count reverse stretches (`reverseStretches()`; `seeks()` is its forward twin) to prove live reverse cannot spin.
 
 - [ ] **Step 1: Add `#include "gfx/VideoStream.h"` to `tests/gl_smoke.cpp`, after `#include "gfx/VideoDecoder.h"`**. In `tests/gl_smoke.cpp`, replace:
 
@@ -3041,6 +3091,7 @@ void VideoStream::fill() {
 
 void VideoStream::wrap() {
     lapOffset_ += winfo_.duration;
+    noSeekBelow_ = -kInf;                          // what a seek taught about keyframes was in the old lap
     dec_.seek(0.0);
     next_.reset();
     eof_ = false;
@@ -4074,7 +4125,8 @@ with:
   (bottom-up RGBA + audio appended) is built on those and unchanged for `gl_smoke`. Every time
   in and out counts from the first video frame (decoded at `open()`), so a container that starts
   its clock late (MPEG-TS) or shows a B-frame delay (FLV, fragmented MP4) still plays from 0;
-  `open()` also seeks to the start first, so indexes read only on a seek (Matroska cues) are there.
+  `open()` also seeks to the start first, so indexes read only on a seek (Matroska cues) are there,
+  and MPEG-TS/-PS indexes are ignored: their demuxers list every packet a seek probes as a keyframe.
 - **The Video Player decodes on a worker** (`src/gfx/VideoStream.{h,cpp}`, one per node,
   GL-free): it opens the file, keeps a fixed pool of RGBA frames (512 MB budget:
   `core/VideoPlan.h` `videoPoolFrames`) decoded ahead of the requested playhead, and reads
@@ -4336,7 +4388,7 @@ c++ -O2 -std=gnu++17 -I$R/src $(pkg-config --cflags libavformat) vp_tsjump.cpp $
 for i in 1 2 3 4 5; do ./vp_tsjump long1080.ts; done
 ```
 
-Expected on every line: the picture back within 0.2 s after < 0.3 s, with at most 1 seek (prototype: 0.05–0.08 s, 0 seeks; without the seek guard 3 runs in 5 never caught up).
+Expected on every line: the picture back within 0.2 s after < 0.5 s, with at most 1 seek (prototype, 10 runs: 0.04–0.25 s, no seeks; trusting the MPEG-TS index instead took 1.6–2.4 s with a seek landing 8 s back).
 
 - [ ] **Step 8: ThreadSanitizer** — a separate build directory:
 
