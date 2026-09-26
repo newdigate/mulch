@@ -46,6 +46,7 @@
 
 ```cpp
 #include <doctest/doctest.h>
+#include <cmath>
 #include <limits>
 #include <vector>
 #include "core/OfflineRender.h"
@@ -306,11 +307,11 @@ Reverse playback decodes *stretches*: from a keyframe forward to the frame neede
 - [ ] **Step 1: Append the failing tests** — add to the end of `tests/test_video_plan.cpp`:
 
 ```cpp
-// The frames a live stretch keeps, as indices counted back from `end` (0 = end).
+// The frames a live stretch keeps on an exact grid, as counts back from its top frame (0 = the top).
 static std::vector<long> keptBack(const VideoStretch& s, double key, double fd) {
     std::vector<long> k;
     for (double t = key; t <= s.end + 1e-9; t += fd)
-        if (videoStretchKeeps(s, t, fd)) k.push_back(std::lround((s.end - t) / fd));
+        if (videoStretchKeeps(s, t, fd)) k.push_back(std::lround((s.top - t) / fd));
     return k;
 }
 
@@ -321,21 +322,21 @@ TEST_CASE("videoPlanStretch: every frame when the stretch fits the budget") {
     CHECK(keptBack(s, 0.0, fd).size() == 30);
 }
 
-TEST_CASE("videoPlanStretch: every n-th frame otherwise, always keeping the end, within budget") {
+TEST_CASE("videoPlanStretch: every n-th frame otherwise, always keeping the top, within budget") {
     const double fd = 1.0 / 30.0;
     VideoStretch s = videoPlanStretch(0.0, 29 * fd, fd, 8, false);    // 30 frames, budget 8
     CHECK(s.stride == 4);
     std::vector<long> k = keptBack(s, 0.0, fd);
     CHECK(k.size() == 8);
     CHECK(k.front() == 28);                                           // ascending time: earliest first...
-    CHECK(k.back() == 0);                                             // ...and the end frame is kept
+    CHECK(k.back() == 0);                                             // ...and the top frame is kept
 
     VideoStretch l = videoPlanStretch(0.0, 249 * fd, fd, 8, false);   // a 250-frame keyframe interval
     CHECK(l.stride == 32);
     std::vector<long> kl = keptBack(l, 0.0, fd);
     CHECK(kl.size() <= 8);
     CHECK(kl.back() == 0);
-    CHECK(249 - kl.front() < l.stride);                               // no gap wider than the stride
+    for (std::size_t j = 1; j < kl.size(); ++j) CHECK(kl[j - 1] - kl[j] == l.stride);   // evenly spaced
 }
 
 TEST_CASE("videoStretchKeeps: an end between frames counts from the frame containing it") {
@@ -346,6 +347,66 @@ TEST_CASE("videoStretchKeeps: an end between frames counts from the frame contai
     CHECK(videoStretchKeeps(s, 28 * fd, fd));          // the frame just below the boundary is kept
     CHECK_FALSE(videoStretchKeeps(s, 27 * fd, fd));
     CHECK(videoStretchKeeps(s, 24 * fd, fd));
+    CHECK_FALSE(videoStretchKeeps(s, 29 * fd, fd));    // the stretch above's keyframe is not
+}
+
+TEST_CASE("videoStretchKeeps: stride 1 still rejects a frame past the end") {
+    const double fd = 1.0 / 30.0;
+    const VideoStretch s = videoPlanStretch(0.0, 29 * fd - kVideoTimeEps, fd, 32, false);
+    CHECK(s.stride == 1);
+    CHECK(videoStretchKeeps(s, 28 * fd, fd));
+    CHECK_FALSE(videoStretchKeeps(s, 29 * fd, fd));
+}
+
+// A 60 fps MKV/WebM stores whole milliseconds, so frames sit up to half a millisecond off the grid.
+static double msFrameTime(long i) { return (double)std::lround((double)i * 1000.0 / 60.0) / 1000.0; }
+
+TEST_CASE("videoStretchKeeps: millisecond-rounded timestamps keep every stride-th frame, even 1 us below a keyframe") {
+    // Counting back from a boundary by flooring made counts repeat and skip: at stride 15 it kept nothing.
+    const double fd = 1.0 / 60.0;
+    for (long keyAbove = 120; keyAbove <= 4800; keyAbove += 120) {  // 2 s keyframe intervals
+        const double end = msFrameTime(keyAbove) - kVideoTimeEps;
+        const VideoStretch s = videoPlanStretch(msFrameTime(keyAbove - 120), end, fd, 8, false);
+        REQUIRE(s.stride == 15);
+        std::vector<long> kept;
+        for (long i = keyAbove - 120; msFrameTime(i) <= end + kVideoTimeEps; ++i)
+            if (videoStretchKeeps(s, msFrameTime(i), fd)) kept.push_back(i);
+        CHECK(!kept.empty());
+        CHECK((int)kept.size() <= s.keep);
+        CHECK_FALSE(videoStretchKeeps(s, msFrameTime(keyAbove), fd));   // the stretch above's keyframe
+        for (std::size_t j = 1; j < kept.size(); ++j) CHECK(kept[j] - kept[j - 1] == s.stride);
+    }
+}
+
+TEST_CASE("videoStretchKeeps: from the worker's half-frame anchor the top kept frame is just below the stretch above") {
+    const double fd = 1.0 / 60.0;
+    auto tOf = msFrameTime;
+    for (long gop : {100L, 120L}) {                                   // keyframes off and on whole ms
+        for (long keyAbove = gop; keyAbove <= 40 * gop; keyAbove += gop) {
+            const double end = tOf(keyAbove) - fd / 2;               // the worker's live prefetch anchor
+            const VideoStretch s = videoPlanStretch(tOf(keyAbove - gop), end, fd, 8, false);   // 4K budget
+            std::vector<long> kept;
+            for (long i = keyAbove - gop; tOf(i) <= end + kVideoTimeEps; ++i)
+                if (videoStretchKeeps(s, tOf(i), fd)) kept.push_back(i);
+            REQUIRE(!kept.empty());
+            CHECK((int)kept.size() <= s.keep);
+            CHECK(kept.back() == keyAbove - 1);                       // the frame just below the stretch above
+            for (std::size_t j = 1; j < kept.size(); ++j) CHECK(kept[j] - kept[j - 1] == s.stride);
+        }
+    }
+}
+
+TEST_CASE("videoPlanStretch: degenerate inputs stay defined") {
+    VideoStretch s = videoPlanStretch(0.0, 1.0, 1.0 / 30.0, 0, false);    // no budget: keep one
+    CHECK(s.keep == 1);
+    s = videoPlanStretch(0.0, 1.0, 0.0, 8, false);                      // no frame rate: keep them all
+    CHECK(s.stride == 1);
+    CHECK(videoStretchKeeps(s, 0.5, 0.0));
+    s = videoPlanStretch(0.0, 1.0, std::nan(""), 8, false);
+    CHECK(s.stride == 1);
+    s = videoPlanStretch(2.0, 1.0, 1.0 / 30.0, 8, false);               // end before the key: one frame
+    CHECK(s.stride == 1);
+    CHECK(s.top == doctest::Approx(2.0));
 }
 
 TEST_CASE("videoPlanStretch: offline keeps consecutive frames (a ring of the newest)") {
@@ -371,11 +432,12 @@ Expected: the build FAILS, with an error mentioning `videoPlanStretch`.
 
 ```cpp
 // A reverse stretch: the frames from a keyframe up to `end`, decoded forward in one pass. Live keeps
-// every `stride`-th frame counting back from `end`, so `end` is always kept and the stretch stays
-// evenly covered within the `keep` budget. Offline (`contiguous`) keeps the `keep` frames nearest
-// `end`, all of them, so reverse renders are frame-exact.
+// every `stride`-th frame counting back from `top` -- the nominal time of the frame containing `end`,
+// on the keyframe's grid -- so the stretch stays evenly covered within the `keep` budget. Offline
+// (`contiguous`) keeps the `keep` frames nearest `end`, all of them, so reverse renders are exact.
 struct VideoStretch {
     double end        = 0.0;
+    double top        = 0.0;   // live: nominal time of the frame containing `end`, on the keyframe's grid
     int    keep       = 1;
     int    stride     = 1;
     bool   contiguous = false;
@@ -385,27 +447,35 @@ inline VideoStretch videoPlanStretch(double keyTime, double end, double frameDur
                                      bool offline) {
     VideoStretch s;
     s.end        = end;
+    s.top        = end;
     s.keep       = budget < 1 ? 1 : budget;
     s.contiguous = offline;
-    if (offline || frameDur <= 0.0) return s;
-    long n = (long)std::floor((end - keyTime) / frameDur + kVideoTimeEps) + 1;   // frames in [keyTime, end]
-    if (n < 1) n = 1;
-    s.stride = (int)((n + s.keep - 1) / s.keep);            // ceil(n / keep)
+    if (offline || !(frameDur > 0.0)) return s;
+    double last = std::floor((end - keyTime) / frameDur + kVideoTimeEps);   // the frame containing `end`
+    if (!(last >= 0.0)) last = 0.0;                                         // end before the key, or NaN
+    if (last > 1e9) last = 1e9;                                             // keep the casts defined
+    const long long n = (long long)last + 1;                                // frames in [keyTime, end]
+    s.top    = keyTime + (double)(n - 1) * frameDur;
+    s.stride = (int)((n + s.keep - 1) / s.keep);                            // ceil(n / keep)
     return s;
 }
 
-// Whether a live stretch keeps the frame at time t, counting frames back from `end` -- which is a
-// boundary, not necessarily a frame time: k = 0 is the frame whose interval contains `end`.
-// Contiguous stretches convert every frame (their ring then keeps only the newest `keep`).
+// Whether a live stretch keeps the frame at time t: every stride-th, counting back from the top frame.
+// The count ROUNDS onto the keyframe's grid: container time bases (MKV/WebM milliseconds, QuickTime
+// 1/600) put frames up to half a frame off it, and flooring made two frames share a count and skip
+// others, so a stride could keep nothing. A frame half a frame or more past the top is never kept.
+// Contiguous stretches convert every frame (their ring keeps only the newest `keep`).
 inline bool videoStretchKeeps(const VideoStretch& s, double t, double frameDur) {
-    if (s.contiguous || s.stride <= 1 || frameDur <= 0.0) return true;
-    const long k = (long)std::floor((s.end - t) / frameDur + kVideoTimeEps);
-    return k >= 0 && k % s.stride == 0;
+    if (s.contiguous || !(frameDur > 0.0)) return true;
+    const double x = (s.top - t) / frameDur;
+    if (!(x > -0.5) || x > 1e9) return false;                               // past the top, NaN, absurd
+    const long long k = std::llround(x);
+    return s.stride <= 1 || k % s.stride == 0;
 }
 
 ```
 
-- [ ] **Step 4: Build and run the tests (12 test cases)**
+- [ ] **Step 4: Build and run the tests (16 test cases)**
 
 ```bash
 cmake --build build --target core_tests -j8 && ./build/core_tests -tc='video*'
@@ -537,7 +607,7 @@ static VideoPlanInput rev(double target) {
     VideoPlanInput in;
     in.target = target; in.dir = -1; in.loop = true; in.duration = 10.0; in.frameDur = 0.04;
     in.freeBuffers = 8; in.poolSize = 16;
-    in.coverValid = true; in.coverLo = target - 1.0; in.coverHi = target + 0.5;
+    in.coverValid = true; in.coverLo = target - 1.0;
     return in;
 }
 
@@ -560,13 +630,34 @@ TEST_CASE("videoNextStep reverse: falling below the covered stretch jumps with a
     CHECK(s.fresh);
 }
 
+TEST_CASE("videoNextStep reverse: a fresh stretch aims where the playhead will be when it is decoded") {
+    VideoPlanInput in = rev(5.0);
+    in.coverLo = 5.5;                                  // fell below: the last stretch took 0.6 s at rate -1
+    in.lead = 0.6;
+    VideoStep s = videoNextStep(in);
+    CHECK(s.fresh);
+    CHECK(s.to == doctest::Approx(4.4));
+    in.target = 0.2; in.coverLo = 0.5;                 // with loop off it never aims before the clip starts
+    in.loop = false; in.lapLo = 0.0;
+    CHECK(videoNextStep(in).to == doctest::Approx(0.0));
+    in.loop = true;                                    // looping, it may aim into the lap before
+    CHECK(videoNextStep(in).to == doctest::Approx(-0.4));
+}
+
+TEST_CASE("videoNextStep reverse: a playhead still above the covered stretch is not restarted") {
+    VideoPlanInput in = rev(5.0);
+    in.coverLo = 4.0;                                  // a led stretch landed early: [.., 4.6] is covered
+    in.target = 4.9;                                   // and the playhead is on its way down into it
+    VideoStep s = videoNextStep(in);
+    CHECK_FALSE(s.fresh);
+}
+
 TEST_CASE("videoNextStep reverse: prefetch the stretch below once half the pool is free") {
     VideoPlanInput in = rev(5.0);
     VideoStep s = videoNextStep(in);
     CHECK(s.kind == VideoStepKind::Reverse);
     CHECK_FALSE(s.fresh);
-    CHECK(s.to < in.coverLo);
-    CHECK(s.to == doctest::Approx(in.coverLo));
+    CHECK(s.to == doctest::Approx(in.coverLo));        // the stretch just below what is covered
     in.freeBuffers = 7;
     CHECK(videoNextStep(in).kind == VideoStepKind::Wait);
 }
@@ -579,7 +670,8 @@ TEST_CASE("videoNextStep reverse: the start of the clip waits with loop off, con
     in.loop = true;                                    // looping: the previous lap's end comes next
     VideoStep s = videoNextStep(in);
     CHECK(s.kind == VideoStepKind::Reverse);
-    CHECK(s.to < 0.0);
+    CHECK_FALSE(s.fresh);
+    CHECK(s.to == doctest::Approx(0.0));               // just below the lap start: the lap before
 }
 ```
 
@@ -598,7 +690,9 @@ enum class VideoStepKind { Wait, Fill, CatchUp, Seek, Wrap, Reverse };
 
 struct VideoStep {
     VideoStepKind kind  = VideoStepKind::Wait;
-    double        to    = 0.0;     // CatchUp / Seek: the target. Reverse: the stretch's end.
+    double        to    = 0.0;     // CatchUp / Seek: the target. Reverse, fresh: the stretch's end
+                                   // (inclusive). Reverse, not fresh: the start of the stretch above --
+                                   // the new stretch lies just below it.
     bool          fresh = false;   // Reverse: start a new run (flush) rather than the next stretch down
 };
 
@@ -623,9 +717,9 @@ struct VideoPlanInput {
     double pinnedFrom  = 0.0;      // ...so do not seek again for targets at or after this
     int    freeBuffers = 0;
     int    poolSize    = 0;
-    bool   coverValid  = false;    // reverse: this run's stretches cover [coverLo, coverHi]
+    bool   coverValid  = false;    // reverse: this run's stretches reach down to coverLo
     double coverLo     = 0.0;
-    double coverHi     = 0.0;
+    double lead        = 0.0;      // reverse, live: how far the playhead moves while a stretch decodes (s)
 };
 
 // The worker's next step.
@@ -637,18 +731,23 @@ struct VideoPlanInput {
 //  wrap (loop) or wait; with loop off and the decoder at or past the end of the playhead's lap (it had
 //  decoded ahead, or just wrapped, while looping), wait -- those frames can never be shown; otherwise
 //  fill a free buffer, or wait.
-//  Reverse: start a fresh stretch at the target when the run is new or the target left its coverage;
-//  otherwise prefetch the stretch below once half the pool is free; wait at the start of the clip
-//  when loop is off.
+//  Reverse: start a fresh stretch when the run is new or the playhead fell below what is covered,
+//  aimed `lead` below the playhead (where it will be once the stretch is decoded, so a slow stretch
+//  does not land behind it and restart forever); a playhead still above the covered stretch is on its
+//  way down into it. Otherwise prefetch the stretch below once half the pool is free; wait at the start
+//  of the clip when loop is off.
 inline VideoStep videoNextStep(const VideoPlanInput& in) {
     const double eps = kVideoTimeEps;
     if (in.dir < 0) {
-        if (in.dirChanged || !in.coverValid || in.target > in.coverHi + eps || in.target < in.coverLo - eps)
-            return VideoStep{VideoStepKind::Reverse, in.target, true};
         const bool loops = in.loop && in.duration > 0.0;
+        if (in.dirChanged || !in.coverValid || in.target < in.coverLo - eps) {
+            double aim = in.target - std::max(0.0, in.lead);
+            if (!loops && aim < in.lapLo) aim = std::min(in.target, in.lapLo);
+            return VideoStep{VideoStepKind::Reverse, aim, true};
+        }
         if (!loops && in.coverLo <= in.lapLo + eps) return VideoStep{};    // nothing earlier to decode
         const int half = in.poolSize / 2 > 1 ? in.poolSize / 2 : 1;
-        if (in.freeBuffers >= half) return VideoStep{VideoStepKind::Reverse, in.coverLo - eps, false};
+        if (in.freeBuffers >= half) return VideoStep{VideoStepKind::Reverse, in.coverLo, false};
         return VideoStep{};
     }
     const bool pinned = in.seekPinned && in.target >= in.pinnedFrom - eps;
@@ -670,7 +769,7 @@ inline VideoStep videoNextStep(const VideoPlanInput& in) {
 
 ```
 
-- [ ] **Step 4: Build and run the tests (24 test cases)**
+- [ ] **Step 4: Build and run the tests (30 test cases)**
 
 ```bash
 cmake --build build --target core_tests -j8 && ./build/core_tests -tc='video*'
@@ -1936,7 +2035,7 @@ private:
     void catchUp(double target);
     void fill();
     void wrap();
-    void reverseStretch(double end, bool fresh, bool offline);
+    void reverseStretch(double to, bool fresh, bool offline);
     bool publish(DecodedFrame& f, double t, bool runStart);
     bool publishSlot(DecodedFrame& f, double t);
     bool directionChanged() const;
@@ -1985,8 +2084,9 @@ private:
     bool          eof_ = false;
     bool          loop_ = true;            // the loop flag of the request being worked on
     int           planDir_ = 1;            // the direction the worker last planned for
-    bool          coverValid_ = false;     // reverse: this run's stretches cover [coverLo_, coverHi_]
-    double        coverLo_ = 0.0, coverHi_ = 0.0;
+    bool          coverValid_ = false;     // reverse: this run's stretches reach down to coverLo_
+    double        coverLo_ = 0.0;
+    double        lastStretchSeconds_ = 0.0;   // wall time the last reverse stretch took to decode
     bool          seekPinned_ = false;     // the last seek could not land at or before...
     double        pinnedFrom_ = 0.0;       // ...this target (it precedes the file's first frame)
     bool          audioChunkOpen_ = false;
@@ -2243,7 +2343,7 @@ void VideoStream::step() {
     in.pinnedFrom = pinnedFrom_;
     in.coverValid = coverValid_;
     in.coverLo    = coverLo_;
-    in.coverHi    = coverHi_;
+    in.lead       = r.offline ? 0.0 : std::min(2.0, std::fabs((double)r.rate) * lastStretchSeconds_);
 
     if (dir >= 0) pumpAudio(r.u);                               // keep the audio ahead of the playhead
 
@@ -2441,30 +2541,33 @@ bool VideoStream::publish(DecodedFrame& f, double t, bool runStart) {
     return true;
 }
 
-// Decode the stretch from the keyframe at or before `end` up to `end` and queue the frames it keeps:
-// live every stride-th counting back from `end`; offline a ring of the newest pool/2, every one of
-// them. `fresh` starts a new run (the playhead jumped, or reverse just began). The kept frames are
-// queued together when the stretch is complete: decoding runs forward, so publishing them one by
-// one would show the stretch's EARLIEST frame first and then play it forwards up to the playhead.
-void VideoStream::reverseStretch(double end, bool fresh, bool offline) {
+// Decode a stretch forward from its keyframe and queue the frames it keeps: live every stride-th, counted
+// back from its top frame; offline a ring of the newest pool/2, every one of them. A `fresh` stretch
+// ends AT `to` -- the playhead, inclusive -- and starts a new run; otherwise the stretch lies strictly
+// BELOW `to`, the start of the stretch above, whose frame is already queued. The kept frames are queued
+// together when the stretch is complete: decoding runs forward, so queueing them one by one would show
+// the stretch's EARLIEST frame first and then play it forwards.
+void VideoStream::reverseStretch(double to, bool fresh, bool offline) {
     const double D = winfo_.duration, fd = winfo_.frameDur;
+    const auto began = std::chrono::steady_clock::now();
     if (fresh) {
         std::lock_guard<std::mutex> lk(m_);
         flushReadyLocked();
         runValid_ = false;
         coverValid_ = false;
     }
-    lapOffset_ = D > 0.0 ? videoLapStart(end, D) : 0.0;
-    audioClipHi_ = coverValid_ ? coverLo_ : kInf;  // never duplicate the audio of the stretch above
+    const double end = fresh ? to : to - kVideoTimeEps;          // the latest time this stretch may hold
+    lapOffset_ = D > 0.0 ? videoLapStart(end, D) : 0.0;           // just below a lap start: the lap before
+    audioClipHi_ = coverValid_ ? coverLo_ : kInf;                 // never duplicate the stretch above's audio
     const bool landed = seekLanding(end - lapOffset_);
-    int budget = 1;
-    { std::lock_guard<std::mutex> lk(m_); budget = std::max(1, (int)pool_.size() / 2); }
+    int cap = 1;
+    { std::lock_guard<std::mutex> lk(m_); cap = std::max(1, (int)pool_.size() / 2); }
 
     double lo = lapOffset_;                        // how far down this stretch covers
-    std::vector<Slot> ring;                        // the kept frames, oldest first (offline: the newest `keep`)
+    std::vector<Slot> ring;                        // the kept frames, oldest first (offline: the newest `cap`)
     auto keep = [&](DecodedFrame& f, double t, bool evict) {
         int b = -1;
-        if (!evict || (int)ring.size() < budget) { std::lock_guard<std::mutex> lk(m_); b = acquireLocked(); }
+        if (!evict || (int)ring.size() < cap) { std::lock_guard<std::mutex> lk(m_); b = acquireLocked(); }
         if (b < 0 && evict && !ring.empty()) { b = ring.front().buf; ring.erase(ring.begin()); }
         if (b < 0) return;                         // live: no room for this one -- skip it
         if (dec_.convert(f, pool_[(std::size_t)b].get(), winfo_.width * 4)) {
@@ -2484,15 +2587,27 @@ void VideoStream::reverseStretch(double end, bool fresh, bool offline) {
         peekNext();
         keep(f, t, false);
     } else {
+        // Live strides count back from half a frame below the stretch above, on the keyframe's grid, so a
+        // frame a container rounded (by up to half a frame) still counts from the right place.
         const double key = lapOffset_ + next_.t;
-        const VideoStretch plan = videoPlanStretch(key, end, fd, budget, offline);
+        const VideoStretch plan = videoPlanStretch(key, fresh ? to : to - 0.5 * fd, fd, cap, offline);
+        cap = plan.keep;
+        DecodedFrame spare;                        // live: the newest frame not kept, in case none is
+        double spareT = 0.0;
         while (!stop_ && peekNext()) {
             const double t = lapOffset_ + next_.t;
-            if (t > end + kVideoTimeEps) break;
+            if (fresh ? t > end + kVideoTimeEps : t > end) break;
             DecodedFrame f = std::move(next_);
             lastT_ = t;
-            if (offline)                               keep(f, t, true);
-            else if (videoStretchKeeps(plan, t, fd))   keep(f, t, false);
+            if (plan.contiguous) {
+                keep(f, t, true);
+            } else if (videoStretchKeeps(plan, t, fd)) {
+                keep(f, t, false);
+                spare.reset();
+            } else {
+                spare = std::move(f);
+                spareT = t;
+            }
             if (directionChanged()) {              // abandon the stretch; the next step re-plans
                 std::lock_guard<std::mutex> lk(m_);
                 for (const Slot& s : ring) releaseLocked(s.buf);
@@ -2500,8 +2615,9 @@ void VideoStream::reverseStretch(double end, bool fresh, bool offline) {
                 return;
             }
         }
+        if (!plan.contiguous && ring.empty() && spare.valid()) keep(spare, spareT, false);   // never empty
         const bool atLapStart = key - lapOffset_ < fd * 0.5;
-        lo = atLapStart ? lapOffset_ : (offline && !ring.empty() ? ring.front().t : key);
+        lo = atLapStart ? lapOffset_ : (plan.contiguous && !ring.empty() ? ring.front().t : key);
     }
     dec_.pumpAudio(end - lapOffset_ + fd);         // settle the stretch's audio up to its end
     takeAudio();
@@ -2511,7 +2627,7 @@ void VideoStream::reverseStretch(double end, bool fresh, bool offline) {
         for (const Slot& s : ring) insertReadyLocked(Slot{s.t, nextSerial_++, s.buf});
         const bool firstOfRun = !coverValid_;
         coverLo_ = lo;
-        if (firstOfRun) { coverHi_ = end; coverValid_ = true; }
+        coverValid_ = true;
         // Offline, stretches are consecutive: the run grows downwards from the first stretch's end.
         if (firstOfRun || !runValid_) {
             runHi_ = next_.valid() ? lapOffset_ + next_.t
@@ -2520,6 +2636,7 @@ void VideoStream::reverseStretch(double end, bool fresh, bool offline) {
         runLo_ = lo;
         runValid_ = true;
     }
+    lastStretchSeconds_ = std::chrono::duration<double>(std::chrono::steady_clock::now() - began).count();
     cv_.notify_all();
 }
 

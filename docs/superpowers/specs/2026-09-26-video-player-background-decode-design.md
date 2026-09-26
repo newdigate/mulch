@@ -81,6 +81,26 @@ found these problems in the design as first approved, and changed it as follows:
 13. **`videoSelectFrame` is the one frame-choice rule**, now a template over a time accessor, and the
     worker uses it instead of three hand-written loops, so its unit tests cover the code that runs.
 
+### Revisions during execution (code review of Task 2)
+
+14. **Live stride counts round onto the keyframe's grid.** Counting back from a boundary by flooring
+    assumed exact frame times; containers that store rounded ones (MKV/WebM milliseconds, QuickTime
+    1/600) made counts repeat and skip, and at 60 fps with 2 s keyframes on a 4K pool (stride 15) every
+    stretch kept nothing -- live reverse froze. `VideoStretch` now carries `top`, the nominal time of
+    the frame containing its end, and counts round from there.
+15. **A prefetch stretch lies strictly below the stretch above.** Its end used to sit 1 µs below the
+    keyframe above while the worker admitted frames up to end + ε, so that keyframe came back: a
+    duplicate live, a lost ring slot offline. Live strides are also anchored half a frame below it, so
+    rounded timestamps count from the right frame.
+16. **A live stretch never ends empty**: if the stride kept nothing, it keeps its newest frame, so the
+    worker cannot run on prefetching empty stretches.
+17. **Fresh reverse stretches aim where the playhead will be.** They used to end at the playhead's
+    position when planned; at 4K a stretch takes about as long to decode as to play, so it often landed
+    behind the playhead, which restarted it -- flushing everything -- over and over (live 4K reverse
+    stuck in a third of runs). A live fresh stretch now ends |rate| × the last stretch's decode time
+    below the playhead (capped at 2 s, never before the clip's start with loop off), and a playhead
+    still above the covered stretch is left to arrive instead of being restarted.
+
 ## Root cause
 
 Reproduced with a headless harness that compiles the real `VideoPlayerNode.cpp` and drives
@@ -364,13 +384,17 @@ The pool therefore cannot deadlock on frames that will never be shown.
 
 ### Worker: reverse playback
 
-1. **Plan a stretch ending at E** (initially the target). Seek to E; the first decoded frame gives the
-   keyframe time K. The frame count is n = floor((E − K) / frameDur) + 1, counted from the frame whose
-   interval contains E (E is a boundary, not necessarily a frame time).
+1. **Plan a stretch.** A *fresh* one (a new run, or the playhead fell below what is covered) ends at
+   E = the playhead minus a lead: live, |rate| × the last stretch's decode time, so it lands where the
+   playhead will be; offline, 0. Otherwise the stretch lies strictly below the stretch above. Seek to
+   E; the first decoded frame gives the keyframe time K. The frame count is
+   n = floor((E − K) / frameDur) + 1, and `top` is the nominal time of the last one, on K's grid (live
+   prefetch stretches anchor E half a frame below the stretch above).
 2. **Live:** the budget is M = pool / 2 frames.
    - If n ≤ M, keep every frame in [K, E].
-   - Otherwise keep every s-th frame counting back from E, s = ceil(n / M), so E itself is always kept
-     and the whole stretch stays covered.
+   - Otherwise keep every s-th frame counting back from `top`, s = ceil(n / M), rounding each frame's
+     count onto K's grid (containers round frame times by up to half a frame), so the top frame is kept
+     and the whole stretch stays evenly covered. If nothing was kept, the newest frame is.
    - Frames that are not kept are decoded but not converted.
    - This spacing uses the nominal frame duration; live reverse is best-effort.
 3. **Offline:** every frame in [K, E] is converted into a rolling ring of M buffers. The ring ends
