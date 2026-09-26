@@ -139,6 +139,46 @@ reproduced on the prototype before it was fixed, and each fix was measured on ev
 24. **Task 2's anchor test admits frames the way the worker does**: strictly below the stretch above,
     not up to the anchor.
 
+### Revisions during execution (code review of Task 3)
+
+The reviewer drove the committed planner through the prototype worker; every finding reproduced, and
+one more (31) turned up while writing the tests for them.
+
+25. **With loop off, a decoder left a lap behind the playhead seeks into the playhead's lap.** Loop
+    turned off after the playhead crossed into the next lap but before the decoder wrapped (a decoder
+    slower than the playhead, or a hitch) pinned the playhead's lap, and the worker waited at the end of
+    its own lap for ever: the picture froze, and offline the earlier lap's frames were reported ready.
+    The planner now gets the decoder's lap end (`lapEnd`) whether looping or not, and a run ends at the
+    lap's end at the end of the file instead of never.
+26. **A seek ahead that landed at or behind the decoder is not repeated nearby.** Without an index --
+    or with MPEG-TS's, which lists its seek probes as keyframes -- a seek ahead can land on a keyframe
+    far behind; with 10 s keyframes the worker re-sought every 100 ms slice and never caught up (3 runs
+    in 5). After such a landing the planner catches up until the target has moved on by the gap the
+    seek revealed (`videoNoSeekBelow`, at least `kVideoSeekNoIndex`).
+27. **Loop off keeps the frames past the playhead's lap; what reverse covered below it is dropped with
+    its frames.** Recycling them left a hole the planner could not see: loop back on held the last
+    frame for 2.45 s (forward), or showed frames 0.8 s off (reverse).
+28. **`videoLapStart` is exact**: a lap start maps to itself. The division alone came out a lap low for
+    3–4% of lap starts (1.4 × 3 / 1.4 < 3), and a loop-off reverse run clamped to its lap's start
+    decoded the lap below.
+29. **A moving reverse playhead far above what is covered restarts** (more than `kVideoRestartLeads` = 3
+    leads plus a frame): after the rate dropped from −2 to −0.1 mid-stretch, the picture sat 0.9 s off
+    for seconds. Three leads keep stretch-time jitter from restarting anything.
+30. **`open()` seeks to the start before decoding the first frame.** Matroska and WebM (and FLV) read
+    their keyframe index only when first asked to seek, so the worker could not seek ahead in the first
+    lap. NUT still exposes no index; like MPEG-TS it then catches up rather than seek blind.
+31. **An offline render that starts in reverse restarts the run.** Live stretches keep every stride-th
+    frame, and nothing marked that: 37–44 of the first 50 offline frames after live reverse were wrong.
+    The switch now plans a fresh, whole stretch, and reverse readiness requires a run built offline,
+    which also closes the window before the worker sees the first offline request.
+32. **The planner's contract is written down**: not looping (loop off, or the duration unknown), the
+    lap must start at a finite time; a `+inf` next keyframe means none known, not none; the stretch
+    budget is one function (`videoStretchBudget`) shared with the worker.
+33. **Tests**: exact expectations and consistent fixtures throughout; the seek thresholds and the
+    pinned target at their boundaries; rule precedence at the end of a lap; a `gl_smoke` scenario for
+    loop toggles, the Matroska-cues check, and an offline-after-live-reverse check; an MPEG-TS jump in
+    the acceptance steps.
+
 ## Root cause
 
 Reproduced with a headless harness that compiles the real `VideoPlayerNode.cpp` and drives
@@ -387,12 +427,17 @@ to move.
 The rules below are checked in order after each snapshot of the request.
 
 1. **A direction change, or a target behind everything held** (the frame on screen and the queue):
-   `Seek{target}` -- unless the last seek for a target at or before this one was pinned.
+   `Seek{target}` -- unless the last seek for a target at or before this one was pinned. With loop off,
+   also when the decoder is in an earlier lap than the playhead (it fell behind while looping):
+   nothing it decodes there can be shown.
 2. **Target ahead of the head by more than 2 frame durations:**
    - If a keyframe lies between the head and the target (the next lap's start counts) and the gap is
      more than 1 s: `Seek{target}`. A seek restarts FFmpeg's frame-threading pipeline, which costs more
      than decoding through a shorter gap.
    - If there is no keyframe index and the target is more than 2 s ahead: `Seek{target}`.
+   - Not, though, within the lap while an earlier seek ahead has landed at or behind the decoder and
+     the target has not moved on by the gap it revealed (`videoNoSeekBelow`): a seek would land there
+     again.
    - Otherwise: `CatchUp{target}`.
 3. **End of file:** `Wrap` when loop is on and D > 0 (seek to the start of the next lap, and call
    `beginChunk()` for the audio). Otherwise `Wait`, holding the last frame.
@@ -420,15 +465,17 @@ The rules below are checked in order after each snapshot of the request.
 **The worker recycles frames that can never be shown, itself.** That covers:
 - *superseded* frames: those older than the newest queued frame that is ≤ the target in forward
   playback (newer, in reverse);
-- when loop is off, frames outside the current lap. The request carries that lap's bounds, [L·D,
-  (L+1)·D].
+- when loop is off, frames before the current lap. The request carries that lap's bounds, [L·D,
+  (L+1)·D]. Frames past its end stay: the clamped playhead never shows them, and they are the next
+  ones if loop comes back on. What reverse covered below the lap goes with its frames.
 
 The pool therefore cannot deadlock on frames that will never be shown.
 
 ### Worker: reverse playback
 
-1. **Plan a stretch.** A *fresh* one (a new run; the playhead fell below what is covered; or it has
-   stopped -- paused, or offline -- above the top of what is covered, where it would never arrive) ends
+1. **Plan a stretch.** A *fresh* one (a new run; the playhead fell below what is covered; or it is
+   stranded above the top of what is covered -- stopped, paused or offline, where it would never
+   arrive, or more than three leads plus a frame above, where arriving would take several stretches) ends
    at E = the playhead minus a lead: live and moving, |rate| × the last stretch's decode time, so it
    lands where the playhead will be; otherwise 0. Otherwise the stretch lies strictly below the stretch
    above. Seek to E, landing where the stretch admits frames (so a prefetch never lands on the
@@ -497,7 +544,9 @@ the UI keeps running.
 - **Stalls:** if that wait times out, the node latches a stall flag that keeps `loading()` true. The
   render then fails through the renderer's normal 30 s timeout naming the node, instead of finishing
   with a wrong frame. The flag clears when `ctx.offline` goes false or the file changes.
-- **Reverse:** the offline stretch rule above makes reverse renders frame-exact.
+- **Reverse:** the offline stretch rule above makes reverse renders frame-exact. A render that starts
+  while live reverse is playing restarts the run, since live stretches keep every stride-th frame;
+  until an offline stretch has landed, reverse readiness says no.
 - **Readiness** (`frameReadyFor(u)`): the frame for u lies in the run of consecutive decided frames
   and is still held; playing forward, the audio is also settled up to u (or u is in an earlier lap,
   whose audio is complete). In reverse the stretch that brings the frame also brought its audio.
@@ -555,7 +604,11 @@ the UI keeps running.
   is short; a short gap with a keyframe in it is decoded through; a pinned seek is not repeated.
 - **`videoStretchKeeps`:** an end between frames counts from the frame containing it.
 - **`nextStep` reverse:** a fresh stretch aims `lead` below a moving playhead; a moving playhead above
-  the covered stretch is left to arrive, a stopped one restarts there.
+  the covered stretch is left to arrive, a stopped or far-stranded one restarts there.
+- **`nextStep` forward, added in execution:** loop off with the decoder a lap behind seeks; a seek ahead
+  that landed behind the decoder is not repeated nearby (`videoNoSeekBelow`); the seek thresholds and
+  the pinned target at their boundaries; seeking back comes before the end-of-lap rules.
+- **`videoLapStart`** maps every lap start to itself, for durations that do not divide evenly.
 - **The time model:** loop on runs past the end and below 0; loop off clamps to the lap captured
   before the step; paused does not move; unknown duration clamps at 0.
 - **`TimedAudio`:**
@@ -583,7 +636,12 @@ the UI keeps running.
   writer): offline reverse is exact through a first keyframe interval longer than the stretch ring (loop
   on and off) and across the loop seam of an FLV with B-frames; live reverse over that FLV decodes a
   handful of stretches in 2.5 s (a spinning worker decodes thousands) and follows the playhead across
-  the seam; paused, the picture settles on the playhead's frame and decoding stops.
+  the seam; paused, the picture settles on the playhead's frame and decoding stops; an offline render
+  straight after live reverse is exact from its first frame.
+- **`VideoStream` loop toggles:** loop off with the playhead a lap ahead of the decoder renders that
+  lap's frames; loop off and back on near a lap's end keeps the next lap's frames (offline exact); the
+  same at a lap's start in reverse goes on into the lap below.
+- **`VideoDecoder`:** a 12 s Matroska file knows its keyframes past 7 s right after `open()`.
 - **A new generated clip,** `build/_video_longgop.mp4`:
   - 160×90, 25 fps, 12 s (300 frames), keyframes 250 frames apart, with a 440 Hz tone;
   - written with `VideoEncoder`'s new keyframe interval;
@@ -619,6 +677,9 @@ Measured on the development machine, in Debug and Release, with the acceptance h
 5. Resident memory at 4K is at most 1.2 GB [0.88 GB H.264, 1.15 GB 10-bit HEVC; was 1.7 GB].
 6. `ctest` passes on all three CI platforms.
 7. A local ThreadSanitizer build of `gl_smoke` reports no data races [zero reports].
+7a. MPEG-TS with 10 s keyframes: after reverse and a 4 s jump ahead, the picture is back in step
+    within 0.3 s with at most one seek [0.05–0.08 s, no seeks; without the seek guard, 3 runs in 5
+    never caught up].
 8. CLAUDE.md's Video Player and `VideoDecoder` notes describe the worker design. They currently
    describe synchronous decoding and the sliding keyframe window.
 
