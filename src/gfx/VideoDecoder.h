@@ -118,21 +118,25 @@ public:
 
     // Read ahead -- queueing video packets instead of decoding them -- until the audio is settled up
     // to time `t` (see audioSettledUpTo), the input ends, or kMaxQueuedBytes of video packets
-    // are waiting.
-    void pumpAudio(double t);
+    // are waiting. `waitingForAudio`: the caller cannot go on without this audio (an offline render),
+    // so pumpAudio may give it up when stuck (see audioSettledUpTo). A call without it gives nothing
+    // up, and forgets what an earlier call gave up.
+    void pumpAudio(double t, bool waitingForAudio = false);
 
     // Tests only: cap the read-ahead at `bytes` instead of kMaxQueuedBytes.
     void setMaxQueuedBytes(std::size_t bytes) { maxQueuedBytes_ = bytes; }
 
     // The time up to which no more audio will arrive: the end of the decoded audio, or -- once
     // the demuxer has read kAudioSettleSlack past a point without meeting audio for it -- that
-    // point. +inf at the end of the input or with no audio stream. When pumpAudio() finds the
-    // queue still at kMaxQueuedBytes with no packet taken off it since it last stopped there, the
-    // caller has stopped decoding -- it is waiting for this audio -- and nothing will ever drain
-    // the queue: the audio then counts as settled up to the latest packet read. (Reading further
-    // would take unbounded memory: 4K ProRes runs past 64 MB in under a second.) While the caller
-    // is still taking packets, it only waits: audio that a file puts after a long run of video
-    // (fragmented MOV writes each fragment's video, then its audio) still arrives.
+    // point. +inf at the end of the input or with no audio stream. A caller waiting for audio can
+    // get stuck: when pumpAudio(t, true) finds the queue still at kMaxQueuedBytes with no packet
+    // taken off it since it last stopped there, the caller has stopped decoding -- its frames all
+    // wait on this audio -- and nothing will ever drain the queue, so the audio counts as settled up
+    // to the latest packet read. (Reading further would take unbounded memory: 4K ProRes runs past
+    // 64 MB in under a second.) While packets are still being taken it only waits: audio that a file
+    // puts after a run of video (fragmented MOV writes each fragment's video, then its audio) still
+    // arrives. Only a waiting caller gives audio up: a live pause stops decoding too, and audio given
+    // up then would be merely late once a render starts.
     double audioSettledUpTo() const;
 
     // Move out the next run of audio decoded since the last call (48 kHz mono float): samples

@@ -236,7 +236,6 @@ bool VideoDecoder::seek(double t) {
     if (vctx_) avcodec_flush_buffers(vctx_);
     if (actx_) avcodec_flush_buffers(actx_);
     if (swr_) swr_free(&swr_);   // it holds samples from before the seek
-    swrFormat_ = -1;
     clearQueue();
     resetStreamState();
     nextT_ = atStart ? startT_ : kNaN;   // a first frame with no timestamp: the file's first, or unknown
@@ -338,13 +337,17 @@ void VideoDecoder::placeAudio(double start, const float* s, std::size_t n) {
     }
 }
 
-void VideoDecoder::pumpAudio(double t) {
+void VideoDecoder::pumpAudio(double t, bool waitingForAudio) {
     if (!fmt_ || !actx_) return;
+    if (!waitingForAudio) { capSettledT_ = -kInf; takenAtCap_ = ~std::uint64_t(0); }   // gives nothing up
     while (audioSettledUpTo() < t) {
         if (queuedBytes_ >= maxQueuedBytes_) {
-            // Full. Stuck -- nothing taken off the queue since the last time -- settles what was read.
-            if (packetsTaken_ == takenAtCap_) capSettledT_ = std::max(capSettledT_, demuxedT_);
-            takenAtCap_ = packetsTaken_;
+            // Full. A waiting caller that took nothing off the queue since the last time is stuck: what was
+            // read counts as settled (see the header).
+            if (waitingForAudio) {
+                if (packetsTaken_ == takenAtCap_) capSettledT_ = std::max(capSettledT_, demuxedT_);
+                takenAtCap_ = packetsTaken_;
+            }
             return;
         }
         if (!readPacket()) return;

@@ -1146,27 +1146,35 @@ static bool scenario_video_decoder_awkward_files() {
         if (!std::isinf(h.audioSettledUpTo())) { return failed("audio hole: at the end of the input all the audio is settled"); }
     }
 
-    // The read-ahead cap (1 byte here: full after a single packet), with audio that starts 1.5 s in. While
-    // packets are still being taken off the queue, pumpAudio waits at the cap -- audio that a file puts after
-    // a run of video (fragmented MOV) still arrives. Once none has been taken since it last stopped there,
-    // nothing will drain the queue: what was read counts as settled (an offline render would wait forever).
+    // The read-ahead cap (1 byte here: full after a single packet), with audio that starts 1.5 s in. A caller
+    // waiting for the audio (an offline render) that is still taking packets off the queue only waits at
+    // the cap -- audio a file puts after a run of video (fragmented MOV) still arrives. Once it has taken
+    // none since the last stop, nothing will drain the queue: what was read counts as settled (it would
+    // wait forever). A caller that is not waiting (live) gives nothing up, even when it stops decoding.
     const std::string lateAudio = "build/_late_audio.mkv";
     if (!writeAudioHoleClip(lateAudio, -1.0, 1.5)) { return failed("read-ahead cap: writing the clip failed"); }
     VideoDecoder q;
     q.setMaxQueuedBytes(1);
     DecodedFrame q0, q1;
     if (!q.open(lateAudio, err) || !q.decodeNext(q0)) { return failed("read-ahead cap: open"); }
-    q.pumpAudio(1.0);                                    // stops at the cap
+    q.pumpAudio(1.0, true);                              // stops at the cap
     const double atCap = q.audioSettledUpTo();
     if (!q.decodeNext(q1)) { return failed("read-ahead cap: decode"); }
-    q.pumpAudio(1.0);                                    // a packet was taken since: still draining
+    q.pumpAudio(1.0, true);                              // a packet was taken since: still draining
     const double draining = q.audioSettledUpTo();
-    q.pumpAudio(1.0);                                    // none since: stuck
+    q.pumpAudio(1.0, true);                              // none since: stuck
     const double stuck = q.audioSettledUpTo();
-    if (atCap >= 0.0 || draining >= 0.0 || !(stuck >= q1.t)) {
-        std::fprintf(stderr, "read-ahead cap: settled up to %.3f at the cap, %.3f while draining, %.3f once stuck\n",
-                     atCap, draining, stuck);
-        return failed("read-ahead cap: the audio must settle through the cap once, and only once, nothing drains the queue");
+    q.pumpAudio(1.0);                                    // not waiting: what was given up is forgotten...
+    q.pumpAudio(1.0);                                    // ...and stuck again, nothing is given up
+    const double live = q.audioSettledUpTo();
+    q.pumpAudio(1.0, true);                              // waiting again: its first stop -- not stuck yet
+    const double rewaiting = q.audioSettledUpTo();
+    q.pumpAudio(1.0, true);                              // stuck
+    const double restuck = q.audioSettledUpTo();
+    if (atCap >= 0.0 || draining >= 0.0 || !(stuck >= q1.t) || live >= 0.0 || rewaiting >= 0.0 || !(restuck >= q1.t)) {
+        std::fprintf(stderr, "read-ahead cap: settled up to %.3f at the cap, %.3f while draining, %.3f once stuck, "
+                     "%.3f live, %.3f waiting again, %.3f stuck again\n", atCap, draining, stuck, live, rewaiting, restuck);
+        return failed("read-ahead cap: the audio must settle through the cap once, and only once, a waiting caller is stuck");
     }
 
     // A seek resets the resampler: the audio after seek(1.0) is the same whatever played before it (at
