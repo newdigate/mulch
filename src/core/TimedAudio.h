@@ -17,10 +17,10 @@ namespace oss {
 // at a loop seam that is the new lap; in reverse it is the stretch below, whose audio runs on unbroken
 // up to where the stretch above resumed its own -- a little before that stretch's keyframe, with a
 // just-flushed decoder fading in.
-// GL-free. Not thread-safe: VideoStream guards it with its mutex.
+// GL-free. Not thread-safe (sample() included: it keeps scratch): VideoStream guards it with its mutex.
 class TimedAudio {
 public:
-    static constexpr double kMaxSeconds = 180.0;  // safety cap on everything held (about 35 MB at 48 kHz)
+    static constexpr double kMaxSeconds = 180.0;  // cap on everything held (about 35 MB at 48 kHz)
     static constexpr double kGridEps    = 1e-6;   // samples: a time on the sample grid is not rounded past
 
     explicit TimedAudio(int rate = 48000) : rate_(rate) {}
@@ -45,12 +45,12 @@ public:
         capTotal();
     }
 
-    // Keep the audio around the playhead: [lo, hi] is forward [u - keep, +inf), reverse (-inf, u + keep].
-    // Chunks wholly outside go (never the current one). A chunk's front (forward) or back (reverse) is cut
-    // once more than a second of it lies outside, so calling this every step does not move memory every
-    // step. It also notes where the playhead is, for the cap.
-    void retain(double lo, double hi) {
-        focus_ = std::isfinite(lo) ? (std::isfinite(hi) ? 0.5 * (lo + hi) : lo) : hi;
+    // Keep the audio around the playhead `u`: [lo, hi] is forward [u - keep, +inf), reverse
+    // (-inf, u + keep]. Chunks wholly outside go (never the current one). A chunk's front (forward) or back
+    // (reverse) is cut once more than a second of it lies outside, so calling this every step does not
+    // move memory every step. The cap spares what plays at `u`.
+    void retain(double lo, double hi, double u) {
+        playhead_ = u;
         std::vector<Chunk> kept;
         kept.reserve(chunks_.size());
         for (std::size_t i = 0; i < chunks_.size(); ++i) {
@@ -103,28 +103,56 @@ private:
         return 0.0f;
     }
 
-    // While more than kMaxSeconds is held, drop the chunk farthest from the playhead (never the current
-    // one; before any retain() the oldest goes first). In reverse the oldest chunk is the one being played.
+    // The index of the chunk that plays at t (the newest covering it), or chunks_.size() if none does.
+    std::size_t playingAt(double t) const {
+        for (std::size_t k = chunks_.size(); k-- > 0;) {
+            const double idx = (t - chunks_[k].start) * rate_;
+            if (idx >= 0.0 && idx < (double)chunks_[k].s.size()) return k;
+        }
+        return chunks_.size();
+    }
+
+    // While more than kMaxSeconds is held, drop the audio farthest from the playhead: whole chunks first,
+    // farthest first -- never the one playing at the playhead, nor the one being filled -- then the far
+    // end of the one being filled, never past the playhead. (In reverse the oldest chunk is the one
+    // playing.) Before any retain() there is no playhead: the oldest audio goes first.
     void capTotal() {
         const std::size_t cap = (std::size_t)(kMaxSeconds * rate_);
         std::size_t total = size();
-        while (chunks_.size() > 1 && total > cap) {
-            std::size_t victim = 0;
+        while (total > cap) {
+            const std::size_t last = chunks_.size() - 1, playing = playingAt(playhead_);
+            std::size_t victim = last;
             double farthest = -1.0;
-            for (std::size_t i = 0; i + 1 < chunks_.size(); ++i) {
+            for (std::size_t i = 0; i < last; ++i) {
+                if (i == playing) continue;
                 const Chunk& c = chunks_[i];
-                const double d = focus_ < c.start ? c.start - focus_ : (focus_ >= end(c) ? focus_ - end(c) : 0.0);
+                const double d = playhead_ < c.start ? c.start - playhead_
+                               : (playhead_ >= end(c) ? playhead_ - end(c) : 0.0);
                 if (d > farthest) { farthest = d; victim = i; }
             }
+            if (victim == last) break;
             total -= chunks_[victim].s.size();
             chunks_.erase(chunks_.begin() + (std::ptrdiff_t)victim);
+        }
+        if (total <= cap) return;
+        Chunk& c = chunks_.back();                       // what is left over the cap: the one being filled
+        const double at = (playhead_ - c.start) * rate_; // the playhead's place in it, in samples
+        const std::size_t over = total - cap;
+        if (!std::isfinite(playhead_) || at >= 0.5 * (double)c.s.size()) {   // its front is the far end
+            const double room = std::isfinite(at) ? std::floor(at) : (double)c.s.size();
+            const std::size_t cut = std::min(over, (std::size_t)std::max(0.0, std::min(room, (double)c.s.size())));
+            c.s.erase(c.s.begin(), c.s.begin() + (std::ptrdiff_t)cut);
+            c.start += (double)cut / rate_;
+        } else {                                         // its back is
+            const std::size_t keep = (std::size_t)std::max(0.0, std::floor(at) + 1.0);
+            c.s.resize(std::max(keep, c.s.size() - std::min(over, c.s.size())));
         }
     }
 
     std::vector<Chunk> chunks_;
     int rate_;
-    double focus_ = -std::numeric_limits<double>::infinity();   // where retain() last put the playhead
-    mutable std::vector<const Chunk*> span_;                     // sample()'s scratch
+    double playhead_ = -std::numeric_limits<double>::infinity();   // as retain() last saw it
+    mutable std::vector<const Chunk*> span_;                        // sample()'s scratch
 };
 
 } // namespace oss
