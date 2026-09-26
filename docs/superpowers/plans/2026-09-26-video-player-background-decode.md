@@ -1188,6 +1188,31 @@ TEST_CASE("TimedAudio: the cap drops the audio farthest from the playhead, never
     }
 }
 
+TEST_CASE("TimedAudio: the cap stops once only what plays is left, and a tie never costs it") {
+    const int rate = 100;
+    float v = 0.0f;
+    {                                                             // over the cap with nothing to take but what
+        TimedAudio a(rate);                                       // plays: the one being filled gives all it
+        a.retain(-kInfT, 262.0, 260.0);                           // can, then the cap stops -- it neither erases
+        std::vector<float> big(50000, 3.0f), small(5000, 1.0f);  // the chunk playing nor spins on the empty one
+        a.beginChunk(0.0); a.append(big.data(), big.size());     // [0, 500) -> [260, 500): over the cap, playing
+        a.beginChunk(-100.0); a.append(small.data(), small.size(), 0.0);   // being filled, far below: emptied
+        a.sample(300.0, 300.0, &v, 1); CHECK(v == doctest::Approx(3.0f));
+        a.sample(-60.0, -60.0, &v, 1); CHECK(v == 0.0f);
+    }
+    {                                                             // offline reverse at a stretch boundary: the
+        TimedAudio a(rate);                                       // one being filled ends AT the playhead, as
+        std::vector<float> p(10000, 2.0f), f(10000, 1.0f);       // near as the one playing
+        a.beginChunk(10.0); a.append(p.data(), p.size());        // [10, 110): playing at 10
+        a.retain(-kInfT, 12.0, 10.0);
+        a.beginChunk(-90.0); a.append(f.data(), f.size(), 10.0); // [-90, 10): over the cap
+        a.sample(10.0, 10.0, &v, 1);   CHECK(v == doctest::Approx(2.0f));
+        a.sample(50.0, 50.0, &v, 1);   CHECK(v == doctest::Approx(2.0f));
+        a.sample(-85.0, -85.0, &v, 1); CHECK(v == 0.0f);         // the one being filled lost its far end
+        a.sample(5.0, 5.0, &v, 1);     CHECK(v == doctest::Approx(1.0f));
+    }
+}
+
 TEST_CASE("TimedAudio: reverse trimming stops on the sample grid") {
     TimedAudio a(48000);                                          // (2.19 - 0.01) * 48000 = 104640.000...015
     std::vector<float> s(480000, 1.0f), t(10, 1.0f);
@@ -1398,7 +1423,7 @@ private:
 } // namespace oss
 ```
 
-- [ ] **Step 5: Build and run the tests (10 test cases)**
+- [ ] **Step 5: Build and run the tests (11 test cases)**
 
 ```bash
 cmake --build build --target core_tests -j8 && ./build/core_tests -tc='TimedAudio*'
