@@ -1,6 +1,7 @@
 #include <doctest/doctest.h>
 #include <limits>
 #include <vector>
+#include "core/OfflineRender.h"
 #include "core/VideoPlan.h"
 
 using namespace oss;
@@ -81,19 +82,22 @@ TEST_CASE("videoAdvance: loop off at the end holds the last frame, not the next 
     CHECK(videoSelectFrame(3, p.u, timeOf) == 1);
 }
 
-TEST_CASE("videoFrameStep: an offline playhead stays on the frame grid for an hour at every render rate") {
-    for (int fps : {24, 25, 30, 50, 60}) {
-        const double step = videoFrameStep(1.0f / (float)fps);
-        double u = 0.0, worst = 0.0;
-        for (long k = 1; k <= 3600L * fps; ++k) {
-            u += step;
-            worst = std::max(worst, std::fabs(u - (double)k / fps));
-        }
-        CHECK(worst < kVideoTimeEps / 10);                      // an hour's rounding stays well inside the tolerance
+// How many of `frames` offline steps land the playhead on the wrong frame of a `fps` grid: after step
+// k the frame for u (the greatest k'/fps <= u + kVideoTimeEps) must be frame k.
+static long offGridFrames(int fps, double step, long frames) {
+    VideoPlayhead p;
+    long wrong = 0;
+    for (long k = 1; k <= frames; ++k) {
+        p = videoAdvance(p, true, 1.0, true, step, 0.0);
+        if ((long)std::floor((p.u + kVideoTimeEps) * fps) != k) ++wrong;
     }
-    double drift = 0.0;                                         // the float step itself: a frame off within a minute
-    for (int k = 0; k < 1500; ++k) drift += (double)(1.0f / 25.0f);
-    CHECK(std::fabs(drift - 60.0) > kVideoTimeEps);
+    return wrong;
+}
+
+TEST_CASE("videoFrameStep: an offline playhead stays on the frame grid for an hour at every render rate") {
+    for (int fps : kRenderFrameRates)                           // every rate the renderer offers
+        CHECK(offGridFrames(fps, videoFrameStep(1.0f / (float)fps), 3600L * fps) == 0);
+    CHECK(offGridFrames(25, (double)(1.0f / 25.0f), 1500) > 0); // the renderer's float step: wrong within a minute
     CHECK(videoFrameStep(0.0123f) == doctest::Approx((double)0.0123f));   // not a whole rate: unchanged
     CHECK(videoFrameStep(0.0f) == 0.0);
 }
