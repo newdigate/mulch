@@ -276,12 +276,17 @@ TEST_CASE("videoNextStep forward: far behind -> catch up, or seek when a keyfram
     CHECK(videoNextStep(in).kind == VideoStepKind::Fill);
 }
 
-TEST_CASE("videoNextStep forward: an index keyframe just below the target may be a frame or two later") {
+TEST_CASE("videoNextStep forward: an index keyframe just below the target may be a few frames later") {
     VideoPlanInput in = fwd(19.95);                    // x264's B-frames: the keyframe shown at 20.0 is
     in.duration = 30.0; in.lapEnd = 30.0;              // listed at its decode time, 19.92
     in.head = 12.04; in.lowest = 12.0; in.nextKey = 19.92;
     CHECK(videoNextStep(in).kind == VideoStepKind::CatchUp);   // a seek for 19.95 would land at 10
-    in.target = 20.1;                                  // well past it: the keyframe is surely between
+    in.nextKey = 19.76; in.target = 19.88;             // x265's open GOP: listed 6 frames early
+    CHECK(videoNextStep(in).kind == VideoStepKind::CatchUp);
+    in.nextKey = 19.92; in.target = 20.3;              // well past it: the keyframe is surely between
+    CHECK(videoNextStep(in).kind == VideoStepKind::Seek);
+    in = fwd(10.05);                                   // the next lap's start is exact, index or not
+    in.keyKnown = false; in.head = 8.9; in.lowest = 8.86;
     CHECK(videoNextStep(in).kind == VideoStepKind::Seek);
 }
 
