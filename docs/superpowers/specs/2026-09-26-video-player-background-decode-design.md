@@ -239,6 +239,17 @@ fixed.
 46. **A test pins the grid tolerance** (`(2.19 − 0.01) × 48000` rounds to 104640.000000000015), and the
     Units section and the reverse-audio note are corrected.
 
+### Revisions during execution (third code review of Task 4)
+
+47. **The chunk being filled competes by distance too.** Revision 45 dropped whole chunks first and
+    touched the one being filled only when nothing else was left -- but in live reverse the one being
+    filled is the prefetch below the stretch that plays next, the farthest audio of all. With keyframes
+    more than ~90 s apart the cap erased that next stretch whole: silence from the next stretch on (1×
+    with a 4K-sized pool), 10.6 of 12 s at −4×. Now the farthest audio goes first: a whole chunk, or --
+    when the farthest is the one being filled -- its far end, never past the playhead. Tests now pin the
+    back-cut branch, both "never past the playhead" guards, farthest-first among whole chunks, and the
+    grid tolerance in reverse trimming.
+
 ## Root cause
 
 Reproduced with a headless harness that compiles the real `VideoPlayerNode.cpp` and drives
@@ -362,8 +373,8 @@ functions, unit-tested in `core_tests` (the `StepSync.h` / `BarSync.h` pattern).
 - `retain(lo, hi, u)` keeps the playhead u's neighbourhood: chunks wholly outside [lo, hi] go (never the
   current one), and a chunk's front (forward) or back (reverse) is cut once more than a second of it lies
   outside.
-- A 180 s cap drops the audio farthest from the playhead: whole chunks first (never the one playing at
-  u, nor the one being filled), then the far end of the one being filled.
+- A 180 s cap drops the audio farthest from the playhead first, never what plays at u: the farthest
+  chunk goes whole -- or, if it is the one being filled, loses its far end, never past u.
 - `sample(u0, u1, out, n)` maps output sample j to time u0 + (u1 − u0)·j/n and interpolates linearly,
   exactly like today's `emitAudio`.
   - Times not covered by any chunk produce silence.
@@ -596,8 +607,8 @@ the UI keeps running.
 - Audio decoded during catch-up and during reverse stretches is kept, so reverse still sweeps
   backwards, as today.
 - **Retention:** live forward drops audio more than 2 s behind u; reverse drops audio more than 2 s
-  ahead of it, trimming the backs of chunks. A 180 s cap is a safety net; it drops the chunk farthest
-  from the playhead first.
+  ahead of it, trimming the backs of chunks. A 180 s cap is a safety net; it drops the audio farthest
+  from the playhead first, never what plays there.
 - Anything not yet decoded reads as silence.
 
 ### Offline renders
