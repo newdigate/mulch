@@ -976,7 +976,7 @@ EOF
 - Create: `tests/test_timed_audio.cpp`
 - Modify: `CMakeLists.txt` (the `core_tests` source list)
 
-The worker's audio, as chunks tagged with unwrapped time. `sample()` reproduces the node's old `emitAudio` mapping exactly; uncovered time is silence; a chunk covers up to the end of its last sample, so adjacent chunks tile; where chunks overlap the most recently begun one wins (the new lap at a loop seam; in reverse the stretch below, since the one above resumes its audio just before its keyframe out of a flushed decoder); `append(..., clipHi)` keeps the samples that start before the stretch above; `retain()` keeps the playhead's neighbourhood (trimming chunk backs in reverse), and a 180 s cap drops the chunk farthest from the playhead.
+The worker's audio, as chunks tagged with unwrapped time. `sample()` reproduces the node's old `emitAudio` mapping exactly; uncovered time is silence; a chunk covers up to the end of its last sample, so adjacent chunks tile; where chunks overlap the most recently begun one wins (the new lap at a loop seam; in reverse the stretch below, since the one above resumes its audio just before its keyframe out of a flushed decoder); `append(..., clipHi)` keeps the samples that start before the stretch above; `retain(lo, hi, u)` keeps the playhead's neighbourhood (trimming chunk backs in reverse), and a 180 s cap drops the audio farthest from the playhead — whole chunks first, never the one playing at it, then the far end of the one being filled.
 
 - [ ] **Step 1: Write the failing tests** — `tests/test_timed_audio.cpp` (complete file)
 
@@ -1066,6 +1066,11 @@ TEST_CASE("TimedAudio: append keeps the samples that start before clipHi") {
     CHECK(a.size() == 11);
     a.append(s.data(), s.size(), 0.0105);                         // the next would start at 11 ms: none
     CHECK(a.size() == 11);
+    TimedAudio g(48000);                                          // a clip on the sample grid, computed
+    std::vector<float> big(120000, 1.0f);                         // (2.19 - 0.01) * 48000 = 104640.000...015:
+    g.beginChunk(0.01);                                           // the sample starting AT 2.19 stays out
+    g.append(big.data(), big.size(), 2.19);
+    CHECK(g.size() == 104640);
     TimedAudio none;
     none.append(s.data(), s.size());                              // no chunk begun: no-op
     CHECK(none.size() == 0);
@@ -1076,11 +1081,11 @@ TEST_CASE("TimedAudio: retain drops chunks outside the window and trims fronts o
     std::vector<float> s(5000, 1.0f);
     a.beginChunk(0.0);  a.append(s.data(), s.size());            // [0, 5)
     a.beginChunk(10.0); a.append(s.data(), s.size());            // [10, 15): current
-    a.retain(6.0, kInfT);                                         // the first chunk ends before 6
+    a.retain(6.0, kInfT, 8.0);                                    // the first chunk ends before 6
     CHECK(a.size() == 5000);
-    a.retain(10.5, kInfT);                                        // under a second into the chunk: kept
+    a.retain(10.5, kInfT, 12.5);                                  // under a second into the chunk: kept
     CHECK(a.size() == 5000);
-    a.retain(12.5, kInfT);                                        // 2.5 s in: trimmed
+    a.retain(12.5, kInfT, 14.5);                                  // 2.5 s in: trimmed
     CHECK(a.size() == 2500);
     float v = 0.0f;
     a.sample(13.0, 13.0, &v, 1); CHECK(v == doctest::Approx(1.0f));
@@ -1091,39 +1096,71 @@ TEST_CASE("TimedAudio: in reverse, retain trims what the playhead has passed fro
     std::vector<float> s(10000, 1.0f);
     a.beginChunk(10.0); a.append(s.data(), s.size());            // [10, 20): the stretch being played
     a.beginChunk(0.0);  a.append(s.data(), s.size(), 10.0);      // [0, 10): the stretch below, current
-    a.retain(-kInfT, 12.0 + 0.5);                                 // the playhead at 12, keeping 0.5 s above
+    a.retain(-kInfT, 12.0 + 0.5, 12.0);                           // the playhead at 12, keeping 0.5 s above
     CHECK(a.size() == 10000 + 2500);                              // [10, 12.5) and [0, 10)
     float v = 0.0f;
     a.sample(12.4, 12.4, &v, 1); CHECK(v == doctest::Approx(1.0f));
     a.sample(12.6, 12.6, &v, 1); CHECK(v == 0.0f);
-    a.retain(-kInfT, 12.0);                                       // under a second more: left alone
+    a.retain(-kInfT, 12.0, 11.5);                                 // under a second more: left alone
     CHECK(a.size() == 10000 + 2500);
 }
 
-TEST_CASE("TimedAudio: the cap drops the chunk farthest from the playhead -- in reverse, not the one playing") {
+TEST_CASE("TimedAudio: the cap drops the audio farthest from the playhead, never what plays there") {
     const int rate = 100;
-    const std::size_t half = (std::size_t)(TimedAudio::kMaxSeconds * rate / 2) + rate;   // just over half the cap
-    std::vector<float> s(half, 1.0f);
-    const double len = (double)half / rate;
-    TimedAudio a(rate);                                           // before any retain(): the oldest goes
-    a.beginChunk(0.0); a.append(s.data(), s.size());
-    a.beginChunk(len); a.append(s.data(), s.size());              // over the cap
-    CHECK(a.size() == half);
+    const double cap = TimedAudio::kMaxSeconds;
     float v = 0.0f;
-    a.sample(0.5 * len, 0.5 * len, &v, 1); CHECK(v == 0.0f);
-    a.sample(1.5 * len, 1.5 * len, &v, 1); CHECK(v == doctest::Approx(1.0f));
-    const std::size_t third = (std::size_t)(TimedAudio::kMaxSeconds * rate / 3) + rate;  // three are over
-    std::vector<float> t(third, 1.0f);
-    const double tl = (double)third / rate;
-    TimedAudio r(rate);                                           // reverse: the playhead in the first chunk
-    r.beginChunk(2.0 * tl); r.append(t.data(), t.size());        // the stretch playing
-    r.retain(-kInfT, 2.5 * tl);
-    r.beginChunk(tl); r.append(t.data(), t.size());              // the stretch below
-    r.beginChunk(0.0); r.append(t.data(), t.size());             // and the one below that: over the cap
-    CHECK(r.size() == 2 * third);
-    r.sample(2.4 * tl, 2.4 * tl, &v, 1); CHECK(v == doctest::Approx(1.0f));     // still playing
-    r.sample(1.5 * tl, 1.5 * tl, &v, 1); CHECK(v == 0.0f);                      // the farthest went
-    r.sample(0.5 * tl, 0.5 * tl, &v, 1); CHECK(v == doctest::Approx(1.0f));     // the current one stays
+    auto chunk = [&](TimedAudio& a, double start, double seconds, float value, double clipHi = kInfT) {
+        std::vector<float> s((std::size_t)(seconds * rate), value);
+        a.beginChunk(start);
+        a.append(s.data(), s.size(), clipHi);
+    };
+    {                                                             // before any retain(): the oldest goes
+        TimedAudio a(rate);
+        chunk(a, 0.0, 0.5 * cap + 1.0, 1.0f);
+        chunk(a, 0.5 * cap + 1.0, 0.5 * cap + 1.0, 2.0f);
+        CHECK(a.size() == (std::size_t)((0.5 * cap + 1.0) * rate));
+        a.sample(1.0, 1.0, &v, 1); CHECK(v == 0.0f);
+        a.sample(cap, cap, &v, 1); CHECK(v == doctest::Approx(2.0f));
+    }
+    {                                                             // reverse: the stretch playing is the oldest
+        TimedAudio a(rate);
+        const double third = cap / 3.0 + 1.0;
+        chunk(a, 2.0 * third, third, 3.0f);                       // the stretch playing
+        a.retain(-kInfT, 2.5 * third + 2.0, 2.5 * third);
+        chunk(a, third, third, 2.0f);                             // the stretch below
+        chunk(a, 0.0, third, 1.0f);                               // and the one below that: over the cap
+        CHECK(a.size() == (std::size_t)(2.0 * third * rate));
+        a.sample(2.5 * third, 2.5 * third, &v, 1); CHECK(v == doctest::Approx(3.0f));   // still playing
+        a.sample(1.5 * third, 1.5 * third, &v, 1); CHECK(v == 0.0f);                    // the farthest went
+        a.sample(0.5 * third, 0.5 * third, &v, 1); CHECK(v == doctest::Approx(1.0f));   // the one being filled stays
+    }
+    {                                                             // measured from the playhead, not the window
+        TimedAudio a(rate);                                       // (keyframes 89.5 s apart): the stretch playing
+        chunk(a, 99.9, 90.0, 3.0f);                               // reaches down to the playhead's lap...
+        chunk(a, 10.4, 90.0, 2.0f, 100.0);                        // ...where the one below now plays
+        a.retain(-kInfT, 99.5 + 2.0, 99.5);
+        chunk(a, -79.1, 90.0, 1.0f, 10.4);                        // over the cap
+        a.sample(99.5, 99.5, &v, 1); CHECK(v == doctest::Approx(2.0f));
+        CHECK(a.size() <= (std::size_t)(cap * rate));
+    }
+    {                                                             // only what plays and what is being filled
+        TimedAudio a(rate);                                       // are left: the latter's far end goes
+        chunk(a, 0.0, 95.0, 2.0f);                                // the fresh stretch, played at 94
+        a.retain(-kInfT, 94.0 + 2.0, 94.0);
+        chunk(a, -95.0, 95.0, 1.0f, 0.0);                         // the lap before, over the cap by 10 s
+        CHECK(a.size() == (std::size_t)(cap * rate));
+        a.sample(94.0, 94.0, &v, 1); CHECK(v == doctest::Approx(2.0f));
+        a.sample(-90.0, -90.0, &v, 1); CHECK(v == 0.0f);          // the bottom 10 s went
+        a.sample(-80.0, -80.0, &v, 1); CHECK(v == doctest::Approx(1.0f));
+    }
+    {                                                             // one stretch alone over the cap keeps the
+        TimedAudio a(rate);                                       // cap's worth nearest the playhead
+        a.retain(-kInfT, 600.0 + 2.0, 600.0);
+        chunk(a, 0.0, 600.0, 1.0f);                               // a keyframe 10 minutes below
+        CHECK(a.size() == (std::size_t)(cap * rate));
+        a.sample(599.0, 599.0, &v, 1); CHECK(v == doctest::Approx(1.0f));
+        a.sample(600.0 - cap - 1.0, 600.0 - cap - 1.0, &v, 1); CHECK(v == 0.0f);
+    }
 }
 ```
 
@@ -1170,10 +1207,10 @@ namespace oss {
 // at a loop seam that is the new lap; in reverse it is the stretch below, whose audio runs on unbroken
 // up to where the stretch above resumed its own -- a little before that stretch's keyframe, with a
 // just-flushed decoder fading in.
-// GL-free. Not thread-safe: VideoStream guards it with its mutex.
+// GL-free. Not thread-safe (sample() included: it keeps scratch): VideoStream guards it with its mutex.
 class TimedAudio {
 public:
-    static constexpr double kMaxSeconds = 180.0;  // safety cap on everything held (about 35 MB at 48 kHz)
+    static constexpr double kMaxSeconds = 180.0;  // cap on everything held (about 35 MB at 48 kHz)
     static constexpr double kGridEps    = 1e-6;   // samples: a time on the sample grid is not rounded past
 
     explicit TimedAudio(int rate = 48000) : rate_(rate) {}
@@ -1198,12 +1235,12 @@ public:
         capTotal();
     }
 
-    // Keep the audio around the playhead: [lo, hi] is forward [u - keep, +inf), reverse (-inf, u + keep].
-    // Chunks wholly outside go (never the current one). A chunk's front (forward) or back (reverse) is cut
-    // once more than a second of it lies outside, so calling this every step does not move memory every
-    // step. It also notes where the playhead is, for the cap.
-    void retain(double lo, double hi) {
-        focus_ = std::isfinite(lo) ? (std::isfinite(hi) ? 0.5 * (lo + hi) : lo) : hi;
+    // Keep the audio around the playhead `u`: [lo, hi] is forward [u - keep, +inf), reverse
+    // (-inf, u + keep]. Chunks wholly outside go (never the current one). A chunk's front (forward) or back
+    // (reverse) is cut once more than a second of it lies outside, so calling this every step does not
+    // move memory every step. The cap spares what plays at `u`.
+    void retain(double lo, double hi, double u) {
+        playhead_ = u;
         std::vector<Chunk> kept;
         kept.reserve(chunks_.size());
         for (std::size_t i = 0; i < chunks_.size(); ++i) {
@@ -1256,28 +1293,56 @@ private:
         return 0.0f;
     }
 
-    // While more than kMaxSeconds is held, drop the chunk farthest from the playhead (never the current
-    // one; before any retain() the oldest goes first). In reverse the oldest chunk is the one being played.
+    // The index of the chunk that plays at t (the newest covering it), or chunks_.size() if none does.
+    std::size_t playingAt(double t) const {
+        for (std::size_t k = chunks_.size(); k-- > 0;) {
+            const double idx = (t - chunks_[k].start) * rate_;
+            if (idx >= 0.0 && idx < (double)chunks_[k].s.size()) return k;
+        }
+        return chunks_.size();
+    }
+
+    // While more than kMaxSeconds is held, drop the audio farthest from the playhead: whole chunks first,
+    // farthest first -- never the one playing at the playhead, nor the one being filled -- then the far
+    // end of the one being filled, never past the playhead. (In reverse the oldest chunk is the one
+    // playing.) Before any retain() there is no playhead: the oldest audio goes first.
     void capTotal() {
         const std::size_t cap = (std::size_t)(kMaxSeconds * rate_);
         std::size_t total = size();
-        while (chunks_.size() > 1 && total > cap) {
-            std::size_t victim = 0;
+        while (total > cap) {
+            const std::size_t last = chunks_.size() - 1, playing = playingAt(playhead_);
+            std::size_t victim = last;
             double farthest = -1.0;
-            for (std::size_t i = 0; i + 1 < chunks_.size(); ++i) {
+            for (std::size_t i = 0; i < last; ++i) {
+                if (i == playing) continue;
                 const Chunk& c = chunks_[i];
-                const double d = focus_ < c.start ? c.start - focus_ : (focus_ >= end(c) ? focus_ - end(c) : 0.0);
+                const double d = playhead_ < c.start ? c.start - playhead_
+                               : (playhead_ >= end(c) ? playhead_ - end(c) : 0.0);
                 if (d > farthest) { farthest = d; victim = i; }
             }
+            if (victim == last) break;
             total -= chunks_[victim].s.size();
             chunks_.erase(chunks_.begin() + (std::ptrdiff_t)victim);
+        }
+        if (total <= cap) return;
+        Chunk& c = chunks_.back();                       // what is left over the cap: the one being filled
+        const double at = (playhead_ - c.start) * rate_; // the playhead's place in it, in samples
+        const std::size_t over = total - cap;
+        if (!std::isfinite(playhead_) || at >= 0.5 * (double)c.s.size()) {   // its front is the far end
+            const double room = std::isfinite(at) ? std::floor(at) : (double)c.s.size();
+            const std::size_t cut = std::min(over, (std::size_t)std::max(0.0, std::min(room, (double)c.s.size())));
+            c.s.erase(c.s.begin(), c.s.begin() + (std::ptrdiff_t)cut);
+            c.start += (double)cut / rate_;
+        } else {                                         // its back is
+            const std::size_t keep = (std::size_t)std::max(0.0, std::floor(at) + 1.0);
+            c.s.resize(std::max(keep, c.s.size() - std::min(over, c.s.size())));
         }
     }
 
     std::vector<Chunk> chunks_;
     int rate_;
-    double focus_ = -std::numeric_limits<double>::infinity();   // where retain() last put the playhead
-    mutable std::vector<const Chunk*> span_;                     // sample()'s scratch
+    double playhead_ = -std::numeric_limits<double>::infinity();   // as retain() last saw it
+    mutable std::vector<const Chunk*> span_;                        // sample()'s scratch
 };
 
 } // namespace oss
@@ -2980,8 +3045,8 @@ void VideoStream::step() {
             if (runHi_ <= r.lapLo) runValid_ = false;
             else                   runLo_ = r.lapLo;
         }
-        if (dir >= 0) audio_.retain(r.u - kVideoAudioKeep, kInf);
-        else          audio_.retain(-kInf, r.u + kVideoAudioKeep);
+        if (dir >= 0) audio_.retain(r.u - kVideoAudioKeep, kInf, r.u);
+        else          audio_.retain(-kInf, r.u + kVideoAudioKeep, r.u);
         in.lowest = kInf;
         if (shown_.buf >= 0) in.lowest = shown_.t;
         if (!ready_.empty()) in.lowest = std::min(in.lowest, ready_.front().t);

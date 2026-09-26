@@ -228,6 +228,17 @@ fixed.
 44. **Tests**: adjacent chunks tiling, the newest chunk winning in reverse, `clipHi` at sample starts,
     reverse trimming, the cap sparing the playhead's chunk.
 
+### Revisions during execution (second code review of Task 4)
+
+45. **The cap works from the playhead itself and never drops what plays there.** It measured distance
+    from the retain window's edge (2 s above a reverse playhead), and with keyframes more than ~90 s
+    apart the only chunk it could drop was the one playing: seconds of silence again. `retain()` now
+    takes the playhead; the cap drops whole chunks farthest from it (never the one playing at it, nor
+    the one being filled), then cuts the far end of the one being filled, never past the playhead. That
+    also bounds a single stretch: one from a keyframe ten minutes back used to hold all ten minutes.
+46. **A test pins the grid tolerance** (`(2.19 − 0.01) × 48000` rounds to 104640.000000000015), and the
+    Units section and the reverse-audio note are corrected.
+
 ## Root cause
 
 Reproduced with a headless harness that compiles the real `VideoPlayerNode.cpp` and drives
@@ -343,15 +354,20 @@ functions, unit-tested in `core_tests` (the `StepSync.h` / `BarSync.h` pattern).
 
 **`core/TimedAudio.h`** — new, header-only, no GL or FFmpeg code. A time-tagged audio store at
 48 kHz mono.
-- It holds contiguous chunks, each a start time u plus samples.
+- It holds contiguous chunks, each a start time u plus samples, covering up to the end of the last
+  sample, so adjacent chunks tile.
 - `beginChunk(startU)` starts a new chunk; seeks, loop wraps and reverse stretches use it.
-- `append(samples, n, clipHi = +inf)` adds to the current chunk, keeping only samples before `clipHi`
-  (a reverse stretch passes the start of the stretch above it, so the two never overlap).
-- `retain(lo, hi)` drops audio outside the window, trimming a chunk's front a second at a time.
+- `append(samples, n, clipHi = +inf)` adds to the current chunk, keeping only the samples that start
+  before `clipHi` (a reverse stretch passes the start of the stretch above it).
+- `retain(lo, hi, u)` keeps the playhead u's neighbourhood: chunks wholly outside [lo, hi] go (never the
+  current one), and a chunk's front (forward) or back (reverse) is cut once more than a second of it lies
+  outside.
+- A 180 s cap drops the audio farthest from the playhead: whole chunks first (never the one playing at
+  u, nor the one being filled), then the far end of the one being filled.
 - `sample(u0, u1, out, n)` maps output sample j to time u0 + (u1 − u0)·j/n and interpolates linearly,
   exactly like today's `emitAudio`.
   - Times not covered by any chunk produce silence.
-  - Where chunks overlap at a loop boundary, the later-starting chunk wins.
+  - Where chunks overlap, the most recently begun one wins.
 - Unit-tested in `core_tests`.
 
 **`gfx/VideoStream.{h,cpp}`** — new, no GL code, owns the worker thread.
@@ -752,10 +768,12 @@ Measured on the development machine, in Debug and Release, with the acceptance h
 - Smooth reverse at 4K with widely spaced keyframes.
 - Transport sync for the Video Player.
 - The swept audio after a large hitch: an existing behaviour, unchanged.
-- **Reverse audio seams on some files.** Each reverse stretch restarts the audio decoder. Where a
-  container rounds audio times to the millisecond (MKV, FLV), or the stretches are very short (all-intra
-  video: one frame each), the seams between stretches can still click. Decoding a little audio before
-  each seek point (a pre-roll) would fix both.
+- **Reverse audio seams on some files.** Each reverse stretch restarts the audio decoder. On all-intra
+  video (a stretch per frame) every stretch's audio starts with the decoder's fade-in; decoding a little
+  audio before each seek point (a pre-roll) would fix that. Where a container rounds audio times to the
+  millisecond (MKV, FLV), two stretches holding the same audio disagree by up to half a millisecond, so
+  the switch between them can click however early decoding starts; that needs the chunks anchored on
+  the codec's frame grid, or a short crossfade where one gives way to the next.
 - Local build configuration. `build.sh` builds Debug; this design removes the Debug-only
   per-byte-free cost from the video path, and switching local builds to RelWithDebInfo is a separate
   choice.
