@@ -97,11 +97,12 @@ inline int videoSelectFrame(int n, double u, TimeOf timeOf) {
 }
 
 // A reverse stretch: the frames from a keyframe up to `end`, decoded forward in one pass. Live keeps
-// every `stride`-th frame counting back from `end`, so `end` is always kept and the stretch stays
-// evenly covered within the `keep` budget. Offline (`contiguous`) keeps the `keep` frames nearest
-// `end`, all of them, so reverse renders are frame-exact.
+// every `stride`-th frame counting back from `top` -- the nominal time of the frame containing `end`,
+// on the keyframe's grid -- so the stretch stays evenly covered within the `keep` budget. Offline
+// (`contiguous`) keeps the `keep` frames nearest `end`, all of them, so reverse renders are exact.
 struct VideoStretch {
     double end        = 0.0;
+    double top        = 0.0;   // live: nominal time of the frame containing `end`, on the keyframe's grid
     int    keep       = 1;
     int    stride     = 1;
     bool   contiguous = false;
@@ -111,22 +112,30 @@ inline VideoStretch videoPlanStretch(double keyTime, double end, double frameDur
                                      bool offline) {
     VideoStretch s;
     s.end        = end;
+    s.top        = end;
     s.keep       = budget < 1 ? 1 : budget;
     s.contiguous = offline;
-    if (offline || frameDur <= 0.0) return s;
-    long n = (long)std::floor((end - keyTime) / frameDur + kVideoTimeEps) + 1;   // frames in [keyTime, end]
-    if (n < 1) n = 1;
-    s.stride = (int)((n + s.keep - 1) / s.keep);            // ceil(n / keep)
+    if (offline || !(frameDur > 0.0)) return s;
+    double last = std::floor((end - keyTime) / frameDur + kVideoTimeEps);   // the frame containing `end`
+    if (!(last >= 0.0)) last = 0.0;                                         // end before the key, or NaN
+    if (last > 1e9) last = 1e9;                                             // keep the casts defined
+    const long long n = (long long)last + 1;                                // frames in [keyTime, end]
+    s.top    = keyTime + (double)(n - 1) * frameDur;
+    s.stride = (int)((n + s.keep - 1) / s.keep);                            // ceil(n / keep)
     return s;
 }
 
-// Whether a live stretch keeps the frame at time t, counting frames back from `end` -- which is a
-// boundary, not necessarily a frame time: k = 0 is the frame whose interval contains `end`.
-// Contiguous stretches convert every frame (their ring then keeps only the newest `keep`).
+// Whether a live stretch keeps the frame at time t: every stride-th, counting back from the top frame.
+// The count ROUNDS onto the keyframe's grid: container time bases (MKV/WebM milliseconds, QuickTime
+// 1/600) put frames up to half a frame off it, and flooring made two frames share a count and skip
+// others, so a stride could keep nothing. A frame half a frame or more past the top is never kept.
+// Contiguous stretches convert every frame (their ring keeps only the newest `keep`).
 inline bool videoStretchKeeps(const VideoStretch& s, double t, double frameDur) {
-    if (s.contiguous || s.stride <= 1 || frameDur <= 0.0) return true;
-    const long k = (long)std::floor((s.end - t) / frameDur + kVideoTimeEps);
-    return k >= 0 && k % s.stride == 0;
+    if (s.contiguous || !(frameDur > 0.0)) return true;
+    const double x = (s.top - t) / frameDur;
+    if (!(x > -0.5) || x > 1e9) return false;                               // past the top, NaN, absurd
+    const long long k = std::llround(x);
+    return s.stride <= 1 || k % s.stride == 0;
 }
 
 } // namespace oss

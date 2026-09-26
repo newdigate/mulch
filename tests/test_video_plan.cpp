@@ -1,4 +1,5 @@
 #include <doctest/doctest.h>
+#include <cmath>
 #include <limits>
 #include <vector>
 #include "core/OfflineRender.h"
@@ -102,11 +103,11 @@ TEST_CASE("videoFrameStep: an offline playhead stays on the frame grid for an ho
     CHECK(videoFrameStep(0.0f) == 0.0);
 }
 
-// The frames a live stretch keeps, as indices counted back from `end` (0 = end).
+// The frames a live stretch keeps on an exact grid, as counts back from its top frame (0 = the top).
 static std::vector<long> keptBack(const VideoStretch& s, double key, double fd) {
     std::vector<long> k;
     for (double t = key; t <= s.end + 1e-9; t += fd)
-        if (videoStretchKeeps(s, t, fd)) k.push_back(std::lround((s.end - t) / fd));
+        if (videoStretchKeeps(s, t, fd)) k.push_back(std::lround((s.top - t) / fd));
     return k;
 }
 
@@ -117,21 +118,21 @@ TEST_CASE("videoPlanStretch: every frame when the stretch fits the budget") {
     CHECK(keptBack(s, 0.0, fd).size() == 30);
 }
 
-TEST_CASE("videoPlanStretch: every n-th frame otherwise, always keeping the end, within budget") {
+TEST_CASE("videoPlanStretch: every n-th frame otherwise, always keeping the top, within budget") {
     const double fd = 1.0 / 30.0;
     VideoStretch s = videoPlanStretch(0.0, 29 * fd, fd, 8, false);    // 30 frames, budget 8
     CHECK(s.stride == 4);
     std::vector<long> k = keptBack(s, 0.0, fd);
     CHECK(k.size() == 8);
     CHECK(k.front() == 28);                                           // ascending time: earliest first...
-    CHECK(k.back() == 0);                                             // ...and the end frame is kept
+    CHECK(k.back() == 0);                                             // ...and the top frame is kept
 
     VideoStretch l = videoPlanStretch(0.0, 249 * fd, fd, 8, false);   // a 250-frame keyframe interval
     CHECK(l.stride == 32);
     std::vector<long> kl = keptBack(l, 0.0, fd);
     CHECK(kl.size() <= 8);
     CHECK(kl.back() == 0);
-    CHECK(249 - kl.front() < l.stride);                               // no gap wider than the stride
+    for (std::size_t j = 1; j < kl.size(); ++j) CHECK(kl[j - 1] - kl[j] == l.stride);   // evenly spaced
 }
 
 TEST_CASE("videoStretchKeeps: an end between frames counts from the frame containing it") {
@@ -142,6 +143,66 @@ TEST_CASE("videoStretchKeeps: an end between frames counts from the frame contai
     CHECK(videoStretchKeeps(s, 28 * fd, fd));          // the frame just below the boundary is kept
     CHECK_FALSE(videoStretchKeeps(s, 27 * fd, fd));
     CHECK(videoStretchKeeps(s, 24 * fd, fd));
+    CHECK_FALSE(videoStretchKeeps(s, 29 * fd, fd));    // the stretch above's keyframe is not
+}
+
+TEST_CASE("videoStretchKeeps: stride 1 still rejects a frame past the end") {
+    const double fd = 1.0 / 30.0;
+    const VideoStretch s = videoPlanStretch(0.0, 29 * fd - kVideoTimeEps, fd, 32, false);
+    CHECK(s.stride == 1);
+    CHECK(videoStretchKeeps(s, 28 * fd, fd));
+    CHECK_FALSE(videoStretchKeeps(s, 29 * fd, fd));
+}
+
+// A 60 fps MKV/WebM stores whole milliseconds, so frames sit up to half a millisecond off the grid.
+static double msFrameTime(long i) { return (double)std::lround((double)i * 1000.0 / 60.0) / 1000.0; }
+
+TEST_CASE("videoStretchKeeps: millisecond-rounded timestamps keep every stride-th frame, even 1 us below a keyframe") {
+    // Counting back from a boundary by flooring made counts repeat and skip: at stride 15 it kept nothing.
+    const double fd = 1.0 / 60.0;
+    for (long keyAbove = 120; keyAbove <= 4800; keyAbove += 120) {  // 2 s keyframe intervals
+        const double end = msFrameTime(keyAbove) - kVideoTimeEps;
+        const VideoStretch s = videoPlanStretch(msFrameTime(keyAbove - 120), end, fd, 8, false);
+        REQUIRE(s.stride == 15);
+        std::vector<long> kept;
+        for (long i = keyAbove - 120; msFrameTime(i) <= end + kVideoTimeEps; ++i)
+            if (videoStretchKeeps(s, msFrameTime(i), fd)) kept.push_back(i);
+        CHECK(!kept.empty());
+        CHECK((int)kept.size() <= s.keep);
+        CHECK_FALSE(videoStretchKeeps(s, msFrameTime(keyAbove), fd));   // the stretch above's keyframe
+        for (std::size_t j = 1; j < kept.size(); ++j) CHECK(kept[j] - kept[j - 1] == s.stride);
+    }
+}
+
+TEST_CASE("videoStretchKeeps: from the worker's half-frame anchor the top kept frame is just below the stretch above") {
+    const double fd = 1.0 / 60.0;
+    auto tOf = msFrameTime;
+    for (long gop : {100L, 120L}) {                                   // keyframes off and on whole ms
+        for (long keyAbove = gop; keyAbove <= 40 * gop; keyAbove += gop) {
+            const double end = tOf(keyAbove) - fd / 2;               // the worker's live prefetch anchor
+            const VideoStretch s = videoPlanStretch(tOf(keyAbove - gop), end, fd, 8, false);   // 4K budget
+            std::vector<long> kept;
+            for (long i = keyAbove - gop; tOf(i) <= end + kVideoTimeEps; ++i)
+                if (videoStretchKeeps(s, tOf(i), fd)) kept.push_back(i);
+            REQUIRE(!kept.empty());
+            CHECK((int)kept.size() <= s.keep);
+            CHECK(kept.back() == keyAbove - 1);                       // the frame just below the stretch above
+            for (std::size_t j = 1; j < kept.size(); ++j) CHECK(kept[j] - kept[j - 1] == s.stride);
+        }
+    }
+}
+
+TEST_CASE("videoPlanStretch: degenerate inputs stay defined") {
+    VideoStretch s = videoPlanStretch(0.0, 1.0, 1.0 / 30.0, 0, false);    // no budget: keep one
+    CHECK(s.keep == 1);
+    s = videoPlanStretch(0.0, 1.0, 0.0, 8, false);                      // no frame rate: keep them all
+    CHECK(s.stride == 1);
+    CHECK(videoStretchKeeps(s, 0.5, 0.0));
+    s = videoPlanStretch(0.0, 1.0, std::nan(""), 8, false);
+    CHECK(s.stride == 1);
+    s = videoPlanStretch(2.0, 1.0, 1.0 / 30.0, 8, false);               // end before the key: one frame
+    CHECK(s.stride == 1);
+    CHECK(s.top == doctest::Approx(2.0));
 }
 
 TEST_CASE("videoPlanStretch: offline keeps consecutive frames (a ring of the newest)") {
