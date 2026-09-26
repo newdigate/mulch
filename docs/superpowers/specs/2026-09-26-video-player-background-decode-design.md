@@ -307,6 +307,10 @@ fixed, and each fix is pinned by a check that fails when it is reverted.
     a clip with a 0.6 s hole in its audio (remuxed without those packets through FFmpeg's API: `VideoEncoder`
     cannot leave one), and two MPEG-TS files end to end that change audio format and picture size. The
     `VideoStream` scenario renders the audio-hole clip offline and checks the silence and the tone after it.
+56. **The read-ahead cap stays strict.** The first version of revision 51 read a packet before checking
+    the cap, so at the cap every `pumpAudio()` call whose target lay past what had been read took one more
+    packet: 40 calls with nothing decoded between them grew the queue by 130 MB on the ProRes file.
+    `pumpAudio()` checks the cap before each read again, as it did before.
 
 ## Root cause
 

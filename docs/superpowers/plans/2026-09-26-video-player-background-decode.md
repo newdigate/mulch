@@ -2427,11 +2427,12 @@ void VideoDecoder::placeAudio(double start, const float* s, std::size_t n) {
 
 void VideoDecoder::pumpAudio(double t) {
     if (!fmt_ || !actx_) return;
-    while (audioSettledUpTo() < t && readPacket()) {
+    while (audioSettledUpTo() < t) {
         if (queuedBytes_ >= kMaxQueuedBytes) {     // full: what was read counts as settled (see the header)
             capSettledT_ = std::max(capSettledT_, demuxedT_);
-            break;
+            return;
         }
+        if (!readPacket()) return;
     }
 }
 
