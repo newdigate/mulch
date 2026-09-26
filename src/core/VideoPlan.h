@@ -25,6 +25,8 @@ constexpr double      kVideoTimeEps       = 1e-6;  // frame-time comparisons: ab
 constexpr double      kVideoCatchUpSlice  = 0.1;   // live: show the best frame reached at least this often (s)
 constexpr double      kVideoRestartLeads  = 3.0;   // reverse: a moving playhead further above what is covered than
                                                    // this many leads (plus a frame) restarts rather than waits
+constexpr double      kVideoIndexLead     = 3.0;   // an index may list a keyframe by its decode time: this many
+                                                   // frames early (a B-frame reorder delay)
 
 // How many RGBA frames of w x h fit the budget, clamped to [kVideoPoolMinFrames, kVideoPoolMaxFrames].
 inline int videoPoolFrames(std::size_t budgetBytes, int w, int h) {
@@ -184,8 +186,9 @@ struct VideoPlanInput {
     double head        = 0.0;      // time of the next frame the decoder will produce
     bool   eof         = false;    // the decoder has produced the last frame of this lap
     bool   keyKnown    = false;    // the stream has a keyframe index...
-    double nextKey     = 0.0;      // ...and this is the first keyframe in it after `head` (+inf: none -- an
-                                   // index built as the file is read, FLV's or NUT's, may not have got there)
+    double nextKey     = 0.0;      // ...and this is the first keyframe in it after `head`, maybe listed by its
+                                   // decode time (kVideoIndexLead); +inf: none known (an index built as the
+                                   // file is read, NUT's, may not have got there)
     double lapEnd      = std::numeric_limits<double>::infinity();   // where the decoder's lap ends, loop or
                                    // not (+inf: unknown duration) -- the next lap starts with a keyframe
     double lowest      = 0.0;      // earliest frame held (on screen or queued); `head` if none
@@ -207,7 +210,8 @@ struct VideoPlanInput {
 //  seek was pinned there), or -- loop off -- when the decoder is in an earlier lap than the playhead (it
 //  fell behind while looping): nothing it decodes there can be shown. When the target is ahead of the
 //  decoder by more than kVideoCatchUpFrames, seek if a keyframe lies between (the next lap's start
-//  counts) and the jump is longer than kVideoSeekMinJump -- a seek restarts the decoder's
+//  counts; an index keyframe must be kVideoIndexLead frames before the target, since it may be listed by
+//  its decode time) and the jump is longer than kVideoSeekMinJump -- a seek restarts the decoder's
 //  frame-threading pipeline, which costs more than decoding through a short gap -- or, with no index, if
 //  it is more than kVideoSeekNoIndex away; but within the lap not while noSeekBelow says a seek would
 //  land behind the decoder again (no index, or a wrong one); otherwise catch up by decoding without
@@ -241,11 +245,12 @@ inline VideoStep videoNextStep(const VideoPlanInput& in) {
     if (!loops && in.lapEnd <= in.lapLo + eps)                             // the decoder is a lap behind
         return VideoStep{VideoStepKind::Seek, in.target};
     if (!in.eof && in.target > in.head + kVideoCatchUpFrames * in.frameDur) {
-        const bool   known  = in.keyKnown || in.target >= in.lapEnd;
-        const double key    = std::min(in.keyKnown ? in.nextKey : std::numeric_limits<double>::infinity(), in.lapEnd);
-        const double gap    = in.target - in.head;
-        const bool   jump   = known ? (key <= in.target && gap > kVideoSeekMinJump) : gap > kVideoSeekNoIndex;
-        const bool   futile = in.target < in.lapEnd && in.target < in.noSeekBelow;
+        const bool   known   = in.keyKnown || in.target >= in.lapEnd;
+        const double key     = std::min(in.keyKnown ? in.nextKey : std::numeric_limits<double>::infinity(), in.lapEnd);
+        const double gap     = in.target - in.head;
+        const bool   between = key <= in.target - kVideoIndexLead * in.frameDur;
+        const bool   jump    = known ? (between && gap > kVideoSeekMinJump) : gap > kVideoSeekNoIndex;
+        const bool   futile  = in.target < in.lapEnd && in.target < in.noSeekBelow;
         return VideoStep{jump && !futile ? VideoStepKind::Seek : VideoStepKind::CatchUp, in.target};
     }
     if (in.eof) return loops ? VideoStep{VideoStepKind::Wrap} : VideoStep{};

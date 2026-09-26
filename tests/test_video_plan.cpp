@@ -248,7 +248,7 @@ TEST_CASE("videoStretchBudget: half the pool, at least one frame") {
 TEST_CASE("videoNoSeekBelow: a seek ahead that landed at or behind the decoder is not worth repeating") {
     CHECK(videoNoSeekBelow(6.5, 2.56, 0.0) == 6.5 + 6.5);      // landed a whole gap back: wait that long again
     CHECK(videoNoSeekBelow(6.5, 5.0, 4.8) == 6.5 + kVideoSeekNoIndex);   // a short way back: at least this long
-    CHECK(videoNoSeekBelow(6.5, 2.56, 2.56) == 6.5 + 6.5 - 2.56);        // exactly at the head counts
+    CHECK(videoNoSeekBelow(6.5, 2.56, 2.56) == 6.5 + (6.5 - 2.56));      // exactly at the head counts
     CHECK(videoNoSeekBelow(6.5, 2.56, 6.0) == -kInf);          // it got ahead: seeking works here
     CHECK(videoNoSeekBelow(1.0, 2.56, 0.0) == -kInf);          // a seek back is meant to land behind
     CHECK(videoNoSeekBelow(6.5, 2.56, kInf) == -kInf);         // it found no frame at all
@@ -274,6 +274,15 @@ TEST_CASE("videoNextStep forward: far behind -> catch up, or seek when a keyfram
     CHECK(videoNextStep(in).kind == VideoStepKind::CatchUp);
     in.head = 2.95;                                    // within kVideoCatchUpFrames: just fill
     CHECK(videoNextStep(in).kind == VideoStepKind::Fill);
+}
+
+TEST_CASE("videoNextStep forward: an index keyframe just below the target may be a frame or two later") {
+    VideoPlanInput in = fwd(19.95);                    // x264's B-frames: the keyframe shown at 20.0 is
+    in.duration = 30.0; in.lapEnd = 30.0;              // listed at its decode time, 19.92
+    in.head = 12.04; in.lowest = 12.0; in.nextKey = 19.92;
+    CHECK(videoNextStep(in).kind == VideoStepKind::CatchUp);   // a seek for 19.95 would land at 10
+    in.target = 20.1;                                  // well past it: the keyframe is surely between
+    CHECK(videoNextStep(in).kind == VideoStepKind::Seek);
 }
 
 TEST_CASE("videoNextStep forward: the seek thresholds are strict") {
@@ -414,7 +423,10 @@ TEST_CASE("videoNextStep reverse: a new run starts a fresh stretch at the target
     CHECK(s.fresh);
     CHECK(s.to == 5.0);
     in = rev(5.0); in.dirChanged = true;
-    CHECK(videoNextStep(in).fresh);
+    s = videoNextStep(in);
+    CHECK(s.kind == VideoStepKind::Reverse);
+    CHECK(s.fresh);
+    CHECK(s.to == 5.0);
 }
 
 TEST_CASE("videoNextStep reverse: falling below the covered stretch jumps with a fresh stretch") {
