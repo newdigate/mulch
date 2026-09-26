@@ -69,7 +69,7 @@ TEST_CASE("videoSelectFrame: greatest time at or before u, tolerant of float dt 
     CHECK(videoSelectFrame(0, 1.0, timeOf) == -1);
 }
 
-TEST_CASE("loop off at the end holds the last frame, not the next lap's first") {
+TEST_CASE("videoAdvance: loop off at the end holds the last frame, not the next lap's first") {
     // Looping, the worker decodes the next lap early: its first frame is tagged at exactly lapLo + D.
     const double t[] = {1.92, 1.96, 2.0};                       // lap 0's last two frames, then lap 1's first
     auto timeOf = [&](int i) { return t[i]; };
