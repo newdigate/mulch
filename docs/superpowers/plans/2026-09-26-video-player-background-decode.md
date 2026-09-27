@@ -5296,7 +5296,7 @@ EOF
 ### Task 9: Document the design in CLAUDE.md
 
 **Files:**
-- Modify: `CLAUDE.md` (two bullets under *Hard rules*)
+- Modify: `CLAUDE.md` (two bullets under *Hard rules*, and three references to them)
 
 - [ ] **Step 1: Replace the *Real-time threads bridge through queues* bullet**. In `CLAUDE.md`, replace:
 
@@ -5314,7 +5314,7 @@ with:
   mesh loading (`std::async`) and video decoding (a worker per Video Player, `gfx/VideoStream`)
   run off the graph thread; they hand data back via a lock-free SPSC ring buffer
   (`src/audio/SpscRingBuffer.h`), `AsyncLoader` (`src/core/AsyncLoader.h`), or the stream's
-  mutex-guarded frame pool. GL uploads always happen on the main thread.
+  mutex-guarded frame queue and audio store. GL uploads always happen on the main thread.
 ```
 
 - [ ] **Step 2: Replace the *`VideoDecoder` … is a GL-free FFmpeg wrapper* bullet (it describes the synchronous design this plan removes)**. In `CLAUDE.md`, replace:
@@ -5335,47 +5335,113 @@ with:
   (`thread_count = 0`). `decodeNext()` hands back a `DecodedFrame` (a counted reference,
   not yet converted) and `convert()` turns it into TOP-DOWN RGBA with threaded swscale
   (`sws_scale_frame`, which only writes into refcounted frames, so the caller's buffer is
-  wrapped in a no-op-free `AVBufferRef`). Video packets are queued (≤ 64 MB) rather than
-  decoded at once, so `pumpAudio()` keeps 48 kHz mono audio ahead of the video;
-  `audioSettledUpTo()` says how far no more audio can arrive. The legacy `decodeFrame()`
-  (bottom-up RGBA + audio appended) is built on those and unchanged for `gl_smoke`. Every time
-  in and out counts from the first video frame (decoded at `open()`), so a container that starts
-  its clock late (MPEG-TS) or shows a B-frame delay (FLV, fragmented MP4) still plays from 0;
-  `open()` also seeks to the start first, so indexes read only on a seek (Matroska cues) are there,
-  and MPEG-TS/-PS indexes are ignored: their demuxers list every packet a seek probes as a keyframe.
-  A frame with no timestamp (the B-frame tail of an AVI or MPEG-PS, a raw H.264 stream) follows
-  the one before it, and is skipped when nothing precedes it since a seek into the file. A raw
-  stream has no times to seek by, so `seek()` sends it to its first byte (the fallback for any
-  failed seek; `seek()` returns false only when not even the start is reachable). Audio comes out
-  in runs that follow its timestamps (`takeAudio(out, startT, continues)`: a hole or an overlap
-  starts a new run), the resampler is rebuilt when the audio format changes, and once an
-  offline caller (`pumpAudio(t, true)`) is stuck at the 64 MB cap (nothing taken off the queue
-  since it last stopped there) the audio counts as settled up to the last packet read.
-- **The Video Player decodes on a worker** (`src/gfx/VideoStream.{h,cpp}`, one per node,
-  GL-free): it opens the file, keeps a fixed pool of RGBA frames (512 MB budget:
-  `core/VideoPlan.h` `videoPoolFrames`) decoded ahead of the requested playhead, and reads
-  audio into a `core/TimedAudio.h` store. Its decisions — fill, catch up (decode without
-  converting, 100 ms slices), seek (only for jumps over 1 s: a seek restarts the frame-thread
-  pipeline), wrap, and reverse keyframe-to-frame stretches published whole — are the pure,
-  unit-tested `videoNextStep()`. A seek lands where its decode loop admits frames, backing off
-  1 s, 2 s, 4 s… to the file's start when it lands late (decode-time indexes, MPEG-TS), and a
-  seek ahead that landed behind the decoder is not repeated nearby (`videoNoSeekBelow`). An
-  offline render starting in reverse restarts the run: live stretches keep every stride-th frame.
-  A new audio chunk begins wherever the decoder's audio jumps, and a file it cannot seek in at all
-  fails the stream ("cannot seek in this file") rather than spinning. Offline readiness names the
-  frame for the playhead exactly (each queued frame knows when the next one decoded starts), since
-  the node's prefetch only guesses the next playhead. A stream's teardown (0.1–0.5 s at 4K) runs on
-  a reaper thread: the node hands old streams to `VideoStream::retire()`, never waits for them.
-  The node's playhead is UNWRAPPED (lap × D + position,
-  `videoAdvance`), so the worker decodes the next lap early and loops are seamless; it is held
-  at the start until the first frame is on screen. The node uploads the newest frame at or
-  before the playhead into a staging texture and flips it into the published texture with
-  one `glBlitFramebuffer`. Offline renders stay exact: `evaluate()` waits for the frame for
-  the playhead (not on a render's first frame, a pre-roll frame) and `loading()` reports the
-  NEXT frame not ready, so the renderer's gate does the waiting between frames.
+  wrapped in an `AVBufferRef` whose free callback does nothing). Video packets are queued
+  (≤ 64 MB) rather than decoded at once, so `pumpAudio()` keeps 48 kHz mono audio ahead of the
+  video; `audioSettledUpTo()` says how far no more audio can arrive. The legacy `decodeFrame()`
+  (bottom-up RGBA + audio appended; its converter is built from the first frame's format) is
+  built on those and kept for `gl_smoke`. Every time in and out counts from the first video
+  frame (decoded at `open()`), so a container that starts its clock late (MPEG-TS) or shows a
+  B-frame delay (FLV, fragmented MP4) still plays from 0; `open()` also seeks to the start
+  first, so indexes read only on a seek (Matroska cues) are there, and MPEG-TS/-PS indexes are
+  ignored: their demuxers list every packet a seek probes as a keyframe. A frame with no
+  timestamp (the B-frame tail of an AVI or MPEG-PS, a raw H.264 stream) follows the one before
+  it, and is skipped when nothing precedes it since a seek into the file. A raw stream has no
+  times to seek by, so `seek()` sends it to its first byte (the fallback for any failed seek;
+  `seek()` returns false only when not even the start is reachable). Audio comes out in runs
+  that follow its timestamps (`takeAudio(out, startT, continues)`: a hole or an overlap starts a
+  new run), the resampler is rebuilt when the audio format changes and reset by a seek, and once
+  an offline caller (`pumpAudio(t, true)`) is stuck at the 64 MB cap (nothing taken off the queue
+  since it last stopped there) the audio counts as settled up to the last packet read. `open()`
+  takes an abort flag that FFmpeg's I/O polls; set during the probe, it fails the open
+  ("stopped"). A decoder is used by one thread only: its stream's worker.
+- **The Video Player decodes on a worker.** `VideoPlayerNode` (`src/modules/VideoPlayerNode.{h,cpp}`)
+  drives a `VideoStream` (`src/gfx/VideoStream.{h,cpp}`, one per node, GL-free) whose worker thread
+  opens the file, keeps a fixed pool of RGBA frames (512 MB budget, allocated at open:
+  `core/VideoPlan.h` `videoPoolFrames`, 4 to 64 frames) decoded ahead of the requested playhead,
+  and reads audio into a `core/TimedAudio.h` store. **The worker holds the stream's mutex only
+  for bookkeeping, never while decoding or converting**, so `request()`, `frameAt()` and
+  `readAudio()` return at once; the frame `frameAt()` returns stays checked out until the next
+  `frameAt()`. Its decisions — fill, catch up (decode without converting; live, in 100 ms
+  slices), seek (ahead only for jumps over 1 s, since a seek restarts the frame-thread pipeline;
+  always for a target behind everything held or a new direction), wrap, and reverse
+  keyframe-to-frame stretches published whole — are the pure, unit-tested `videoNextStep()`. A
+  seek lands where its decode loop admits frames, backing off 1 s, 2 s, 4 s… to the file's start
+  when it lands late (decode-time indexes, MPEG-TS), and a seek ahead that landed behind the
+  decoder is not repeated nearby (`videoNoSeekBelow`). An offline render starting in reverse
+  restarts the run: live stretches keep every stride-th frame. A new audio chunk begins wherever
+  the decoder's audio jumps, and a file it cannot seek in at all fails the stream ("cannot seek in
+  this file") rather than spinning.
+  The node's playhead is UNWRAPPED (lap × D + position, `videoAdvance`), so the worker decodes the
+  next lap early and loops are seamless; the playhead is held at 0 until the first frame is on
+  screen. The node uploads the newest frame at or before the playhead into a staging texture and
+  flips it into the published texture with one `glBlitFramebuffer` (scissor test off: a blit is
+  clipped by it).
+  **Offline renders stay exact.** `loading()` reports the node's GUESS at the next frame (this
+  frame's rate) not ready, so the renderer's gate does the waiting between frames with the UI
+  running; offline `dt` is snapped to the exact frame step (`videoFrameStep`). Readiness names the
+  frame for the playhead exactly (each queued frame knows when the next one decoded starts) and,
+  playing forward, needs its audio settled too. A frame the guess did not predict (an automated
+  rate, a direction flip) is waited for inside `evaluate()` for up to `kOfflineFrameWaitSeconds`
+  (10 s), blocking the UI (seconds, for a fresh reverse stretch at 4K) — except the render's first
+  frame, which is always an uncaptured pre-roll frame. A frame that misses that wait latches a
+  stall; that, a file still opening, or a stream that fails once open keeps `loading()` true, so
+  the render fails after `kRenderLoadTimeoutSeconds`, naming the node.
+  Old streams (a file change, the node's destructor) go to `VideoStream::retire()`: tearing a
+  stream down takes 0.1–0.5 s at 4K, so a reaper thread does it (joined at exit), and a retired
+  stream holds its memory until then. Tests: `tests/test_video_plan.cpp`,
+  `tests/test_timed_audio.cpp`, and the `gl_smoke` scenarios `scenario_video_decoder_*`,
+  `scenario_video_stream_*` and `scenario_video_player_*` (untested: the stall latch, and the rule
+  for a stream that fails once open).
 ```
 
-- [ ] **Step 3: Check the new text is in**
+- [ ] **Step 3: Add the Video Player to the *Offline render* bullet's list of `loading()` nodes**. In `CLAUDE.md`, replace:
+
+```markdown
+unpolled future can't deadlock the gate; Image Sequencer via `futurePending` on its prefetch),
+```
+
+with:
+
+```markdown
+unpolled future can't deadlock the gate; Image Sequencer via `futurePending` on its prefetch;
+  the Video Player while its file opens, while its next frame is not ready, after a stall, or
+  after its stream failed once open),
+```
+
+- [ ] **Step 4: In the *Image Streamer* bullet, say which `VideoDecoder` path `ImageLoader` mirrors (the main one is now top-down)**. In `CLAUDE.md`, replace:
+
+```markdown
+GL-free `gfx/ImageLoader` (an `stb_image` wrapper mirroring `VideoDecoder`, rows flipped
+  bottom-up to match) and publishes it as a `TexRef`; it loads once on path change and
+```
+
+with:
+
+```markdown
+GL-free `gfx/ImageLoader` (an `stb_image` wrapper mirroring `VideoDecoder::decodeFrame()`,
+  rows flipped bottom-up to match) and publishes it as a `TexRef`; it loads once on path
+  change and
+```
+
+- [ ] **Step 5: Open the *`VideoEncoder`* bullet with whose mirror it is (a new bullet now stands between them), and mention the keyframe interval**. In `CLAUDE.md`, replace:
+
+```markdown
+- **`VideoEncoder` (`src/gfx/VideoEncoder.{h,cpp}`) is its mirror** — a GL-free
+  FFmpeg muxer writing RGBA frames + interleaved float audio (mono or stereo) to
+  an H.264/AAC mp4. The `RecorderNode` is a pass-through tap (video/audio in → same
+```
+
+with:
+
+```markdown
+- **`VideoEncoder` (`src/gfx/VideoEncoder.{h,cpp}`) is `VideoDecoder`'s mirror** — a GL-free
+  FFmpeg muxer writing RGBA frames + interleaved float audio (mono or stereo) to
+  an H.264/AAC mp4 (`open()`'s optional `keyframeInterval`, for test clips, places keyframes
+  exactly every N frames, writing with libx264 or the MPEG-4 fallback only). The `RecorderNode`
+  is a pass-through tap (video/audio in → same
+```
+
+- [ ] **Step 6: Check the new text is in**
 
 ```bash
 grep -c 'decodes on a worker' CLAUDE.md
@@ -5383,7 +5449,7 @@ grep -c 'decodes on a worker' CLAUDE.md
 
 Expected output includes: `1`
 
-- [ ] **Step 4: Commit**
+- [ ] **Step 7: Commit**
 
 ```bash
 git add CLAUDE.md

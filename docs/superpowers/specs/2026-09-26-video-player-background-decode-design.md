@@ -517,6 +517,19 @@ fixed, and each fix is pinned by a check that fails when it is reverted.
     Still untested: the stall latch (it needs a frame slower than 10 s) and the rule for a stream that fails
     after opening (no regular file makes an open stream fail).
 
+### Revisions during execution (code review of Task 9)
+
+81. **CLAUDE.md says what a change must keep.** The Video Player bullet now states the threading rule
+    that keeps the UI from waiting (the worker holds the stream's mutex only for bookkeeping, never while
+    decoding or converting; a decoder is used by its worker alone; a frame from `frameAt()` stays checked
+    out until the next call) and how an offline render behaves and fails because of this node (the guess,
+    the 10 s wait at an unpredicted frame that blocks the UI, the stall latch, `loading()`, the 30 s
+    timeout), names `VideoPlayerNode`, points at the tests, and reads worker, node, offline, lifetime in
+    that order. Three references to the changed bullets are corrected: the *Offline render* bullet lists
+    the Video Player among the `loading()` nodes, `ImageLoader` mirrors `decodeFrame()` (the main path is
+    now top-down), and the `VideoEncoder` bullet says whose mirror it is, since a new bullet now stands
+    between them, and mentions its keyframe interval.
+
 ## Root cause
 
 Reproduced with a headless harness that compiles the real `VideoPlayerNode.cpp` and drives
@@ -984,7 +997,7 @@ the UI keeps running.
   during the probe fails the open).
 - The decoder is destroyed after the join.
 - The node frees its textures and framebuffers on the main thread with the editor context current (the
-  existing rule), after the stream has been destroyed.
+  existing rule), after it has retired the stream, which never touches GL.
 - The worker never touches GL. Framebuffers are created and used only in the editor context, where
   `evaluate()` runs; they are not shared between contexts, and that is fine.
 
