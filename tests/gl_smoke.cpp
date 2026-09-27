@@ -1687,8 +1687,10 @@ static bool scenario_video_stream_loop_toggles() {
 //  (a) an automated rate moves the real playhead off the guess: recycling for the guess released the real
 //      one's frame, and the older frame on screen still counted as ready (the frames the guess passed over
 //      now stay, so a rate change costs no seek -- unless the guess lies beyond every frame held: then they
-//      make room for it, and the real playhead's frame is decoded again); and a jump ahead must release the
-//      frames it passed, or a full pool leaves the worker nowhere to decode the frame it jumped to;
+//      make room for it, and the real playhead's frame is decoded again); a jump ahead must release the
+//      frames it passed, or a full pool leaves the worker nowhere to decode the frame it jumped to; and a
+//      playhead that stops after a guess far ahead -- whose catch-up restarted the run past the frame on
+//      screen -- gets that frame decoded again (readiness waited for ever);
 //  (b) reverse, then forward (and back): the first frame after a flip repeated the last one before it;
 //  (c) a loop-off render that runs into the end of the clip (or, in reverse, its start) holds that frame;
 //  (d) reverse through an MPEG-TS whose keyframes are 3 s apart, where a seek lands a keyframe late and
@@ -1773,6 +1775,9 @@ static bool scenario_video_stream_exactness() {
                 if (!renderExact(s, 1.0, 20, true, 150, [](int k) { return k % 2 ? 1.0 : 4.0; }, "alternating 4x and 1x") ||
                     !renderExact(s, 5.0, 20, true, 150, [](int k) { return k % 2 ? -1.0 : -4.0; }, "alternating -4x and -1x")) {
                     return failed("exactness: a guess beyond the frames held must not cost the real playhead its frame");
+                }
+                if (!renderExact(s, 1.0, 6, true, 150, [](int k) { return k < 3 ? 8.0 : 0.0; }, "8x, then paused")) {
+                    return failed("exactness: a render that stops after a guess far ahead must go on");
                 }
                 // (b)
                 if (!renderExact(s, 2.0, 12, true, 150, flipAt(-1.0), "reverse, then forward") ||

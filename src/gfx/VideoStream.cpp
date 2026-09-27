@@ -72,8 +72,12 @@ void VideoStream::retire(std::unique_ptr<VideoStream> s) {
     if (!s) return;
     { std::lock_guard<std::mutex> lk(s->m_); s->stop_ = true; }   // stop decoding now, not when its turn comes
     s->cv_.notify_all();
-    static Reaper reaper;
-    reaper.add(std::move(s));
+    try {
+        static Reaper reaper;                      // (building it can allocate)
+        reaper.add(std::move(s));
+    } catch (...) {
+        s.reset();
+    }
 }
 
 VideoStream::State VideoStream::state() const { std::lock_guard<std::mutex> lk(m_); return state_; }
@@ -306,14 +310,22 @@ void VideoStream::step() {
         if (!ready_.empty()) in.lowest = std::min(in.lowest, ready_.front().t);
         in.freeBuffers = (int)free_.size();
         in.poolSize    = (int)pool_.size();
-        if (r.offline && !holdsLocked(r.u)) {
-            bool above = shown_.buf >= 0 && (dir >= 0 ? shown_.t > r.u + kVideoTimeEps : shown_.t <= r.u + kVideoTimeEps);
-            for (const Slot& s : ready_) above = above || (dir >= 0 ? s.t > r.u + kVideoTimeEps : s.t <= r.u + kVideoTimeEps);
-            lostTarget = above;
+        // Offline forward, readiness can wait for ever on what only a seek back to u mends: u's frame was
+        // released while frames past it are held (the planner counts what is held), or it is held but a
+        // catch-up to a guess far ahead restarted the run past it. Reverse needs no such help: while the
+        // guess's frame is held nothing between it and the frame on screen is released (recycleLocked), and
+        // when it is not, the guess lies below what the stretches cover and gets a fresh stretch -- which
+        // leaves the real playhead above it, stranded, to get another.
+        if (r.offline && dir >= 0) {
+            if (!holdsLocked(r.u)) {
+                lostTarget = shown_.buf >= 0 && shown_.t > r.u + kVideoTimeEps;
+                for (const Slot& s : ready_) lostTarget = lostTarget || s.t > r.u + kVideoTimeEps;
+            } else {
+                lostTarget = !runValid_ || r.u < runLo_ - kVideoTimeEps;
+            }
         }
     }
-    if (lostTarget && dir >= 0) in.lowest = kInf;                 // forward: seek back to it
-    if (lostTarget && dir < 0 && coverValid_ && r.u >= coverLo_ - kVideoTimeEps) coverValid_ = false;   // reverse: restart there
+    if (lostTarget) in.lowest = kInf;                             // seek back to u
     if (changed || toOffline) coverValid_ = false;
     if (!r.loop && coverValid_ && coverLo_ < r.lapLo) {     // likewise what reverse had covered
         if (coverHi_ <= r.lapLo) coverValid_ = false;

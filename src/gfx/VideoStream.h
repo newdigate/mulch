@@ -58,6 +58,7 @@ public:
     // freeing its frames, closing its decoder -- takes 0.1-0.5 s at 4K, too long for the UI thread. Its
     // worker is told to stop straight away; streams go in the order retired, the last before the process exits.
     // Never throws (destructors call it): should that thread fail to start, `s` is destroyed here instead.
+    // Not during static destruction: the reaper is itself a function-local static.
     static void retire(std::unique_ptr<VideoStream> s);
     VideoStream(const VideoStream&) = delete;
     VideoStream& operator=(const VideoStream&) = delete;
