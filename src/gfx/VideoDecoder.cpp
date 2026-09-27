@@ -19,6 +19,7 @@ namespace {
 
 constexpr double kInf = std::numeric_limits<double>::infinity();
 constexpr double kNaN = std::numeric_limits<double>::quiet_NaN();
+constexpr double kSameTime = 1e-6;   // seconds: times this close are the same frame's
 
 // FFmpeg polls this during blocking I/O; returning 1 aborts the read.
 int abortRequested(void* opaque) {
@@ -207,8 +208,13 @@ bool VideoDecoder::nextKeyframeAfter(double t, double& key) const {
     if (!indexUsable_) { key = kInf; return true; }
     AVStream* vs = fmt_->streams[vstream_];
     if (avformat_index_get_entries_count(vs) <= 0) return false;
-    const int64_t ts = (int64_t)std::floor((t + startT_) / vTimeBase_) + 1;   // strictly after t
-    const AVIndexEntry* e = avformat_index_get_entry_from_timestamp(vs, ts, 0);   // keyframe, >= ts
+    // Strictly after t. t is often a frame's own time, worked out from its timestamp, and dividing it back
+    // by the time base can land a hair below that tick (1.16 s at 12800 ticks/s, or a whole tick below where
+    // a tick is a frame, as in AVI): so walk on from the first keyframe at or after t's tick past any that
+    // are at t.
+    const AVIndexEntry* e = avformat_index_get_entry_from_timestamp(vs, (int64_t)std::floor((t + startT_) / vTimeBase_), 0);
+    while (e && e->timestamp * vTimeBase_ - startT_ <= t + kSameTime)                  // keyframes, >= the tick
+        e = avformat_index_get_entry_from_timestamp(vs, e->timestamp + 1, 0);
     key = e ? e->timestamp * vTimeBase_ - startT_ : kInf;
     return true;
 }

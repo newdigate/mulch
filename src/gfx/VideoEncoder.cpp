@@ -64,8 +64,10 @@ bool VideoEncoder::open(const std::string& path, int width, int height, int fps,
     if (!oc_) { err = "could not allocate output for " + path; return false; }
 
     // --- Video stream (H.264, falling back to MPEG-4) ---
+    // An exact keyframe interval rules out the H.264 encoders other than libx264: they add keyframes at
+    // scene cuts whatever they are told.
     const AVCodec* vc = avcodec_find_encoder_by_name("libx264");
-    if (!vc) vc = avcodec_find_encoder(AV_CODEC_ID_H264);
+    if (!vc && keyframeInterval <= 0) vc = avcodec_find_encoder(AV_CODEC_ID_H264);
     if (!vc) vc = avcodec_find_encoder(AV_CODEC_ID_MPEG4);
     if (!vc) { err = "no video encoder available"; freeAll(); return false; }
 
@@ -85,6 +87,8 @@ bool VideoEncoder::open(const std::string& path, int width, int height, int fps,
         if (keyframeInterval > 0)   // exactly every N frames: no extra keyframes at scene cuts
             av_opt_set(vctx_->priv_data, "x264-params", "scenecut=0", 0);
     }
+    if (keyframeInterval > 0 && vc->id == AV_CODEC_ID_MPEG4)   // likewise its scene-change keyframes
+        av_opt_set(vctx_, "sc_threshold", "1000000000", AV_OPT_SEARCH_CHILDREN);
     if (avcodec_open2(vctx_, vc, nullptr) < 0) { err = "could not open video encoder"; freeAll(); return false; }
     avcodec_parameters_from_context(vst_->codecpar, vctx_);
     vst_->time_base = vctx_->time_base;
@@ -139,6 +143,8 @@ bool VideoEncoder::open(const std::string& path, int width, int height, int fps,
 
     pkt_ = av_packet_alloc();
     lastVpts_ = -1;
+    keyframeInterval_ = keyframeInterval > 0 ? keyframeInterval : 0;
+    framesSent_ = 0;
     aCount_ = 0;
     afifo_.clear();
     opened_ = true;
@@ -189,6 +195,10 @@ bool VideoEncoder::addVideoFrame(const std::uint8_t* rgba, double tSeconds) {
     if (pts <= lastVpts_) pts = lastVpts_ + 1;     // strictly increasing
     lastVpts_ = pts;
     vframe_->pts = pts;
+    // An exact interval forces its keyframes: MPEG-4's B-frames would otherwise move them by a frame.
+    vframe_->pict_type = keyframeInterval_ > 0 && framesSent_ % keyframeInterval_ == 0 ? AV_PICTURE_TYPE_I
+                                                                                        : AV_PICTURE_TYPE_NONE;
+    ++framesSent_;
     return encodeWrite(vctx_, vst_, vframe_);
 }
 

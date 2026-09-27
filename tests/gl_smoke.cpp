@@ -1259,9 +1259,41 @@ static bool scenario_video_encoder_keyframe_interval() {
         if (!dec.nextKeyframeAfter(0.1, k1) || std::fabs(k1 - 2.0) > 0.1 ||
             !dec.nextKeyframeAfter(2.1, k2) || std::fabs(k2 - 4.0) > 0.1) {
             std::fprintf(stderr, "keyint: keyframes after 0.1 s and 2.1 s at %.3f and %.3f\n", k1, k2);
-            return failed("keyint: expected keyframes exactly every 2 s (50 frames at 25 fps)");
+            return failed("keyint: expected keyframes 50 frames apart -- at 2 s and 4 s (the index may list them by "
+                          "decode time, a frame or two early) -- and none at the cuts between");
         }
-        std::fprintf(stderr, "gl_smoke OK: an explicit keyframe interval places keyframes exactly (%.2f s, %.2f s)\n", k1, k2);
+
+        // Walking the index: nextKeyframeAfter(the key it gave last) moves strictly forward and ends. Every frame
+        // is a keyframe here, so every frame's time is asked about -- and 1.16 s, divided back into ticks, lands a
+        // hair below its tick (1/12800 s, MP4) or a whole tick below (a frame, AVI), which used to return that
+        // same keyframe again, forever.
+        for (const std::string every : {"build/_enc_keyint_every.mp4", "build/_enc_keyint_every.avi"}) {
+            VideoEncoder e1;
+            if (!e1.open(every, 64, 48, 25, 0, 0, err, 1)) { return failed(("keyint: open: " + err).c_str()); }
+            for (int f = 0; f < 100; ++f) {
+                std::fill(px.begin(), px.end(), (unsigned char)(f * 2));
+                if (!e1.addVideoFrame(px.data(), f / 25.0)) { return failed("keyint: add frame"); }
+            }
+            if (!e1.close(err)) { return failed(("keyint: close: " + err).c_str()); }
+            VideoDecoder w;
+            if (!w.open(every, err)) { return failed(("keyint: decode: " + err).c_str()); }
+            double k = -1.0, next = 0.0;
+            int walked = 0;
+            while (walked <= 100 && w.nextKeyframeAfter(k, next) && std::isfinite(next)) {
+                if (!(next > k)) {
+                    std::fprintf(stderr, "keyint: %s: nextKeyframeAfter(%.17g) gave %.17g\n", every.c_str(), k, next);
+                    return failed("keyint: the keyframe after t must come strictly after it");
+                }
+                k = next;
+                ++walked;
+            }
+            if (walked != 100) {
+                std::fprintf(stderr, "keyint: %s: walked %d keyframes of 100\n", every.c_str(), walked);
+                return failed("keyint: walking the index must visit every keyframe once");
+            }
+        }
+        std::fprintf(stderr, "gl_smoke OK: an explicit keyframe interval places keyframes exactly (%.2f s, %.2f s); "
+                     "walking the index visits every keyframe once\n", k1, k2);
     }
     return true;
 }

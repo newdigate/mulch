@@ -39,9 +39,12 @@ public:
     // Open `path` for writing `width`x`height` video at a nominal `fps`. If
     // `audioRate` > 0 an AAC audio stream is added at that sample rate with
     // `audioChannels` channels (1 = mono, 2 = stereo). `keyframeInterval` > 0 places
-    // a keyframe exactly every that many frames (scene-cut keyframes off -- tests use it
-    // to write clips with widely spaced keyframes); 0 keeps one per second. Returns
-    // false on failure.
+    // a keyframe exactly every that many frames and nowhere else -- tests use it to write
+    // clips with widely spaced keyframes. Only libx264 and the MPEG-4 fallback can be held
+    // to that (the other H.264 encoders, VideoToolbox or Media Foundation, add keyframes at
+    // scene cuts whatever they are told), so such a clip is written with one of those two.
+    // At or below 0, keyframes are at most a second apart (scene cuts can add more).
+    // Returns false on failure.
     bool open(const std::string& path, int width, int height, int fps,
               int audioRate, int audioChannels, std::string& err, int keyframeInterval = 0);
     bool isOpen() const { return opened_; }
@@ -88,6 +91,8 @@ private:
     int     width_ = 0, height_ = 0;
     int     audioRate_ = 0, audioChannels_ = 0, audioFrameSize_ = 0;
     int64_t lastVpts_ = -1;          // last video pts (codec time base = 1/fps)
+    int     keyframeInterval_ = 0;   // > 0: every this many frames is forced to be a keyframe...
+    int64_t framesSent_ = 0;         // ...counting the frames sent
     int64_t aCount_   = 0;           // audio samples written (audio pts)
     std::vector<float> afifo_;       // pending mono float samples
     std::string writeErr_;           // FFmpeg's message for the last write/encode failure
