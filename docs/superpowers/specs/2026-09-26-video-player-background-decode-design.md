@@ -452,6 +452,28 @@ fixed, and each fix is pinned by a check that fails when it is reverted.
     before the flush, dropping the next lap's frames when loop goes off, and the old `open()` (the process
     aborts). The node's shutdown bound drops from 200 ms to 50 ms.
 
+### Revisions during execution (second code review of Task 7)
+
+74. **A playhead that stops after a guess far ahead no longer waits for ever.** When the node's guess
+    outran the frames decoded ahead -- a rate the pool cannot keep ahead of: about 6x with a 4-frame pool,
+    20x at 4K, 30x at 1080p, for a 25 fps clip rendered at 25 fps; an LFO or a wired rate, beyond the
+    slider -- the catch-up to it restarted the run there. If the real playhead then stayed inside the frame
+    on screen (paused, or slowed down), that frame was held but lay before the run: readiness never said
+    yes, and the planner did nothing, since the frame counted as held. Every wait timed out and the render
+    failed (random offline schedules stalled 3-28 times in 300 frames on 4- and 8-frame pools). This
+    predates revision 66. Offline and forward, a held frame that lies before the run (or with no run) is now
+    decoded again too, like a released one. The reverse half of 66's recovery is removed: nothing reached
+    it. While the guess's frame is held nothing between it and the frame on screen is released (67); when
+    it is not, the guess lies below what the stretches cover and gets a fresh stretch, which leaves the real
+    playhead above it, stranded, to get another.
+75. **Smaller fixes.** `retire()` also catches a failure to build its reaper (MSVC's `std::deque` can
+    allocate there) and destroys the stream in place; its comment says it must not be called during static
+    destruction, since the reaper is a function-local static. The MPEG-TS case logs FFmpeg's "co located
+    POCs unavailable" for frames it drops after a seek; the pixels are exact. A 13th breakage fails the
+    scenario -- a held frame before the run not decoded again: "8x, then paused" stalls on the 4-frame
+    pool. Two optimisations stay unpinned: skipping the audio read-ahead before a seek, and the `open()`
+    abort check on its own (the lazily built converter alone prevents the crash).
+
 ## Root cause
 
 Reproduced with a headless harness that compiles the real `VideoPlayerNode.cpp` and drives
@@ -782,9 +804,12 @@ The pool therefore cannot deadlock on frames that will never be shown.
 
 **Offline, the request is the node's guess** at the next frame's playhead, and an automated rate can move
 the real one. So while the guess's frame is held, the frames between the frame on screen and the guess stay
-(when the frame on screen is on the way to the guess -- not after a jump or a flip). If the real playhead's
-frame was released all the same (the guess lay beyond every frame held) while frames beyond it are held,
-the worker decodes it again: forward a seek, reverse a fresh stretch.
+(when the frame on screen is on the way to the guess -- not after a jump or a flip). Playing forward, the
+worker seeks back to decode the real playhead's frame again when it was released all the same (the guess lay
+beyond every frame held) while frames beyond it are held, or when it is held but lies before the run of
+decided frames (a catch-up to a guess far ahead restarted the run, and the playhead stopped short of it).
+Reverse needs neither: while the guess's frame is held nothing below the frame on screen is released, and a
+guess below what the stretches cover gets a fresh stretch, leaving the real playhead stranded above it.
 
 ### Worker: reverse playback
 
@@ -1001,8 +1026,9 @@ the UI keeps running.
 - **`VideoStream` exactness:** offline renders driven as the node drives them -- each frame shown the
   moment it is ready, readiness still holding a moment later, and on a render's first frame (after a
   jump or a flip) also before it is shown -- stay exact with the rate alternating 2x/1x and -2x/-1x
-  (without a seek), 4x/1x (a guess beyond every frame held), after a jump ahead with the pool full of the
-  frames it passed, through flips both ways, into a loop-off end and start, and in reverse through an
+  (without a seek), 4x/1x (a guess beyond every frame held), 8x and then paused (the catch-up to the guess
+  restarted the run past the frame on screen), after a jump ahead with the pool full of the frames it
+  passed, through flips both ways, into a loop-off end and start, and in reverse through an
   MPEG-TS whose keyframes are 3 s apart; each runs with a 4-frame pool and the full one, on a clip with
   audio and one without. Streams destroyed or retired 0-3 ms into their open go quietly.
 - **`VideoDecoder`:** a 12 s Matroska file knows its keyframes past 7 s right after `open()`.

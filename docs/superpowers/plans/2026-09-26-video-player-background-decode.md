@@ -2933,7 +2933,7 @@ EOF
 - Modify: `CMakeLists.txt` (`APP_SOURCES` and the `gl_smoke` sources)
 - Modify: `tests/gl_smoke.cpp`
 
-One worker thread per file. It opens the file, sizes a pool of RGBA buffers from the 512 MB budget, then loops: snapshot the request, recycle frames that can never be shown, read audio ahead, ask `videoNextStep()` what to do, and do it — never holding the mutex while decoding or converting. The graph thread only calls `request()`, `frameAt()` (the frame it returns is *checked out* until the next call), `readAudio()`, and offline `frameReadyFor()` / `waitForFrame()`. Details that the prototype showed matter: live catch-up is sliced to 100 ms so a decoder slower than the playhead still moves the picture; a seek keeps the newest frame at or before its target; a seek lands where its decode loop admits frames, retrying further back (1 s, 2 s, 4 s… to the file's start) when it lands late — a decode-time index lands a seek just below a keyframe ON it, a timestamp search (MPEG-TS) overshoots a keyframe interval, and some demuxers find nothing near the end — and is *pinned* only if even the start lands late; reverse stretches are published whole (they decode forwards); offline, a stretch whose ring evicted its lower frames covers only down to its oldest; a frame at or past the duration ends the lap. With loop off, frames past the playhead's lap are kept (they are the next ones if loop comes back on) and what reverse covered below the lap is dropped with its frames; runs end at the lap's end whether looping or not; a wrap forgets what the last seek taught about keyframes (`noSeekBelow`), which was about the old lap. An offline render that starts in reverse restarts the run — live stretches kept every stride-th frame — and until an offline stretch lands, reverse readiness says no. The decoder's audio runs follow its timestamps: the worker begins a new chunk wherever a run does not continue the one before (a hole in the source's audio then reads as silence), and a seek that cannot reach even the file's start fails the stream rather than being tried again every step. The worker passes its offline flag to `pumpAudio()`, so only an offline render — which cannot go on without the audio — lets the decoder give it up; `VideoStream` takes a read-ahead size so a test can cap it. The new scenarios write the awkward files themselves — a long first keyframe interval, an FLV with B-frames (those parts SKIP without an H.264 encoder), an AVI whose last keyframe is its last frame (a seek there yields only an untimed frame, which the decoder skips), a one-keyframe clip for loop toggles — and count reverse stretches (`reverseStretches()`; `seeks()` is its forward twin) to prove live reverse cannot spin. Offline readiness names the frame for u exactly: each queued frame carries `until`, the time of the next frame decoded after it, and a held frame must have t ≤ u < until — the node's prefetch asks for its GUESS at the next playhead, and an automated rate can move the real one onto a frame recycling released for the guess. While the guess's frame is held, recycling keeps the frames between the frame on screen and the guess (when the frame on screen is on the way to it); when the real playhead's frame was released anyway and frames beyond it are held, the worker decodes it again (forward a seek, reverse a fresh stretch). Readiness says no while the worker has yet to flush for a new direction: the direction it planned for is guarded by the mutex and set with the flush. Tearing a stream down takes 0.1–0.5 s at 4K, so `retire()` hands it to a reaper thread (joined at exit) and returns at once. The fourth scenario drives offline renders as the node does — show the frame the moment it is ready, and readiness must still hold a moment later — through rate changes, flips, a jump, a loop-off end and an MPEG-TS, and destroys and retires streams mid-open.
+One worker thread per file. It opens the file, sizes a pool of RGBA buffers from the 512 MB budget, then loops: snapshot the request, recycle frames that can never be shown, read audio ahead, ask `videoNextStep()` what to do, and do it — never holding the mutex while decoding or converting. The graph thread only calls `request()`, `frameAt()` (the frame it returns is *checked out* until the next call), `readAudio()`, and offline `frameReadyFor()` / `waitForFrame()`. Details that the prototype showed matter: live catch-up is sliced to 100 ms so a decoder slower than the playhead still moves the picture; a seek keeps the newest frame at or before its target; a seek lands where its decode loop admits frames, retrying further back (1 s, 2 s, 4 s… to the file's start) when it lands late — a decode-time index lands a seek just below a keyframe ON it, a timestamp search (MPEG-TS) overshoots a keyframe interval, and some demuxers find nothing near the end — and is *pinned* only if even the start lands late; reverse stretches are published whole (they decode forwards); offline, a stretch whose ring evicted its lower frames covers only down to its oldest; a frame at or past the duration ends the lap. With loop off, frames past the playhead's lap are kept (they are the next ones if loop comes back on) and what reverse covered below the lap is dropped with its frames; runs end at the lap's end whether looping or not; a wrap forgets what the last seek taught about keyframes (`noSeekBelow`), which was about the old lap. An offline render that starts in reverse restarts the run — live stretches kept every stride-th frame — and until an offline stretch lands, reverse readiness says no. The decoder's audio runs follow its timestamps: the worker begins a new chunk wherever a run does not continue the one before (a hole in the source's audio then reads as silence), and a seek that cannot reach even the file's start fails the stream rather than being tried again every step. The worker passes its offline flag to `pumpAudio()`, so only an offline render — which cannot go on without the audio — lets the decoder give it up; `VideoStream` takes a read-ahead size so a test can cap it. The new scenarios write the awkward files themselves — a long first keyframe interval, an FLV with B-frames (those parts SKIP without an H.264 encoder), an AVI whose last keyframe is its last frame (a seek there yields only an untimed frame, which the decoder skips), a one-keyframe clip for loop toggles — and count reverse stretches (`reverseStretches()`; `seeks()` is its forward twin) to prove live reverse cannot spin. Offline readiness names the frame for u exactly: each queued frame carries `until`, the time of the next frame decoded after it, and a held frame must have t ≤ u < until — the node's prefetch asks for its GUESS at the next playhead, and an automated rate can move the real one onto a frame recycling released for the guess. While the guess's frame is held, recycling keeps the frames between the frame on screen and the guess (when the frame on screen is on the way to it); playing forward, when the real playhead's frame was released anyway while frames beyond it are held, or is held but lies before the run (a catch-up to a guess far ahead restarted it, and the playhead stopped short), the worker seeks back to decode it again — reverse needs no such help, since a guess below what the stretches cover gets a fresh stretch and leaves the real playhead stranded above it. Readiness says no while the worker has yet to flush for a new direction: the direction it planned for is guarded by the mutex and set with the flush. Tearing a stream down takes 0.1–0.5 s at 4K, so `retire()` hands it to a reaper thread (joined at exit) and returns at once. The fourth scenario drives offline renders as the node does — show the frame the moment it is ready, and readiness must still hold a moment later — through rate changes, flips, a jump, a loop-off end and an MPEG-TS, and destroys and retires streams mid-open.
 
 - [ ] **Step 1: Add `#include "gfx/VideoStream.h"` to `tests/gl_smoke.cpp`, after `#include "gfx/VideoDecoder.h"`**. In `tests/gl_smoke.cpp`, replace:
 
@@ -3339,8 +3339,10 @@ static bool scenario_video_stream_loop_toggles() {
 //  (a) an automated rate moves the real playhead off the guess: recycling for the guess released the real
 //      one's frame, and the older frame on screen still counted as ready (the frames the guess passed over
 //      now stay, so a rate change costs no seek -- unless the guess lies beyond every frame held: then they
-//      make room for it, and the real playhead's frame is decoded again); and a jump ahead must release the
-//      frames it passed, or a full pool leaves the worker nowhere to decode the frame it jumped to;
+//      make room for it, and the real playhead's frame is decoded again); a jump ahead must release the
+//      frames it passed, or a full pool leaves the worker nowhere to decode the frame it jumped to; and a
+//      playhead that stops after a guess far ahead -- whose catch-up restarted the run past the frame on
+//      screen -- gets that frame decoded again (readiness waited for ever);
 //  (b) reverse, then forward (and back): the first frame after a flip repeated the last one before it;
 //  (c) a loop-off render that runs into the end of the clip (or, in reverse, its start) holds that frame;
 //  (d) reverse through an MPEG-TS whose keyframes are 3 s apart, where a seek lands a keyframe late and
@@ -3425,6 +3427,9 @@ static bool scenario_video_stream_exactness() {
                 if (!renderExact(s, 1.0, 20, true, 150, [](int k) { return k % 2 ? 1.0 : 4.0; }, "alternating 4x and 1x") ||
                     !renderExact(s, 5.0, 20, true, 150, [](int k) { return k % 2 ? -1.0 : -4.0; }, "alternating -4x and -1x")) {
                     return failed("exactness: a guess beyond the frames held must not cost the real playhead its frame");
+                }
+                if (!renderExact(s, 1.0, 6, true, 150, [](int k) { return k < 3 ? 8.0 : 0.0; }, "8x, then paused")) {
+                    return failed("exactness: a render that stops after a guess far ahead must go on");
                 }
                 // (b)
                 if (!renderExact(s, 2.0, 12, true, 150, flipAt(-1.0), "reverse, then forward") ||
@@ -3546,6 +3551,7 @@ public:
     // freeing its frames, closing its decoder -- takes 0.1-0.5 s at 4K, too long for the UI thread. Its
     // worker is told to stop straight away; streams go in the order retired, the last before the process exits.
     // Never throws (destructors call it): should that thread fail to start, `s` is destroyed here instead.
+    // Not during static destruction: the reaper is itself a function-local static.
     static void retire(std::unique_ptr<VideoStream> s);
     VideoStream(const VideoStream&) = delete;
     VideoStream& operator=(const VideoStream&) = delete;
@@ -3743,8 +3749,12 @@ void VideoStream::retire(std::unique_ptr<VideoStream> s) {
     if (!s) return;
     { std::lock_guard<std::mutex> lk(s->m_); s->stop_ = true; }   // stop decoding now, not when its turn comes
     s->cv_.notify_all();
-    static Reaper reaper;
-    reaper.add(std::move(s));
+    try {
+        static Reaper reaper;                      // (building it can allocate)
+        reaper.add(std::move(s));
+    } catch (...) {
+        s.reset();
+    }
 }
 
 VideoStream::State VideoStream::state() const { std::lock_guard<std::mutex> lk(m_); return state_; }
@@ -3977,14 +3987,22 @@ void VideoStream::step() {
         if (!ready_.empty()) in.lowest = std::min(in.lowest, ready_.front().t);
         in.freeBuffers = (int)free_.size();
         in.poolSize    = (int)pool_.size();
-        if (r.offline && !holdsLocked(r.u)) {
-            bool above = shown_.buf >= 0 && (dir >= 0 ? shown_.t > r.u + kVideoTimeEps : shown_.t <= r.u + kVideoTimeEps);
-            for (const Slot& s : ready_) above = above || (dir >= 0 ? s.t > r.u + kVideoTimeEps : s.t <= r.u + kVideoTimeEps);
-            lostTarget = above;
+        // Offline forward, readiness can wait for ever on what only a seek back to u mends: u's frame was
+        // released while frames past it are held (the planner counts what is held), or it is held but a
+        // catch-up to a guess far ahead restarted the run past it. Reverse needs no such help: while the
+        // guess's frame is held nothing between it and the frame on screen is released (recycleLocked), and
+        // when it is not, the guess lies below what the stretches cover and gets a fresh stretch -- which
+        // leaves the real playhead above it, stranded, to get another.
+        if (r.offline && dir >= 0) {
+            if (!holdsLocked(r.u)) {
+                lostTarget = shown_.buf >= 0 && shown_.t > r.u + kVideoTimeEps;
+                for (const Slot& s : ready_) lostTarget = lostTarget || s.t > r.u + kVideoTimeEps;
+            } else {
+                lostTarget = !runValid_ || r.u < runLo_ - kVideoTimeEps;
+            }
         }
     }
-    if (lostTarget && dir >= 0) in.lowest = kInf;                 // forward: seek back to it
-    if (lostTarget && dir < 0 && coverValid_ && r.u >= coverLo_ - kVideoTimeEps) coverValid_ = false;   // reverse: restart there
+    if (lostTarget) in.lowest = kInf;                             // seek back to u
     if (changed || toOffline) coverValid_ = false;
     if (!r.loop && coverValid_ && coverLo_ < r.lapLo) {     // likewise what reverse had covered
         if (coverHi_ <= r.lapLo) coverValid_ = false;
