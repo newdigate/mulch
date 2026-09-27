@@ -359,6 +359,31 @@ fixed, and each fix is pinned by a check that fails when it is reverted.
     longer sets the resampler's format as well as freeing it, so the resampler check pins the line that
     resets it.
 
+### Revisions during execution (code review of Task 6)
+
+63. **An exact keyframe interval holds without libx264.** `x264-params scenecut=0` reaches libx264 only:
+    the MPEG-4 fallback put a keyframe at every hard cut (the scenario's clip keyed 0, 10, 20…, failing it
+    and stopping every later `gl_smoke` scenario), and the 300-frame clip Task 8 asks for keyframes 250
+    apart keyed frame 128 instead. The other H.264 encoders (VideoToolbox, Media Foundation) add keyframes at
+    scene cuts whatever they are told. So an interval is written with libx264 or MPEG-4 only (never another
+    H.264 encoder), MPEG-4's own scene-change detection is switched off (`sc_threshold`), and every Nth
+    frame sent is forced to be a keyframe, which also stops MPEG-4's B-frames moving odd intervals by a
+    frame (25 gave 0, 26, 50, 74). Checked with the codec lookup intercepted: every clip the plan writes
+    keys exactly as asked under libx264, MPEG-4 and VideoToolbox's stand-in; 0 is unchanged.
+64. **`nextKeyframeAfter(t)` is strictly after t.** It took the entry at or after the tick one past t's, but
+    t is usually a frame's own time, worked out from its timestamp, and dividing it back by the time base
+    can land a hair below that tick (1.16 s at 1/12800 s ticks) -- or a whole tick below where a tick is a
+    frame (AVI) -- so it returned the keyframe at t itself: walking the index spun, and the worker would
+    have seen the keyframe at its decode head as still ahead of it (a seek for nothing). It now walks on
+    from the first keyframe at or after t's tick past any at t (within a microsecond). Reverse, forward,
+    hitch and MPEG-TS acceptance figures are unchanged.
+65. **Smaller fixes.** The `open()` comment says which encoders honour an interval and that at or below 0
+    keyframes are at most a second apart (scene cuts can add more); the scenario's message says what its
+    0.1 s tolerance checks (the index may list keyframes by decode time); and it walks the index of an
+    every-frame-keyframe MP4 and AVI, which must visit each keyframe once. FLV's muxer flags its closing
+    end-of-sequence tag as a keyframe, so its index lists one past the last frame -- likely why a seek into
+    an FLV's last frames finds nothing (revision 20's back-off already copes).
+
 ## Root cause
 
 Reproduced with a headless harness that compiles the real `VideoPlayerNode.cpp` and drives
@@ -548,7 +573,8 @@ functions, unit-tested in `core_tests` (the `StepSync.h` / `BarSync.h` pattern).
 - `frameDuration()`: taken from `avg_frame_rate`, then `r_frame_rate`, falling back to 1/30 s; a raw
   stream's from its decoder, which reads the rate from the stream (its demuxer knows only 25 fps).
 - `nextKeyframeAfter(t, double& key)`: looked up through `avformat_index_get_entry_from_timestamp` /
-  `avformat_index_get_entry`. Returns false when the stream has no index; `key` is +inf when none is
+  `avformat_index_get_entry`, strictly after t (an entry at t itself is passed over, however dividing t
+  back into ticks rounds). Returns false when the stream has no index; `key` is +inf when none is
   known after t, which includes MPEG-TS and MPEG-PS, whose indexes list seek probes as keyframes, and
   raw streams, which only seek to their start. An entry may be a keyframe's decode time, a frame or two
   early.
@@ -575,8 +601,10 @@ functions, unit-tested in `core_tests` (the `StepSync.h` / `BarSync.h` pattern).
 - **Overrides `loading()`** — see Offline renders.
 
 **`gfx/VideoEncoder`** — test support only. `open(…, std::string& err, int keyframeInterval = 0)`,
-where 0 keeps today's one keyframe per second (`gop_size = fps`). `gl_smoke` uses it to write a clip
-with widely spaced keyframes.
+where 0 (or less) keeps today's keyframes at most a second apart (`gop_size = fps`). An interval is exact:
+the clip is written with libx264 (scene cuts off) or MPEG-4 (its scene-change detection off), never another
+H.264 encoder, and every Nth frame is forced to be a keyframe. `gl_smoke` uses it to write clips with
+widely spaced keyframes.
 
 ### Time model
 
@@ -860,7 +888,8 @@ the UI keeps running.
   44.1 kHz audio is the same whatever played before; two MPEG-TS files end to end (stereo 64×48, then
   mono 80×64) decode through, the second half's frames refused by `convert()`, its audio resampled.
 - **`VideoEncoder` keyframe interval:** with hard cuts every 10 frames, keyframes land exactly every
-  50 frames (no scene-cut extras).
+  50 frames (no scene-cut extras); walking the index of an MP4 and an AVI whose every frame is a keyframe
+  (`nextKeyframeAfter` of the key it gave last) visits each keyframe once, strictly forward.
 - **`VideoStream`:** a missing file ends `Failed` with a reason; `test.mp4` opens with the right info;
   offline, the frame for 0.73 s is the one at 0.7 s, with audio before it; rendered offline, a clip with
   a hole in its audio is silent across the hole and plays the tone after it; with a 1-byte read-ahead, an

@@ -2191,6 +2191,7 @@ namespace {
 
 constexpr double kInf = std::numeric_limits<double>::infinity();
 constexpr double kNaN = std::numeric_limits<double>::quiet_NaN();
+constexpr double kSameTime = 1e-6;   // seconds: times this close are the same frame's
 
 // FFmpeg polls this during blocking I/O; returning 1 aborts the read.
 int abortRequested(void* opaque) {
@@ -2379,8 +2380,13 @@ bool VideoDecoder::nextKeyframeAfter(double t, double& key) const {
     if (!indexUsable_) { key = kInf; return true; }
     AVStream* vs = fmt_->streams[vstream_];
     if (avformat_index_get_entries_count(vs) <= 0) return false;
-    const int64_t ts = (int64_t)std::floor((t + startT_) / vTimeBase_) + 1;   // strictly after t
-    const AVIndexEntry* e = avformat_index_get_entry_from_timestamp(vs, ts, 0);   // keyframe, >= ts
+    // Strictly after t. t is often a frame's own time, worked out from its timestamp, and dividing it back
+    // by the time base can land a hair below that tick (1.16 s at 12800 ticks/s, or a whole tick below where
+    // a tick is a frame, as in AVI): so walk on from the first keyframe at or after t's tick past any that
+    // are at t.
+    const AVIndexEntry* e = avformat_index_get_entry_from_timestamp(vs, (int64_t)std::floor((t + startT_) / vTimeBase_), 0);
+    while (e && e->timestamp * vTimeBase_ - startT_ <= t + kSameTime)                  // keyframes, >= the tick
+        e = avformat_index_get_entry_from_timestamp(vs, e->timestamp + 1, 0);
     key = e ? e->timestamp * vTimeBase_ - startT_ : kInf;
     return true;
 }
@@ -2676,7 +2682,7 @@ EOF
 - Modify: `src/gfx/VideoEncoder.h`, `src/gfx/VideoEncoder.cpp`
 - Modify: `tests/gl_smoke.cpp`
 
-The regression clips need keyframes far apart (x264's default of 250 frames is what exposed the lock-up). A trailing defaulted parameter keeps every existing caller unchanged; x264's scene-cut keyframes are switched off only when an interval is asked for.
+The regression clips need keyframes far apart (x264's default of 250 frames is what exposed the lock-up) or exactly placed. A trailing defaulted parameter keeps every existing caller unchanged. An interval is held exactly only by libx264 (with its scene-cut keyframes off) and by the MPEG-4 fallback (with its scene-change detection off) — the other H.264 encoders, VideoToolbox or Media Foundation, add keyframes at scene cuts whatever they are told — so a clip with an interval is written with one of those two, and every Nth frame is forced to be a keyframe (MPEG-4's B-frames would otherwise move odd intervals by a frame). The scenario also walks the index of an MP4 and an AVI whose every frame is a keyframe: Task 5's `nextKeyframeAfter` must move strictly forward (a frame's time divided back into ticks can land a hair, or a whole tick, below its own).
 
 - [ ] **Step 1: Add the failing scenario, just above `// --- Scenario 10: Video Player decodes a file to texture + audio ---`**:
 
@@ -2701,9 +2707,41 @@ static bool scenario_video_encoder_keyframe_interval() {
         if (!dec.nextKeyframeAfter(0.1, k1) || std::fabs(k1 - 2.0) > 0.1 ||
             !dec.nextKeyframeAfter(2.1, k2) || std::fabs(k2 - 4.0) > 0.1) {
             std::fprintf(stderr, "keyint: keyframes after 0.1 s and 2.1 s at %.3f and %.3f\n", k1, k2);
-            return failed("keyint: expected keyframes exactly every 2 s (50 frames at 25 fps)");
+            return failed("keyint: expected keyframes 50 frames apart -- at 2 s and 4 s (the index may list them by "
+                          "decode time, a frame or two early) -- and none at the cuts between");
         }
-        std::fprintf(stderr, "gl_smoke OK: an explicit keyframe interval places keyframes exactly (%.2f s, %.2f s)\n", k1, k2);
+
+        // Walking the index: nextKeyframeAfter(the key it gave last) moves strictly forward and ends. Every frame
+        // is a keyframe here, so every frame's time is asked about -- and 1.16 s, divided back into ticks, lands a
+        // hair below its tick (1/12800 s, MP4) or a whole tick below (a frame, AVI), which used to return that
+        // same keyframe again, forever.
+        for (const std::string every : {"build/_enc_keyint_every.mp4", "build/_enc_keyint_every.avi"}) {
+            VideoEncoder e1;
+            if (!e1.open(every, 64, 48, 25, 0, 0, err, 1)) { return failed(("keyint: open: " + err).c_str()); }
+            for (int f = 0; f < 100; ++f) {
+                std::fill(px.begin(), px.end(), (unsigned char)(f * 2));
+                if (!e1.addVideoFrame(px.data(), f / 25.0)) { return failed("keyint: add frame"); }
+            }
+            if (!e1.close(err)) { return failed(("keyint: close: " + err).c_str()); }
+            VideoDecoder w;
+            if (!w.open(every, err)) { return failed(("keyint: decode: " + err).c_str()); }
+            double k = -1.0, next = 0.0;
+            int walked = 0;
+            while (walked <= 100 && w.nextKeyframeAfter(k, next) && std::isfinite(next)) {
+                if (!(next > k)) {
+                    std::fprintf(stderr, "keyint: %s: nextKeyframeAfter(%.17g) gave %.17g\n", every.c_str(), k, next);
+                    return failed("keyint: the keyframe after t must come strictly after it");
+                }
+                k = next;
+                ++walked;
+            }
+            if (walked != 100) {
+                std::fprintf(stderr, "keyint: %s: walked %d keyframes of 100\n", every.c_str(), walked);
+                return failed("keyint: walking the index must visit every keyframe once");
+            }
+        }
+        std::fprintf(stderr, "gl_smoke OK: an explicit keyframe interval places keyframes exactly (%.2f s, %.2f s); "
+                     "walking the index visits every keyframe once\n", k1, k2);
     }
     return true;
 }
@@ -2747,14 +2785,31 @@ with:
     // Open `path` for writing `width`x`height` video at a nominal `fps`. If
     // `audioRate` > 0 an AAC audio stream is added at that sample rate with
     // `audioChannels` channels (1 = mono, 2 = stereo). `keyframeInterval` > 0 places
-    // a keyframe exactly every that many frames (scene-cut keyframes off -- tests use it
-    // to write clips with widely spaced keyframes); 0 keeps one per second. Returns
-    // false on failure.
+    // a keyframe exactly every that many frames and nowhere else -- tests use it to write
+    // clips with widely spaced keyframes. Only libx264 and the MPEG-4 fallback can be held
+    // to that (the other H.264 encoders, VideoToolbox or Media Foundation, add keyframes at
+    // scene cuts whatever they are told), so such a clip is written with one of those two.
+    // At or below 0, keyframes are at most a second apart (scene cuts can add more).
+    // Returns false on failure.
     bool open(const std::string& path, int width, int height, int fps,
               int audioRate, int audioChannels, std::string& err, int keyframeInterval = 0);
 ```
 
-- [ ] **Step 5: In `src/gfx/VideoEncoder.cpp`, the definition's signature**. In `src/gfx/VideoEncoder.cpp`, replace:
+- [ ] **Step 5: In `src/gfx/VideoEncoder.h`, add the keyframe counters after `lastVpts_`**. In `src/gfx/VideoEncoder.h`, replace:
+
+```cpp
+    int64_t lastVpts_ = -1;          // last video pts (codec time base = 1/fps)
+```
+
+with:
+
+```cpp
+    int64_t lastVpts_ = -1;          // last video pts (codec time base = 1/fps)
+    int     keyframeInterval_ = 0;   // > 0: every this many frames is forced to be a keyframe...
+    int64_t framesSent_ = 0;         // ...counting the frames sent
+```
+
+- [ ] **Step 6: In `src/gfx/VideoEncoder.cpp`, the definition's signature**. In `src/gfx/VideoEncoder.cpp`, replace:
 
 ```cpp
 bool VideoEncoder::open(const std::string& path, int width, int height, int fps,
@@ -2768,7 +2823,25 @@ bool VideoEncoder::open(const std::string& path, int width, int height, int fps,
                         int audioRate, int audioChannels, std::string& err, int keyframeInterval) {
 ```
 
-- [ ] **Step 6: In `src/gfx/VideoEncoder.cpp`, the GOP size**. In `src/gfx/VideoEncoder.cpp`, replace:
+- [ ] **Step 7: In `src/gfx/VideoEncoder.cpp`, the choice of encoder**. In `src/gfx/VideoEncoder.cpp`, replace:
+
+```cpp
+    // --- Video stream (H.264, falling back to MPEG-4) ---
+    const AVCodec* vc = avcodec_find_encoder_by_name("libx264");
+    if (!vc) vc = avcodec_find_encoder(AV_CODEC_ID_H264);
+```
+
+with:
+
+```cpp
+    // --- Video stream (H.264, falling back to MPEG-4) ---
+    // An exact keyframe interval rules out the H.264 encoders other than libx264: they add keyframes at
+    // scene cuts whatever they are told.
+    const AVCodec* vc = avcodec_find_encoder_by_name("libx264");
+    if (!vc && keyframeInterval <= 0) vc = avcodec_find_encoder(AV_CODEC_ID_H264);
+```
+
+- [ ] **Step 8: In `src/gfx/VideoEncoder.cpp`, the GOP size**. In `src/gfx/VideoEncoder.cpp`, replace:
 
 ```cpp
     vctx_->gop_size  = fps;
@@ -2780,7 +2853,7 @@ with:
     vctx_->gop_size  = keyframeInterval > 0 ? keyframeInterval : fps;
 ```
 
-- [ ] **Step 7: In `src/gfx/VideoEncoder.cpp`, after the x264 `crf` option**. In `src/gfx/VideoEncoder.cpp`, replace:
+- [ ] **Step 9: In `src/gfx/VideoEncoder.cpp`, after the x264 `crf` option**. In `src/gfx/VideoEncoder.cpp`, replace:
 
 ```cpp
         av_opt_set(vctx_->priv_data, "crf",    "23",       0);
@@ -2794,9 +2867,45 @@ with:
         if (keyframeInterval > 0)   // exactly every N frames: no extra keyframes at scene cuts
             av_opt_set(vctx_->priv_data, "x264-params", "scenecut=0", 0);
     }
+    if (keyframeInterval > 0 && vc->id == AV_CODEC_ID_MPEG4)   // likewise its scene-change keyframes
+        av_opt_set(vctx_, "sc_threshold", "1000000000", AV_OPT_SEARCH_CHILDREN);
 ```
 
-- [ ] **Step 8: Build and run the scenario**
+- [ ] **Step 10: In `src/gfx/VideoEncoder.cpp`, where `open()` resets its counters**. In `src/gfx/VideoEncoder.cpp`, replace:
+
+```cpp
+    pkt_ = av_packet_alloc();
+    lastVpts_ = -1;
+```
+
+with:
+
+```cpp
+    pkt_ = av_packet_alloc();
+    lastVpts_ = -1;
+    keyframeInterval_ = keyframeInterval > 0 ? keyframeInterval : 0;
+    framesSent_ = 0;
+```
+
+- [ ] **Step 11: In `src/gfx/VideoEncoder.cpp`, where `addVideoFrame()` sends the frame**. In `src/gfx/VideoEncoder.cpp`, replace:
+
+```cpp
+    vframe_->pts = pts;
+    return encodeWrite(vctx_, vst_, vframe_);
+```
+
+with:
+
+```cpp
+    vframe_->pts = pts;
+    // An exact interval forces its keyframes: MPEG-4's B-frames would otherwise move them by a frame.
+    vframe_->pict_type = keyframeInterval_ > 0 && framesSent_ % keyframeInterval_ == 0 ? AV_PICTURE_TYPE_I
+                                                                                        : AV_PICTURE_TYPE_NONE;
+    ++framesSent_;
+    return encodeWrite(vctx_, vst_, vframe_);
+```
+
+- [ ] **Step 12: Build and run the scenario**
 
 ```bash
 cmake --build build --target gl_smoke -j8 && ./build/gl_smoke 2>&1 | grep -E 'keyframe interval|FAIL'
@@ -2804,7 +2913,7 @@ cmake --build build --target gl_smoke -j8 && ./build/gl_smoke 2>&1 | grep -E 'ke
 
 Expected output includes: `an explicit keyframe interval places keyframes exactly`
 
-- [ ] **Step 9: Commit**
+- [ ] **Step 13: Commit**
 
 ```bash
 git add src/gfx/VideoEncoder.h src/gfx/VideoEncoder.cpp tests/gl_smoke.cpp
