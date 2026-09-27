@@ -2753,16 +2753,13 @@ static bool scenario_world_transform_shared() {
 // --- Scenario 15: Compositor blends two colours; shader matches the C++ reference ---
 // Feed two solid colours into the Compositor and assert the rendered centre pixel
 // matches blendPixel() for one mode per code path: Multiply (separable), Hue
-// (non-separable setSat/setLum), XOR (bitwise). The reference is computed on the
-// 8-bit-quantised inputs (what the textures actually carry) so only output rounding
-// can differ; the near() tolerance is +/-3.
+// (non-separable setSat/setLum), XOR (bitwise). Both colours are whole 8-bit steps, so
+// the textures carry exactly what the reference is given and only output rounding can
+// differ; the near() tolerance is +/-3. A colour between two steps would not do: one
+// exactly halfway (0.5 is 127.5 steps) is stored as 127 by Mesa's llvmpipe and as 128 by
+// macOS, and XOR, being bitwise, turns that one-step difference into an unrelated byte.
 static bool scenario_compositor_blend_matches_shader() {
     {
-        auto quant = [](glm::vec3 c) {
-            return glm::vec3(std::round(c.x*255.0f)/255.0f,
-                             std::round(c.y*255.0f)/255.0f,
-                             std::round(c.z*255.0f)/255.0f);
-        };
         auto check = [&](int mode, glm::vec3 ca, glm::vec3 cb) -> bool {
             Graph g;
             auto a = std::make_unique<ColourNode>(); a->inputDefault(0) = glm::vec4(ca, 1.0f);
@@ -2781,13 +2778,14 @@ static bool scenario_compositor_blend_matches_shader() {
             TexRef t = dynamic_cast<OutputNode*>(g.findNode(oId))->current();
             if (!t.id) return false;
             int r, gg, bb, aa; readCentre(t, r, gg, bb, aa);
-            glm::vec3 e = blendPixel(mode, quant(ca), quant(cb));
+            glm::vec3 e = blendPixel(mode, ca, cb);
             int er = (int)std::lround(e.x*255.0f), eg = (int)std::lround(e.y*255.0f), eb = (int)std::lround(e.z*255.0f);
             std::fprintf(stderr, "gl_smoke compositor mode %d: got (%d,%d,%d) expected (%d,%d,%d)\n",
                          mode, r, gg, bb, er, eg, eb);
             return near(r,er) && near(gg,eg) && near(bb,eb);
         };
-        glm::vec3 ca(0.2f, 0.5f, 0.8f), cb(0.9f, 0.3f, 0.1f);   // distinct channels (no setSat ties)
+        const glm::vec3 ca = glm::vec3(51, 128, 204) / 255.0f;   // distinct channels (no setSat ties)
+        const glm::vec3 cb = glm::vec3(230, 77, 26) / 255.0f;
         if (!check(5,  ca, cb)) { return failed("Compositor Multiply mismatch vs reference"); }
         if (!check(16, ca, cb)) { return failed("Compositor Hue mismatch vs reference"); }
         if (!check(22, ca, cb)) { return failed("Compositor XOR mismatch vs reference"); }

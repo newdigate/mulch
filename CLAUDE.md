@@ -623,7 +623,10 @@ shaders by CWD-relative path, each package launches the app with `shaders/` as t
 - **`gl_smoke`** — headless: builds graphs, renders into a hidden GLFW window, reads
   back pixels. Runs with `WORKING_DIRECTORY` = repo root so `shaders/` and `tests/assets/`
   resolve. Needs a GL context (skips where none is available); the two visible windows
-  can't be exercised headlessly.
+  can't be exercised headlessly. A scenario that checks a shader against a CPU reference
+  feeds it whole 8-bit colours (`k/255`): drivers store a value exactly halfway between two
+  steps differently (Mesa's llvmpipe, the Linux CI's renderer, stores 0.5 as 127; macOS as
+  128), which a bitwise mode such as the Compositor's XOR turns into an unrelated byte.
 
 ## Conventions
 
