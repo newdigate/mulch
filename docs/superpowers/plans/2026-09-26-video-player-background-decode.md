@@ -2682,7 +2682,7 @@ EOF
 - Modify: `src/gfx/VideoEncoder.h`, `src/gfx/VideoEncoder.cpp`
 - Modify: `tests/gl_smoke.cpp`
 
-The regression clips need keyframes far apart (x264's default of 250 frames is what exposed the lock-up) or exactly placed. A trailing defaulted parameter keeps every existing caller unchanged. An interval is held exactly only by libx264 (with its scene-cut keyframes off) and by the MPEG-4 fallback (with its scene-change detection off) — the other H.264 encoders, VideoToolbox or Media Foundation, add keyframes at scene cuts whatever they are told — so a clip with an interval is written with one of those two, and every Nth frame is forced to be a keyframe (MPEG-4's B-frames would otherwise move odd intervals by a frame). The scenario also walks the index of an MP4 and an AVI whose every frame is a keyframe: Task 5's `nextKeyframeAfter` must move strictly forward (a frame's time divided back into ticks can land a hair, or a whole tick, below its own).
+The regression clips need keyframes far apart (x264's default of 250 frames is what exposed the lock-up) or exactly placed. A trailing defaulted parameter keeps every existing caller unchanged. An interval is held exactly only by libx264 (with its scene-cut keyframes off) and by the MPEG-4 fallback (with its scene-change detection off) — the other H.264 encoders cannot be relied on to hold one (VideoToolbox keys every scene cut regardless) — so a clip with an interval is written with one of those two, and every Nth frame is forced to be a keyframe (MPEG-4's B-frames would otherwise move odd intervals by a frame). The scenario also walks the index of an MP4 and an AVI whose every frame is a keyframe: Task 5's `nextKeyframeAfter` must move strictly forward (a frame's time divided back into ticks can land a hair, or a whole tick, below its own).
 
 - [ ] **Step 1: Add the failing scenario, just above `// --- Scenario 10: Video Player decodes a file to texture + audio ---`**:
 
@@ -2787,8 +2787,8 @@ with:
     // `audioChannels` channels (1 = mono, 2 = stereo). `keyframeInterval` > 0 places
     // a keyframe exactly every that many frames and nowhere else -- tests use it to write
     // clips with widely spaced keyframes. Only libx264 and the MPEG-4 fallback can be held
-    // to that (the other H.264 encoders, VideoToolbox or Media Foundation, add keyframes at
-    // scene cuts whatever they are told), so such a clip is written with one of those two.
+    // to that (the other H.264 encoders cannot be relied on to: VideoToolbox keys every scene
+    // cut regardless), so such a clip is written with one of those two.
     // At or below 0, keyframes are at most a second apart (scene cuts can add more).
     // Returns false on failure.
     bool open(const std::string& path, int width, int height, int fps,
@@ -2835,8 +2835,8 @@ with:
 
 ```cpp
     // --- Video stream (H.264, falling back to MPEG-4) ---
-    // An exact keyframe interval rules out the H.264 encoders other than libx264: they add keyframes at
-    // scene cuts whatever they are told.
+    // An exact keyframe interval rules out the H.264 encoders other than libx264: they cannot be relied on
+    // to hold one (VideoToolbox keys every scene cut regardless).
     const AVCodec* vc = avcodec_find_encoder_by_name("libx264");
     if (!vc && keyframeInterval <= 0) vc = avcodec_find_encoder(AV_CODEC_ID_H264);
 ```

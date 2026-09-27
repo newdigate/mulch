@@ -364,12 +364,14 @@ fixed, and each fix is pinned by a check that fails when it is reverted.
 63. **An exact keyframe interval holds without libx264.** `x264-params scenecut=0` reaches libx264 only:
     the MPEG-4 fallback put a keyframe at every hard cut (the scenario's clip keyed 0, 10, 20…, failing it
     and stopping every later `gl_smoke` scenario), and the 300-frame clip Task 8 asks for keyframes 250
-    apart keyed frame 128 instead. The other H.264 encoders (VideoToolbox, Media Foundation) add keyframes at
-    scene cuts whatever they are told. So an interval is written with libx264 or MPEG-4 only (never another
-    H.264 encoder), MPEG-4's own scene-change detection is switched off (`sc_threshold`), and every Nth
-    frame sent is forced to be a keyframe, which also stops MPEG-4's B-frames moving odd intervals by a
-    frame (25 gave 0, 26, 50, 74). Checked with the codec lookup intercepted: every clip the plan writes
-    keys exactly as asked under libx264, MPEG-4 and VideoToolbox's stand-in; 0 is unchanged.
+    apart keyed frame 128 instead. The other H.264 encoders cannot be relied on to hold an interval
+    (VideoToolbox keys every scene cut regardless). So an interval is written with libx264 or MPEG-4 only
+    (never another H.264 encoder), MPEG-4's own scene-change detection is switched off (`sc_threshold`), and
+    every Nth frame sent is forced to be a keyframe, which also stops MPEG-4's B-frames moving odd intervals
+    by a frame (25 gave 0, 26, 50, 74). Checked with the codec lookup intercepted: every clip the plan writes
+    keys exactly as asked under libx264, MPEG-4 and VideoToolbox's stand-in; 0 is unchanged. Nothing that
+    runs routinely checks the MPEG-4 path, though: every CI runner has libx264, where the scenario passes
+    with or without these two lines.
 64. **`nextKeyframeAfter(t)` is strictly after t.** It took the entry at or after the tick one past t's, but
     t is usually a frame's own time, worked out from its timestamp, and dividing it back by the time base
     can land a hair below that tick (1.16 s at 1/12800 s ticks) -- or a whole tick below where a tick is a
@@ -381,8 +383,8 @@ fixed, and each fix is pinned by a check that fails when it is reverted.
     keyframes are at most a second apart (scene cuts can add more); the scenario's message says what its
     0.1 s tolerance checks (the index may list keyframes by decode time); and it walks the index of an
     every-frame-keyframe MP4 and AVI, which must visit each keyframe once. FLV's muxer flags its closing
-    end-of-sequence tag as a keyframe, so its index lists one past the last frame -- likely why a seek into
-    an FLV's last frames finds nothing (revision 20's back-off already copes).
+    end-of-sequence tag as a keyframe, so its index lists a keyframe at the last frame's decode time --
+    likely why a seek into an FLV's last frames finds nothing (revision 20's back-off already copes).
 
 ## Root cause
 
