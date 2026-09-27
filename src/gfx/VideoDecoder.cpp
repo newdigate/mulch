@@ -9,6 +9,7 @@ extern "C" {
 #include <libavutil/channel_layout.h>
 #include <libavutil/opt.h>
 #include <libavutil/samplefmt.h>
+#include <libavutil/version.h>
 #include <libswscale/swscale.h>
 #include <libswresample/swresample.h>
 }
@@ -388,7 +389,12 @@ bool VideoDecoder::decodeNext(DecodedFrame& out) {
             // of an MPEG-PS, the decoder may put out nothing else).
             if (ts == AV_NOPTS_VALUE && std::isnan(nextT_)) { av_frame_unref(frame_); continue; }
             const double t = ts != AV_NOPTS_VALUE ? ts * vTimeBase_ : nextT_;
-            nextT_ = t + (frame_->duration > 0 ? frame_->duration * vTimeBase_ : frameDuration());
+#if LIBAVUTIL_VERSION_INT >= AV_VERSION_INT(57, 30, 100)
+            const int64_t dur = frame_->duration;                // FFmpeg 6.0 and later
+#else
+            const int64_t dur = frame_->pkt_duration;            // FFmpeg 5.1
+#endif
+            nextT_ = t + (dur > 0 ? dur * vTimeBase_ : frameDuration());
             out.t = t - startT_;
             out.frame_ = av_frame_alloc();
             if (!out.frame_) { av_frame_unref(frame_); return false; }
