@@ -5,7 +5,8 @@
 #include <string>
 #include <vector>
 #include "core/Node.h"
-#include "gfx/VideoDecoder.h"
+#include "core/VideoPlan.h"
+#include "gfx/VideoStream.h"
 #include "audio/AudioBlock.h"
 
 namespace oss {
@@ -16,14 +17,17 @@ namespace oss {
 // and NEGATIVE values play in reverse (the audio is swept backwards and won't
 // sound musical -- that's expected). `play` pauses; `loop` wraps at the ends.
 //
-// Decoding is synchronous on the graph thread. To play forward, backward, and at
-// variable speed off a forward-only decoder, the node keeps a sliding window of
-// recently decoded frames (one GOP-ish span around the playhead): it advances a
-// source-time playhead by rate*dt each frame, shows the cached frame nearest the
-// playhead, and re-seeks to the keyframe before the playhead to rebuild the
-// window whenever the playhead leaves it. Audio for each frame is resampled out
-// of the window's decoded-audio buffer over the slice [previous, current]
-// playhead, so speed and direction fall out of that mapping.
+// Decoding runs on a background worker (gfx/VideoStream), so the UI never waits on FFmpeg.
+// Each frame the node advances an UNWRAPPED playhead (it keeps counting past the end rather
+// than jumping back, so the worker can decode the next lap early -- see core/VideoPlan.h),
+// posts it to the stream, and uploads the newest ready frame at or before it. The worker
+// converts rows top-down, so the upload lands in a staging texture and one flipped
+// glBlitFramebuffer puts it bottom-up into the published texture.
+//
+// Offline renders stay frame-exact: evaluate() waits for the exact frame, and loading()
+// reports the NEXT frame not ready yet, so the renderer's gate does the waiting between frames.
+// A stream that fails mid-render keeps loading() true, so the render fails rather than going on
+// without the picture. Old streams are handed to VideoStream::retire(), never waited for.
 class VideoPlayerNode : public Node {
 public:
     VideoPlayerNode();
@@ -31,57 +35,50 @@ public:
     void initGL() override;
     void evaluate(EvalContext& ctx) override;
     std::string statusLine() const override { return status_; }
+    bool loading() const override;
 
     // Test/inspection accessors.
-    double  playhead() const { return playhead_; }
+    double   playhead() const { return videoPosition(ph_, loop_, duration_); }   // position in the clip
+    bool     hasFrame() const { return shownSerial_ != 0; }   // a frame of the current file is on screen
+    double   shownFrameTime() const { return shownT_; }       // its unwrapped time (valid when hasFrame())
     AudioRef audioOut() const { return AudioRef{outBuf_.data(), (std::size_t)lastAudioN_, outRate_}; }
 
-private:
-    struct Frame { double t = 0.0; std::vector<std::uint8_t> rgba; };  // bottom-up RGBA8
+    // Offline: how long evaluate() waits for a frame the prefetch did not predict.
+    static constexpr double kOfflineFrameWaitSeconds = 2.0;
 
+private:
     void openPath(const std::string& path);
-    void reset();
-    void ensureTexture(int w, int h);
-    void ensureCache(double t, bool forward);
-    void rebuildCache(double from, double to);
-    void extendForward(double toT);
-    void trimFront();
-    const Frame* nearestFrame(double t) const;
-    void uploadFrame(const Frame& f);
-    void emitAudio(EvalContext& ctx, double t0, double t1);
+    VideoRequest makeRequest(const VideoPlayhead& p, bool play, float rate, bool loop) const;
+    void ensureTextures(int w, int h);
+    void freeGL();
+    void upload(const VideoStream::FrameView& f);
+    void publishEmpty(EvalContext& ctx);
     void updateStatus(bool play, float rate);
 
-    static constexpr double kLookahead = 0.5;   // seconds of frames to keep ahead
-    // Steady-state window size (frames are trimmed back to this). The window only
-    // needs to span ~kLookahead + a little, so this also bounds memory: the cache
-    // holds ~kMaxFrames decoded RGBA frames, i.e. width*height*4*kMaxFrames bytes.
-    static constexpr int    kMaxFrames = 48;
+    std::unique_ptr<VideoStream> stream_;
+    std::string   path_;
+    std::string   status_;
+    bool          needInfo_ = false;     // the stream is new: read its info once it is Ready
+    bool          opened_ = false;       // it has been Ready: a failure now is mid-play
+    bool          failLogged_ = false;
+    double        duration_ = 0.0;
+    double        frameDur_ = 1.0 / 30.0;
+    VideoPlayhead ph_;
+    bool          loop_ = true;
 
-    std::unique_ptr<VideoDecoder> dec_;
-    std::string path_;
-    std::string status_;
-    bool   opened_   = false;
-    double duration_ = 0.0;
-    double playhead_ = 0.0;       // current position in source seconds
+    GLuint        stageTex_ = 0;         // receives the worker's top-down rows
+    GLuint        tex_      = 0;         // published, bottom-up
+    GLuint        readFbo_  = 0, drawFbo_ = 0;
+    int           texW_ = 0, texH_ = 0;
+    std::uint64_t shownSerial_ = 0;      // 0: nothing uploaded from this stream yet
+    double        shownT_ = -1.0;
 
-    GLuint tex_   = 0;
-    int    texW_  = 0;
-    int    texH_  = 0;
-    bool   haveFrame_    = false; // a frame has been uploaded since (re)open
-    double lastUploadedT_ = -1.0; // source time of the uploaded frame (skip re-upload)
-
-    // Sliding window: frames sorted by ascending source time, plus the matching
-    // run of decoded 48 kHz mono audio anchored at audioStartT_.
-    std::vector<Frame> frames_;
-    std::vector<float> audio_;
-    double audioStartT_ = 0.0;
-    bool   audioValid_  = false;
-    double cacheStartT_ = 0.0;
-    double cacheEndT_   = 0.0;
-    bool   eofReached_  = false;
+    bool          offline_  = false;     // the last evaluate() was part of an offline render
+    bool          stalled_  = false;     // offline: a frame missed its wait (latched until live again)
+    double        pendingU_ = 0.0;       // offline: the next frame's playhead, prefetched
 
     int                outRate_   = VideoDecoder::kOutRate;
-    std::vector<float> outBuf_;   // owns the samples audioOut/AudioRef points at
+    std::vector<float> outBuf_;          // owns the samples audioOut/AudioRef points at
     int                lastAudioN_ = 0;
 };
 

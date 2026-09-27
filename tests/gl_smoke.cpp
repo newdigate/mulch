@@ -1810,6 +1810,38 @@ static bool scenario_video_stream_exactness() {
     return true;
 }
 
+// Evaluate the way the OfflineRenderer does: wait while any node reports loading() (the Video
+// Player decodes on a worker thread), then run one frame. False on timeout.
+static bool evaluateGated(Graph& g, float dt, double timeoutSeconds = 10.0) {
+    const auto t0 = std::chrono::steady_clock::now();
+    for (const auto& n : g.nodes())
+        while (n->loading()) {
+            if (std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count() > timeoutSeconds)
+                return false;
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        }
+    g.evaluate(dt);
+    return true;
+}
+
+// The index painted by writeIndexedClip, read from bottom-up RGBA pixels (a texture or a decoded
+// VideoFrame).
+static int readFrameIndex(const unsigned char* px, int w, int h) {
+    int idx = 0;
+    for (int band = 0; band < 9; ++band) {
+        const int fromTop = (2 * band + 1) * h / 18;       // the band's centre row, from the top
+        const int y = h - 1 - fromTop;
+        idx = idx * 2 + (px[((std::size_t)y * w + w / 2) * 4] > 127 ? 1 : 0);
+    }
+    return idx;
+}
+static int readFrameIndex(TexRef t) {
+    std::vector<unsigned char> px((std::size_t)t.w * t.h * 4);
+    glBindTexture(GL_TEXTURE_2D, t.id);
+    glGetTexImage(GL_TEXTURE_2D, 0, GL_RGBA, GL_UNSIGNED_BYTE, px.data());
+    return readFrameIndex(px.data(), t.w, t.h);
+}
+
 // --- Scenario 10: Video Player decodes a file to texture + audio ---
 // Decodes tests/assets/test.mp4 (a 128x96 colour pattern with a 330 Hz tone),
 // first through the bare VideoDecoder, then through the VideoPlayerNode wired
@@ -1851,11 +1883,13 @@ static bool scenario_video_player_decode() {
         auto* outNode = dynamic_cast<OutputNode*>(g.findNode(oId));
         auto* vidNode = dynamic_cast<VideoPlayerNode*>(g.findNode(vId));
 
-        // Traverse most of the clip so the sliding window has to extend forward
-        // across several keyframes, accumulating "did we ever see picture/audio".
+        // Decoding is asynchronous, so drive it like an offline render: exact frames, gated on
+        // loading(). Traverse most of the clip across several keyframes, accumulating "did we ever
+        // see picture/audio".
+        g.setOffline(true);
         bool sawColour = false, sawNodeAudio = false;
         for (int f = 0; f < 12; ++f) {
-            g.evaluate(1.0f / 10.0f);   // ~10 fps clip, 12 frames ~= 1.2s
+            if (!evaluateGated(g, 1.0f / 10.0f)) { return failed("video: loading() never cleared"); }   // ~10 fps clip, 12 frames ~= 1.2s
             AudioRef na = vidNode->audioOut();
             for (std::size_t i = 0; i < na.count; ++i)
                 if (na.samples[i] > 0.01f || na.samples[i] < -0.01f) { sawNodeAudio = true; break; }
@@ -1878,11 +1912,248 @@ static bool scenario_video_player_decode() {
         // window to re-seek to an earlier keyframe and rebuild.
         vidNode->inputDefault(1) = -1.0f;   // rate
         double before = vidNode->playhead();
-        for (int f = 0; f < 5; ++f) g.evaluate(1.0f / 10.0f);
+        for (int f = 0; f < 5; ++f)
+            if (!evaluateGated(g, 1.0f / 10.0f)) { return failed("video reverse: loading() never cleared"); }
         double after = vidNode->playhead();
         if (!(after < before)) { return failed("playhead did not move backwards on reverse play"); }
         std::fprintf(stderr, "gl_smoke OK: VideoPlayer rendered + audio, advanced to %.2fs, reversed %.2f->%.2f\n",
                      fwd, before, after);
+    }
+    {
+        // (d) live: the picture arrives from the worker without any evaluate() waiting for it.
+        Graph g;
+        auto vid = std::make_unique<VideoPlayerNode>();
+        vid->inputDefault(0) = std::string("tests/assets/test.mp4");
+        auto out = std::make_unique<OutputNode>();
+        vid->initGL(); out->initGL();
+        int vId = g.addNode(std::move(vid));
+        int oId = g.addNode(std::move(out));
+        if (!g.connect(vId, 0, oId, 0)) { return failed("live video: connect"); }
+        auto* outNode = dynamic_cast<OutputNode*>(g.findNode(oId));
+        const auto t0 = std::chrono::steady_clock::now();
+        bool sawColour = false;
+        while (!sawColour && secondsSince(t0) < 5.0) {
+            g.evaluate(1.0f / 60.0f);
+            TexRef t = outNode->current();
+            if (t.id) { int r, gg, b, a; readCentre(t, r, gg, b, a); sawColour = r > 30 || gg > 30 || b > 30; }
+            std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        }
+        if (!sawColour) { return failed("live video: no picture within 5 s"); }
+        std::fprintf(stderr, "gl_smoke OK: live VideoPlayer showed a picture after %.0f ms\n", secondsSince(t0) * 1000.0);
+    }
+    return true;
+}
+// --- Scenario: a hitch between keyframes no longer locks the Video Player up ---
+// The bug: decoding ran on the UI thread, a slow frame pushed the playhead out of the cached window,
+// and the rebuild -- seek back to the keyframe, decode up to 48 frames -- made the next frame slower
+// still. With keyframes more than 48 frames apart the rebuilt window even ended BEFORE the playhead,
+// so every frame rebuilt forever. Now a 3 s jump into the middle of a 250-frame keyframe interval
+// must neither block evaluate() nor stop the picture catching up.
+static bool scenario_video_player_hitch_recovery() {
+    {
+        const std::string clip = "build/_video_longgop.mp4";
+        if (!writeIndexedClip(clip, 300, 250)) { return failed("video hitch: write clip"); }
+        Graph g;
+        auto vid = std::make_unique<VideoPlayerNode>();
+        vid->inputDefault(0) = clip;
+        vid->inputDefault(3) = false;                                // loop off
+        auto out = std::make_unique<OutputNode>();
+        vid->initGL(); out->initGL();
+        int vId = g.addNode(std::move(vid));
+        int oId = g.addNode(std::move(out));
+        if (!g.connect(vId, 0, oId, 0)) { return failed("video hitch: connect"); }
+        auto* vp = dynamic_cast<VideoPlayerNode*>(g.findNode(vId));
+        auto* outNode = dynamic_cast<OutputNode*>(g.findNode(oId));
+
+        auto t0 = std::chrono::steady_clock::now();
+        while (!vp->hasFrame() && secondsSince(t0) < 5.0) {   // live: open + first frame
+            g.evaluate(0.0f);
+            std::this_thread::sleep_for(std::chrono::milliseconds(2));
+        }
+        if (!vp->hasFrame()) { return failed("video hitch: no first frame within 5 s"); }
+
+        t0 = std::chrono::steady_clock::now();
+        g.evaluate(3.0f);                                            // the hitch: 75 frames past keyframe 0
+        const double hitchMs = secondsSince(t0) * 1000.0;
+        if (hitchMs > 50.0) {
+            std::fprintf(stderr, "video hitch: evaluate() took %.0f ms\n", hitchMs);
+            return failed("video hitch: evaluate() blocked after the hitch -- decoding is on the UI thread");
+        }
+        double worstMs = 0.0;
+        bool caughtUp = false;
+        t0 = std::chrono::steady_clock::now();
+        while (!caughtUp && secondsSince(t0) < 1.0) {
+            const auto f0 = std::chrono::steady_clock::now();
+            g.evaluate(1.0f / 60.0f);
+            worstMs = std::max(worstMs, secondsSince(f0) * 1000.0);
+            caughtUp = std::fabs(vp->playhead() - vp->shownFrameTime()) <= 1.0 / kIdxFps + 1e-6;
+            std::this_thread::sleep_for(std::chrono::milliseconds(16));
+        }
+        if (!caughtUp) { return failed("video hitch: the picture did not catch up with the playhead within 1 s"); }
+        if (worstMs > 50.0) { return failed("video hitch: an evaluate() blocked while catching up"); }
+        const int expect = (int)std::lround(vp->shownFrameTime() * kIdxFps);
+        const int got = readFrameIndex(outNode->current());
+        if (got != expect) {
+            std::fprintf(stderr, "video hitch: texture shows frame %d, expected %d\n", got, expect);
+            return failed("video hitch: the texture does not hold the frame the node reports");
+        }
+        std::fprintf(stderr, "gl_smoke OK: a 3 s hitch mid-keyframe-interval: evaluate %.1f ms, caught up to frame %d in %.0f ms (worst frame %.1f ms)\n",
+                     hitchMs, got, secondsSince(t0) * 1000.0, worstMs);
+    }
+    return true;
+}
+
+// Render `frames` frames of a VideoPlayer -> Output (+ Audio Out) graph through the real
+// OfflineRenderer at the indexed clip's size and rate, then decode the file: the band index of every
+// frame, and the RMS of every frame's audio block.
+static bool renderVideoPlayer(Graph& g, int frames, const std::string& outPath,
+                              std::vector<int>& idx, std::vector<double>& rms) {
+    g.transport().bpm = 120.0;                                       // 2 s per bar
+    RenderSettings s;
+    s.startBar = 0.0; s.endBar = frames / (double)kIdxFps / 2.0; s.prerollBars = 0.0;
+    s.fps = kIdxFps; s.width = kIdxW; s.height = kIdxH; s.outPath = outPath;
+    std::remove(s.outPath.c_str());
+    OfflineRenderer r; std::string err;
+    if (!r.start(g, s, err)) { std::fprintf(stderr, "render: %s\n", err.c_str()); return false; }
+    int guard = 0;
+    while (r.step(0.05)) {
+        if (r.progress().waitingForLoad) std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        if (++guard > 1000000) return false;
+    }
+    if (r.progress().phase != OfflineRenderer::Phase::Done) {
+        std::fprintf(stderr, "render: %s\n", r.progress().status.c_str());
+        return false;
+    }
+    VideoDecoder dec; std::string derr;
+    if (!dec.open(s.outPath, derr)) return false;
+    VideoFrame vf; std::vector<float> au; double aS = 0; bool aV = false;
+    idx.clear();
+    std::vector<float> all;
+    while (dec.decodeFrame(vf, au, aS, aV)) idx.push_back(readFrameIndex(vf.rgba, vf.width, vf.height));
+    all.swap(au);
+    rms.clear();
+    const std::size_t block = 48000 / kIdxFps;
+    for (std::size_t b = 0; b + block <= all.size(); b += block) {
+        double e = 0.0;
+        for (std::size_t i = b; i < b + block; ++i) e += (double)all[i] * all[i];
+        rms.push_back(std::sqrt(e / block));
+    }
+    return true;
+}
+
+// A graph with one Video Player on the indexed clip feeding an Output and an Audio Out.
+static VideoPlayerNode* buildVideoRenderGraph(Graph& g, const std::string& clip, bool loop, float rate) {
+    auto vid = std::make_unique<VideoPlayerNode>();
+    vid->inputDefault(0) = clip;
+    vid->inputDefault(1) = rate;
+    vid->inputDefault(3) = loop;
+    auto out = std::make_unique<OutputNode>();
+    auto ao  = std::make_unique<AudioOutputNode>();
+    vid->initGL(); out->initGL();
+    int vId = g.addNode(std::move(vid));
+    int oId = g.addNode(std::move(out));
+    int aId = g.addNode(std::move(ao));
+    if (!g.connect(vId, 0, oId, 0) || !g.connect(vId, 1, aId, 0) || !g.connect(vId, 1, aId, 1)) return nullptr;
+    return dynamic_cast<VideoPlayerNode*>(g.findNode(vId));
+}
+
+// Place the (live) playhead at `seconds`: open the file, then one evaluate() with that dt.
+static bool parkPlayhead(Graph& g, VideoPlayerNode* vp, float seconds) {
+    const auto t0 = std::chrono::steady_clock::now();
+    while (!vp->hasFrame() && secondsSince(t0) < 5.0) {
+        g.evaluate(0.0f);
+        std::this_thread::sleep_for(std::chrono::milliseconds(2));
+    }
+    if (!vp->hasFrame()) return false;
+    g.evaluate(seconds);
+    return true;
+}
+
+// --- Scenario: offline renders of the Video Player are frame-exact, forward and reverse ---
+// Parked mid-way between keyframes 250 frames apart, a render forward must show every frame in
+// order, and a render in reverse every frame backwards -- through the real OfflineRenderer, so
+// loading() and the renderer's gate are part of what is tested.
+static bool scenario_video_player_offline_exact() {
+    const std::string clip = "build/_video_longgop.mp4";            // written by the hitch scenario
+    for (float rate : {1.0f, -1.0f}) {
+        Graph g;
+        VideoPlayerNode* vp = buildVideoRenderGraph(g, clip, false, 1.0f);
+        if (!vp) { return failed("video offline: build graph"); }
+        if (!parkPlayhead(g, vp, rate > 0 ? 5.0f : 7.0f)) { return failed("video offline: open"); }
+        vp->inputDefault(1) = rate;                                  // park playing forward, then set the rate
+        const int start = (int)std::lround(vp->playhead() * kIdxFps);   // 125 or 175
+        std::vector<int> idx; std::vector<double> rms;
+        if (!renderVideoPlayer(g, 20, "build/_video_offline_exact.mp4", idx, rms)) { return failed("video offline: render"); }
+        if (idx.size() != 20) { return failed("video offline: expected 20 frames"); }
+        // One burned pre-roll frame, then frame k shows start + (k + 2) * direction.
+        for (int k = 0; k < 20; ++k) {
+            const int expect = start + (k + 2) * (rate > 0 ? 1 : -1);
+            if (idx[(std::size_t)k] != expect) {
+                std::fprintf(stderr, "video offline (rate %.0f): frame %d shows %d, expected %d\n", rate, k, idx[(std::size_t)k], expect);
+                return failed("video offline: a rendered frame is not the exact frame for the playhead");
+            }
+        }
+        std::fprintf(stderr, "gl_smoke OK: offline render at rate %+.0f from frame %d is frame-exact (%d..%d)\n",
+                     rate, start, idx.front(), idx.back());
+    }
+    return true;
+}
+
+// --- Scenario: a loop is seamless -- no stale frame and no silent audio block at the wrap ---
+static bool scenario_video_player_loop_seam() {
+    {
+        const std::string clip = "build/_video_longgop.mp4";
+        Graph g;
+        VideoPlayerNode* vp = buildVideoRenderGraph(g, clip, true, 1.0f);
+        if (!vp) { return failed("video loop: build graph"); }
+        if (!parkPlayhead(g, vp, 11.6f)) { return failed("video loop: open"); }   // 10 frames before the end
+        std::vector<int> idx; std::vector<double> rms;
+        if (!renderVideoPlayer(g, 20, "build/_video_loop_seam.mp4", idx, rms)) { return failed("video loop: render"); }
+        for (int k = 0; k < (int)idx.size(); ++k) {
+            const int expect = (290 + k + 2) % 300;
+            if (idx[(std::size_t)k] != expect) {
+                std::fprintf(stderr, "video loop: frame %d shows %d, expected %d\n", k, idx[(std::size_t)k], expect);
+                return failed("video loop: the frames across the loop are not consecutive");
+            }
+        }
+        for (std::size_t b = 1; b + 1 < rms.size(); ++b)        // skip the encoder's first/last blocks
+            if (rms[b] < 0.05) {
+                std::fprintf(stderr, "video loop: audio block %zu RMS %.3f\n", b, rms[b]);
+                return failed("video loop: a silent audio block -- the loop is not seamless");
+            }
+        std::fprintf(stderr, "gl_smoke OK: looping across the end is seamless (frames %d..%d, no silent audio block)\n",
+                     idx.front(), idx.back());
+    }
+    return true;
+}
+
+// --- Scenario: changing the file or deleting the node mid-seek returns at once ---
+// The old stream goes to VideoStream::retire(), which tears it down on another thread: at 4K that takes
+// 0.1-0.5 s, and the UI would wait it out.
+static bool scenario_video_player_shutdown() {
+    {
+        const std::string clip = "build/_video_shutdown.mp4";      // 640x360, one keyframe: a long catch-up
+        if (!writeIndexedClip(clip, 300, 300, 640, 360)) { return failed("video shutdown: write clip"); }
+        for (int mode = 0; mode < 2; ++mode) {
+            Graph g;
+            auto vid = std::make_unique<VideoPlayerNode>();
+            vid->inputDefault(0) = clip;
+            vid->initGL();
+            int vId = g.addNode(std::move(vid));
+            auto* vp = dynamic_cast<VideoPlayerNode*>(g.findNode(vId));
+            if (!parkPlayhead(g, vp, 11.5f)) { return failed("video shutdown: open"); }   // starts a long catch-up
+            std::this_thread::sleep_for(std::chrono::milliseconds(5));
+            const auto t0 = std::chrono::steady_clock::now();
+            if (mode == 0) { vp->inputDefault(0) = std::string("tests/assets/test.mp4"); g.evaluate(0.0f); }
+            else           { g.removeNode(vId); }
+            const double ms = secondsSince(t0) * 1000.0;
+            if (ms > 50.0) {
+                std::fprintf(stderr, "video shutdown: %s took %.0f ms\n", mode == 0 ? "changing the file" : "deleting the node", ms);
+                return failed("video shutdown: the caller waited for the old stream's teardown");
+            }
+            std::fprintf(stderr, "gl_smoke OK: %s mid-catch-up returned in %.1f ms\n",
+                         mode == 0 ? "changing the file" : "deleting the node", ms);
+        }
     }
     return true;
 }
@@ -4336,6 +4607,10 @@ static bool (*const kScenarios[])() = {
     scenario_video_stream_loop_toggles,
     scenario_video_stream_exactness,
     scenario_video_player_decode,
+    scenario_video_player_hitch_recovery,
+    scenario_video_player_offline_exact,
+    scenario_video_player_loop_seam,
+    scenario_video_player_shutdown,
     scenario_text_geometry_renderers,
     scenario_recorder_video_encoder,
     scenario_audio_file_player_stereo,
