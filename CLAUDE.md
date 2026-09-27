@@ -622,8 +622,11 @@ shaders by CWD-relative path, each package launches the app with `shaders/` as t
   FFT, signal gen, audio/MIDI nodes, mesh-edge expansion). One `tests/test_*.cpp` per area.
 - **`gl_smoke`** — headless: builds graphs, renders into a hidden GLFW window, reads
   back pixels. Runs with `WORKING_DIRECTORY` = repo root so `shaders/` and `tests/assets/`
-  resolve. Needs a GL context (skips where none is available); the two visible windows
-  can't be exercised headlessly. A scenario that checks a shader against a CPU reference
+  resolve. Needs a GL 4.1 context and fails without one (the hosted macOS arm64 and Windows CI
+  runners have none, so it fails there before any scenario runs); the two visible windows
+  can't be exercised headlessly. Every scenario runs even after one fails, and the last line
+  says how many failed; read the first `FAIL` first, since a later scenario can fail because
+  an earlier one did. A scenario that checks a shader against a CPU reference
   feeds it whole 8-bit colours (`k/255`): drivers store a value exactly halfway between two
   steps differently (Mesa's llvmpipe, the Linux CI's renderer, stores 0.5 as 127; macOS as
   128), which a bitwise mode such as the Compositor's XOR turns into an unrelated byte.

@@ -4673,11 +4673,8 @@ static bool scenario_recorder_lost_frames() {
 #endif   // _WIN32: the three RLIMIT_FSIZE scenarios above
 
 // The main-body scenarios, in the exact order they must run (several depend on files an
-// earlier one wrote). Looping over this table instead of writing one
-// "if (!scenario_x()) { glfwDestroyWindow(win); glfwTerminate(); return 1; }" per scenario
-// means adding a 47th scenario is a one-line addition here, and can no longer forget the
-// window/context teardown -- the copy-pasted teardown clause used to be the single most
-// copy-pasteable line in this file.
+// earlier one wrote, so when one fails, a later one can fail with it: read the first FAIL
+// first). Adding a scenario is a one-line addition here.
 static bool (*const kScenarios[])() = {
     scenario_colour_output,
     scenario_image_streamer,
@@ -4750,7 +4747,12 @@ int main() {
     // libx264/aac statistics per encoder open bury the scenario log.
     quietFFmpegLog();
 
-    if (!scenario_asset_backed_inputs()) return 1;      // pure CPU: runs before any GL setup
+    // Every scenario runs, even after one fails, so a single failure (one driver's rounding, a
+    // flaky timing check) cannot hide the rest; the exit code still fails the run.
+    int run = 0, failures = 0;
+    auto runScenario = [&](bool (*scenario)()) { ++run; if (!scenario()) ++failures; };
+
+    runScenario(scenario_asset_backed_inputs);      // pure CPU: runs before any GL setup
 
     if (!glfwInit()) return fail("glfwInit");
     glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 4);
@@ -4763,17 +4765,17 @@ int main() {
     glfwMakeContextCurrent(win);
     if (!gladLoadGL((GLADloadfunc)glfwGetProcAddress)) { glfwTerminate(); return fail("gladLoadGL"); }
 
-    for (bool (*scenario)() : kScenarios)
-        if (!scenario()) { glfwDestroyWindow(win); glfwTerminate(); return 1; }
+    for (bool (*scenario)() : kScenarios) runScenario(scenario);
 
 #ifndef _WIN32
-    for (bool (*scenario)() : kEncodeFailureScenarios)
-        if (!scenario()) { glfwDestroyWindow(win); glfwTerminate(); return 1; }
+    for (bool (*scenario)() : kEncodeFailureScenarios) runScenario(scenario);
 #else
     std::fprintf(stderr, "gl_smoke SKIP: the three encode-write-failure scenarios (RLIMIT_FSIZE is POSIX-only)\n");
 #endif
 
     glfwDestroyWindow(win);
     glfwTerminate();
-    return 0;
+    if (failures) std::fprintf(stderr, "gl_smoke: %d of %d scenarios failed\n", failures, run);
+    else          std::fprintf(stderr, "gl_smoke: all %d scenarios passed\n", run);
+    return failures ? 1 : 0;
 }
