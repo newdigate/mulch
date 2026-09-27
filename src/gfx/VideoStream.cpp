@@ -32,10 +32,17 @@ public:
         cv_.notify_all();
         if (thread_.joinable()) thread_.join();
     }
+    // Never throws: it runs in destructors. With no thread (or no room to queue), the stream goes here.
     void add(std::unique_ptr<VideoStream> s) {
-        std::lock_guard<std::mutex> lk(m_);
-        queue_.push_back(std::move(s));
-        if (!thread_.joinable()) thread_ = std::thread([this] { run(); });
+        std::unique_lock<std::mutex> lk(m_);
+        try {
+            if (!thread_.joinable()) thread_ = std::thread([this] { run(); });
+            queue_.push_back(std::move(s));
+        } catch (...) {
+            lk.unlock();
+            s.reset();
+            return;
+        }
         cv_.notify_all();
     }
 

@@ -57,6 +57,7 @@ public:
     // Destroy `s` on a background thread and return at once: tearing a stream down -- joining its worker,
     // freeing its frames, closing its decoder -- takes 0.1-0.5 s at 4K, too long for the UI thread. Its
     // worker is told to stop straight away; streams go in the order retired, the last before the process exits.
+    // Never throws (destructors call it): should that thread fail to start, `s` is destroyed here instead.
     static void retire(std::unique_ptr<VideoStream> s);
     VideoStream(const VideoStream&) = delete;
     VideoStream& operator=(const VideoStream&) = delete;
