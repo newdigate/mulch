@@ -3545,6 +3545,7 @@ public:
     // Destroy `s` on a background thread and return at once: tearing a stream down -- joining its worker,
     // freeing its frames, closing its decoder -- takes 0.1-0.5 s at 4K, too long for the UI thread. Its
     // worker is told to stop straight away; streams go in the order retired, the last before the process exits.
+    // Never throws (destructors call it): should that thread fail to start, `s` is destroyed here instead.
     static void retire(std::unique_ptr<VideoStream> s);
     VideoStream(const VideoStream&) = delete;
     VideoStream& operator=(const VideoStream&) = delete;
@@ -3702,10 +3703,17 @@ public:
         cv_.notify_all();
         if (thread_.joinable()) thread_.join();
     }
+    // Never throws: it runs in destructors. With no thread (or no room to queue), the stream goes here.
     void add(std::unique_ptr<VideoStream> s) {
-        std::lock_guard<std::mutex> lk(m_);
-        queue_.push_back(std::move(s));
-        if (!thread_.joinable()) thread_ = std::thread([this] { run(); });
+        std::unique_lock<std::mutex> lk(m_);
+        try {
+            if (!thread_.joinable()) thread_ = std::thread([this] { run(); });
+            queue_.push_back(std::move(s));
+        } catch (...) {
+            lk.unlock();
+            s.reset();
+            return;
+        }
         cv_.notify_all();
     }
 

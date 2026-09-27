@@ -422,9 +422,10 @@ fixed, and each fix is pinned by a check that fails when it is reverted.
     frame's decode: ~250 ms mid-seek on 4K 10-bit HEVC), freeing the touched pool (50-110 ms), closing the
     decoder while its frame threads finish (15-110 ms) -- took 0.1-0.5 s at 4K, not "tens of ms".
     `VideoStream::retire(std::unique_ptr<VideoStream>)` sets the stop flag at once and hands the stream to
-    a reaper thread, which destroys retired streams one after another and is joined at exit. The node
-    retires its stream on a file change and in its destructor: 0.01-0.1 ms where the destructor took
-    90-250 ms.
+    a reaper thread, which destroys retired streams one after another and is joined at exit. It never
+    throws, since destructors call it: should the reaper's thread fail to start, the stream is destroyed in
+    place. The node retires its stream on a file change and in its destructor: 0.01-0.1 ms where the
+    destructor took 90-250 ms.
 71. **An offline render fails when its stream fails mid-render.** Readiness is true once a stream has failed
     (nothing more will come), so a stream failing mid-render let the render finish with the picture gone.
     The node now keeps `loading()` true for a stream that fails after it opened, so the render fails
@@ -588,7 +589,8 @@ functions, unit-tested in `core_tests` (the `StepSync.h` / `BarSync.h` pattern).
   buffers, never allocated or freed per frame), the ready queue, a `TimedAudio`, and status/info.
 - **Lifecycle:** the constructor starts the worker, which opens the file. The destructor sets a stop
   flag, wakes the worker and joins it (the `MidiSyncEngine` pattern). `retire(std::unique_ptr<VideoStream>)`
-  sets the flag and returns at once, leaving the rest to a reaper thread (see Shutdown and lifetime).
+  sets the flag and returns at once, leaving the rest to a reaper thread (see Shutdown and lifetime); it
+  never throws.
 - **API for the graph thread:**
 
   | Call | Purpose |
