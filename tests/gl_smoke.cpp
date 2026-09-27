@@ -1920,7 +1920,9 @@ static bool scenario_video_player_decode() {
     }
     {
         // (d) live: the picture arrives from the worker with no evaluate() waiting for it, and the playhead
-        // holds at the start until the first frame is up (it would otherwise skip the first frames).
+        // holds at the start until the first frame is up (it would otherwise skip the first frames). Then a
+        // switch to another file (another size) keeps the last picture up until the new file's first frame
+        // replaces it, instead of flashing black while that file opens.
         Graph g;
         auto vid = std::make_unique<VideoPlayerNode>();
         vid->inputDefault(0) = std::string("tests/assets/test.mp4");
@@ -1945,6 +1947,19 @@ static bool scenario_video_player_decode() {
         }
         if (!sawColour) { return failed("live video: no picture within 5 s"); }
         if (worstMs > 50.0) { return failed("live video: an evaluate() waited for the worker"); }
+        const std::string next = "build/_video_switch.mp4";         // 160x90; test.mp4 is 128x96
+        if (!writeIndexedClip(next, 25, 25)) { return failed("live video: write the second clip"); }
+        vp->inputDefault(0) = next;
+        const auto s0 = std::chrono::steady_clock::now();
+        do {
+            g.evaluate(1.0f / 60.0f);
+            if (!vp->hasFrame() && outNode->current().id == 0) { return failed("live video: the output went black while the next file opened"); }
+            std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        } while (!vp->hasFrame() && secondsSince(s0) < 5.0);
+        const TexRef shown = outNode->current();
+        if (!vp->hasFrame() || shown.w != kIdxW || shown.h != kIdxH || readFrameIndex(shown) != 0) {
+            return failed("live video: the next file's first frame did not replace the last picture");
+        }
         std::fprintf(stderr, "gl_smoke OK: live VideoPlayer showed a picture after %.0f ms\n", secondsSince(t0) * 1000.0);
     }
     return true;

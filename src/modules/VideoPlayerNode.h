@@ -22,7 +22,8 @@ namespace oss {
 // than jumping back, so the worker can decode the next lap early -- see core/VideoPlan.h),
 // posts it to the stream, and uploads the newest ready frame at or before it. The worker
 // converts rows top-down, so the upload lands in a staging texture and one flipped
-// glBlitFramebuffer puts it bottom-up into the published texture.
+// glBlitFramebuffer puts it bottom-up into the published texture. When the file changes, the
+// last picture stays up until the new file's first frame replaces it.
 //
 // Offline renders stay frame-exact: evaluate() waits for the exact frame, and loading()
 // reports the NEXT frame not ready yet, so the renderer's gate does the waiting between frames.
@@ -54,13 +55,14 @@ private:
     void ensureTextures(int w, int h);
     void freeGL();
     void upload(const VideoStream::FrameView& f);
-    void publishEmpty(EvalContext& ctx);
+    void publishHeld(EvalContext& ctx);
     void updateStatus(bool play, float rate);
 
     std::unique_ptr<VideoStream> stream_;
     std::string   path_;
     std::string   status_;
     bool          needInfo_ = false;     // the stream is new: read its info once it is Ready
+    int           vidW_ = 0, vidH_ = 0;  // its frame size
     bool          opened_ = false;       // it has been Ready: a failure now is mid-play
     bool          failLogged_ = false;
     double        duration_ = 0.0;
@@ -74,6 +76,7 @@ private:
     int           texW_ = 0, texH_ = 0;
     std::uint64_t shownSerial_ = 0;      // 0: nothing uploaded from this stream yet
     double        shownT_ = -1.0;
+    bool          picture_ = false;      // tex_ holds a picture: this file's, or the last one's until then
 
     bool          offline_  = false;     // the last evaluate() was part of an offline render
     bool          stalled_  = false;     // offline: a frame missed its wait (latched until live again)

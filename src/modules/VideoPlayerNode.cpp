@@ -35,7 +35,7 @@ void VideoPlayerNode::evaluate(EvalContext& ctx) {
     loop_ = loop;
 
     if (path != path_) { path_ = path; openPath(path); }
-    if (!stream_) { publishEmpty(ctx); return; }
+    if (!stream_) { picture_ = false; publishHeld(ctx); return; }
 
     const VideoStream::State st = stream_->state();
     if (st == VideoStream::State::Failed) {
@@ -44,12 +44,13 @@ void VideoPlayerNode::evaluate(EvalContext& ctx) {
             std::fprintf(stderr, "[Video] %s (%s)\n", status_.c_str(), path_.c_str());
             failLogged_ = true;
         }
-        publishEmpty(ctx);
+        picture_ = false;
+        publishHeld(ctx);
         return;
     }
     if (st == VideoStream::State::Opening) {
         status_ = "opening...";
-        publishEmpty(ctx);
+        publishHeld(ctx);                              // the last file's picture, until this one's first frame
         return;
     }
     if (needInfo_) {
@@ -57,7 +58,8 @@ void VideoPlayerNode::evaluate(EvalContext& ctx) {
         const VideoStream::Info inf = stream_->info();
         duration_ = inf.duration;
         frameDur_ = inf.frameDur;
-        ensureTextures(inf.width, inf.height);
+        vidW_ = inf.width;
+        vidH_ = inf.height;
         needInfo_ = false;
         std::fprintf(stderr, "[Video] loaded %s (%dx%d, %.1fs, %s)\n", path_.c_str(),
                      inf.width, inf.height, inf.duration, inf.hasAudio ? "audio" : "no audio");
@@ -80,8 +82,11 @@ void VideoPlayerNode::evaluate(EvalContext& ctx) {
         stalled_ = true;                               // publish what we have; loading() fails the render
 
     VideoStream::FrameView fv;
-    if (stream_->frameAt(ph_.u, fv) && fv.serial != shownSerial_) upload(fv);
-    ctx.out<TexRef>(0, TexRef{ shownSerial_ ? tex_ : 0u, texW_, texH_ });
+    if (stream_->frameAt(ph_.u, fv) && fv.serial != shownSerial_) {
+        ensureTextures(vidW_, vidH_);                  // a new size: made here, so no evaluate() publishes it empty
+        upload(fv);
+    }
+    ctx.out<TexRef>(0, TexRef{ picture_ ? tex_ : 0u, texW_, texH_ });
 
     // Audio for the slice of source time just played. The playhead is unwrapped, so a loop wrap
     // is a continuous slice too; a pause is silent.
@@ -177,6 +182,7 @@ void VideoPlayerNode::freeGL() {
     if (tex_)      glDeleteTextures(1, &tex_);
     readFbo_ = drawFbo_ = stageTex_ = tex_ = 0;
     texW_ = texH_ = 0;
+    picture_ = false;
 }
 
 // Upload the worker's top-down rows to the staging texture, then flip them into the published
@@ -192,10 +198,12 @@ void VideoPlayerNode::upload(const VideoStream::FrameView& f) {
     glBlitFramebuffer(0, 0, texW_, texH_, 0, texH_, texW_, 0, GL_COLOR_BUFFER_BIT, GL_NEAREST);
     shownSerial_ = f.serial;
     shownT_ = f.t;
+    picture_ = true;
 }
 
-void VideoPlayerNode::publishEmpty(EvalContext& ctx) {
-    ctx.out<TexRef>(0, TexRef{});
+// No frame of this file yet: publish the picture held over from the last file (if any), and silence.
+void VideoPlayerNode::publishHeld(EvalContext& ctx) {
+    ctx.out<TexRef>(0, TexRef{ picture_ ? tex_ : 0u, texW_, texH_ });
     ctx.out<AudioRef>(1, AudioRef{});
 }
 
