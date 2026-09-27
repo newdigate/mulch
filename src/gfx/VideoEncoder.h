@@ -41,8 +41,8 @@ public:
     // `audioChannels` channels (1 = mono, 2 = stereo). `keyframeInterval` > 0 places
     // a keyframe exactly every that many frames and nowhere else -- tests use it to write
     // clips with widely spaced keyframes. Only libx264 and the MPEG-4 fallback can be held
-    // to that (the other H.264 encoders, VideoToolbox or Media Foundation, add keyframes at
-    // scene cuts whatever they are told), so such a clip is written with one of those two.
+    // to that (the other H.264 encoders cannot be relied on to: VideoToolbox keys every scene
+    // cut regardless), so such a clip is written with one of those two.
     // At or below 0, keyframes are at most a second apart (scene cuts can add more).
     // Returns false on failure.
     bool open(const std::string& path, int width, int height, int fps,

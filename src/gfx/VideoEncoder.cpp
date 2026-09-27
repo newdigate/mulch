@@ -64,8 +64,8 @@ bool VideoEncoder::open(const std::string& path, int width, int height, int fps,
     if (!oc_) { err = "could not allocate output for " + path; return false; }
 
     // --- Video stream (H.264, falling back to MPEG-4) ---
-    // An exact keyframe interval rules out the H.264 encoders other than libx264: they add keyframes at
-    // scene cuts whatever they are told.
+    // An exact keyframe interval rules out the H.264 encoders other than libx264: they cannot be relied on
+    // to hold one (VideoToolbox keys every scene cut regardless).
     const AVCodec* vc = avcodec_find_encoder_by_name("libx264");
     if (!vc && keyframeInterval <= 0) vc = avcodec_find_encoder(AV_CODEC_ID_H264);
     if (!vc) vc = avcodec_find_encoder(AV_CODEC_ID_MPEG4);
