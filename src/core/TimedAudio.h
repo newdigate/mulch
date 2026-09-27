@@ -48,11 +48,10 @@ public:
     // Keep the audio around the playhead `u`: [lo, hi] is forward [u - keep, +inf), reverse
     // (-inf, u + keep]. Chunks wholly outside go (never the current one). A chunk's front (forward) or back
     // (reverse) is cut once more than a second of it lies outside, so calling this every step does not
-    // move memory every step. The cap spares what plays at `u`.
+    // move memory every step. The cap spares what plays at `u`. Compacts in place: nothing is allocated.
     void retain(double lo, double hi, double u) {
         playhead_ = u;
-        std::vector<Chunk> kept;
-        kept.reserve(chunks_.size());
+        std::size_t kept = 0;
         for (std::size_t i = 0; i < chunks_.size(); ++i) {
             Chunk& c = chunks_[i];
             const bool current = i + 1 == chunks_.size();
@@ -64,9 +63,10 @@ public:
             }
             if (!current && std::isfinite(hi) && end(c) > hi + 1.0)
                 c.s.resize((std::size_t)std::max(0.0, std::ceil((hi - c.start) * rate_ - kGridEps)));
-            kept.push_back(std::move(c));
+            if (kept != i) chunks_[kept] = std::move(c);
+            ++kept;
         }
-        chunks_.swap(kept);
+        chunks_.erase(chunks_.begin() + (std::ptrdiff_t)kept, chunks_.end());
     }
 
     // n output samples spanning source time [u0, u1] (u1 < u0 reads backwards).
