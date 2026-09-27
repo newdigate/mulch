@@ -2,6 +2,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <deque>
 #include <exception>
 #include <new>
 #include <stdexcept>
@@ -20,6 +21,53 @@ VideoStream::~VideoStream() {
     cv_.notify_all();
     if (thread_.joinable()) thread_.join();   // bounded: the worker checks stop_ between frames,
 }                                               // and FFmpeg's I/O polls it while blocked
+
+namespace {
+
+// Destroys retired streams one after another on its own thread; joined at exit.
+class Reaper {
+public:
+    ~Reaper() {
+        { std::lock_guard<std::mutex> lk(m_); done_ = true; }
+        cv_.notify_all();
+        if (thread_.joinable()) thread_.join();
+    }
+    void add(std::unique_ptr<VideoStream> s) {
+        std::lock_guard<std::mutex> lk(m_);
+        queue_.push_back(std::move(s));
+        if (!thread_.joinable()) thread_ = std::thread([this] { run(); });
+        cv_.notify_all();
+    }
+
+private:
+    void run() {
+        std::unique_lock<std::mutex> lk(m_);
+        for (;;) {
+            cv_.wait(lk, [this] { return done_ || !queue_.empty(); });
+            if (queue_.empty()) return;                // done, and nothing left to destroy
+            std::unique_ptr<VideoStream> s = std::move(queue_.front());
+            queue_.pop_front();
+            lk.unlock();
+            s.reset();
+            lk.lock();
+        }
+    }
+    std::mutex m_;
+    std::condition_variable cv_;
+    std::deque<std::unique_ptr<VideoStream>> queue_;
+    bool done_ = false;
+    std::thread thread_;
+};
+
+} // namespace
+
+void VideoStream::retire(std::unique_ptr<VideoStream> s) {
+    if (!s) return;
+    { std::lock_guard<std::mutex> lk(s->m_); s->stop_ = true; }   // stop decoding now, not when its turn comes
+    s->cv_.notify_all();
+    static Reaper reaper;
+    reaper.add(std::move(s));
+}
 
 VideoStream::State VideoStream::state() const { std::lock_guard<std::mutex> lk(m_); return state_; }
 std::string VideoStream::error() const        { std::lock_guard<std::mutex> lk(m_); return error_; }
@@ -89,10 +137,10 @@ int VideoStream::readyFrameLocked(double u) const {
 bool VideoStream::readyLocked(double u) const {
     if (state_ == State::Failed) return true;                 // nothing more will come
     if (state_ != State::Ready || !runValid_) return false;
+    if (dir_ != planDir_ || (dir_ < 0 && req_.offline && !planOffline_)) return false;   // step() flushes it all first
     if (dir_ < 0 && !runOffline_) return false;               // live stretches skipped frames
     if (u < runLo_ - kVideoTimeEps || u >= runHi_ - kVideoTimeEps) return false;
-    const bool held = (shown_.buf >= 0 && shown_.t <= u + kVideoTimeEps) || readyFrameLocked(u) >= 0;
-    if (!held) return false;
+    if (!holdsLocked(u)) return false;
     if (dir_ < 0 || !info_.hasAudio) return true;             // reverse: the stretch brought its audio
     return u < audioLapStart_ - kVideoTimeEps || audioSettledU_ >= u - kVideoTimeEps;
 }
@@ -123,15 +171,25 @@ void VideoStream::flushReadyLocked() {
 // Release queued frames that can never be shown for this request: in forward play those older than
 // the frame for the target, in reverse those after it (the playhead has passed them), and with loop
 // off those before the playhead's lap. Frames past its end stay: the loop-off playhead stops just
-// short of them, and they are the next ones to show if loop comes back on.
+// short of them, and they are the next ones to show if loop comes back on. Offline, the request is
+// the node's guess at the next frame's playhead, which an automated rate can move: while the guess's frame
+// is held (so nothing has to make room for it), the frames between the one on screen and the guess stay
+// too -- one may be the frame the real playhead needs, and a frame given up is a seek to decode it again.
+// Only while the frame on screen is on the way to the guess, though: after a jump or a flip it lies
+// beyond it, and so does nothing to keep.
 void VideoStream::recycleLocked(const VideoRequest& r, int dir) {
     double frameT = (shown_.buf >= 0 && shown_.t <= r.u + kVideoTimeEps) ? shown_.t : -kInf;
     const int best = readyFrameLocked(r.u);
     if (best >= 0) frameT = std::max(frameT, ready_[(std::size_t)best].t);
+    double lo = frameT;                                                   // forward: frames before lo go
+    double hi = std::isfinite(frameT) ? frameT : r.u + kVideoTimeEps;     // reverse: frames after hi go
+    if (r.offline && shown_.buf >= 0 && holdsLocked(r.u)) {
+        if (shown_.t <= lo) lo = shown_.t;
+        if (shown_.t >= hi) hi = shown_.t;
+    }
     for (std::size_t i = 0; i < ready_.size();) {
         const Slot& s = ready_[i];
-        bool drop = dir >= 0 ? (std::isfinite(frameT) && s.t < frameT)
-                             : (std::isfinite(frameT) ? s.t > frameT : s.t > r.u + kVideoTimeEps);
+        bool drop = dir >= 0 ? s.t < lo : s.t > hi;
         if (!r.loop && s.t < r.lapLo - kVideoTimeEps) drop = true;
         if (drop) { releaseLocked(s.buf); ready_.erase(ready_.begin() + (std::ptrdiff_t)i); }
         else ++i;
@@ -147,7 +205,21 @@ void VideoStream::setRunHiLocked() {
     else                runHi_ = lastT_ + 2.0 * kVideoTimeEps;
 }
 
+// The frame held for u, exactly: a held slot with t <= u < until (the next frame decoded after it).
+bool VideoStream::holdsLocked(double u) const {
+    if (shown_.buf >= 0 && shown_.t <= u + kVideoTimeEps && u < shown_.until - kVideoTimeEps) return true;
+    const int i = readyFrameLocked(u);
+    return i >= 0 && u < ready_[(std::size_t)i].until - kVideoTimeEps;
+}
+
 // --- worker ---------------------------------------------------------------------------------
+
+// The time of the next frame the decoder gives (the lap's end at its end): the exclusive end of the last frame taken.
+double VideoStream::nextFrameTime() const {
+    if (next_.valid()) return lapOffset_ + next_.t;
+    if (eof_)          return winfo_.duration > 0.0 ? lapOffset_ + winfo_.duration : kInf;
+    return lastT_ + 2.0 * kVideoTimeEps;
+}
 
 void VideoStream::setFailed(const std::string& msg) {
     {
@@ -172,6 +244,7 @@ void VideoStream::run() {
         const int n = videoPoolFrames(poolBytes_, inf.width, inf.height);
         std::vector<std::unique_ptr<std::uint8_t[]>> pool;
         try {
+            pool.reserve((std::size_t)n);
             for (int i = 0; i < n; ++i)
                 pool.emplace_back(new std::uint8_t[(std::size_t)inf.width * inf.height * 4]);
         } catch (const std::bad_alloc&) {
@@ -200,7 +273,7 @@ void VideoStream::run() {
 void VideoStream::step() {
     VideoRequest r;
     int dir = 1;
-    bool changed = false, toOffline = false;
+    bool changed = false, toOffline = false, lostTarget = false;
     VideoPlanInput in;
     {
         std::lock_guard<std::mutex> lk(m_);
@@ -212,6 +285,8 @@ void VideoStream::step() {
         // An offline render starting in reverse cannot use live stretches: they kept every stride-th frame.
         toOffline = dir < 0 && r.offline && !planOffline_;
         if (changed || toOffline) { flushReadyLocked(); runValid_ = false; }
+        planDir_ = dir;
+        planOffline_ = r.offline;
         recycleLocked(r, dir);
         if (!r.loop && runValid_ && runLo_ < r.lapLo) {    // what was decided before the lap is gone
             if (runHi_ <= r.lapLo) runValid_ = false;
@@ -224,10 +299,15 @@ void VideoStream::step() {
         if (!ready_.empty()) in.lowest = std::min(in.lowest, ready_.front().t);
         in.freeBuffers = (int)free_.size();
         in.poolSize    = (int)pool_.size();
+        if (r.offline && !holdsLocked(r.u)) {
+            bool above = shown_.buf >= 0 && (dir >= 0 ? shown_.t > r.u + kVideoTimeEps : shown_.t <= r.u + kVideoTimeEps);
+            for (const Slot& s : ready_) above = above || (dir >= 0 ? s.t > r.u + kVideoTimeEps : s.t <= r.u + kVideoTimeEps);
+            lostTarget = above;
+        }
     }
-    if (changed) planDir_ = dir;
+    if (lostTarget && dir >= 0) in.lowest = kInf;                 // forward: seek back to it
+    if (lostTarget && dir < 0 && coverValid_ && r.u >= coverLo_ - kVideoTimeEps) coverValid_ = false;   // reverse: restart there
     if (changed || toOffline) coverValid_ = false;
-    planOffline_ = r.offline;
     if (!r.loop && coverValid_ && coverLo_ < r.lapLo) {     // likewise what reverse had covered
         if (coverHi_ <= r.lapLo) coverValid_ = false;
         else                     coverLo_ = r.lapLo;
@@ -247,7 +327,7 @@ void VideoStream::step() {
     in.keyKnown   = dec_.nextKeyframeAfter(in.head - lapOffset_, key);
     in.nextKey    = lapOffset_ + key;
     in.lapEnd     = winfo_.duration > 0.0 ? lapOffset_ + winfo_.duration : kInf;
-    if (!std::isfinite(in.lowest)) in.lowest = in.head;
+    if (!std::isfinite(in.lowest) && !lostTarget) in.lowest = in.head;
     in.seekPinned = seekPinned_;
     in.pinnedFrom = pinnedFrom_;
     in.noSeekBelow = noSeekBelow_;
@@ -256,9 +336,9 @@ void VideoStream::step() {
     in.coverHi    = coverHi_;
     in.lead       = r.offline ? 0.0 : std::min(2.0, std::fabs((double)r.rate) * lastStretchSeconds_);
 
-    if (dir >= 0) pumpAudio(r.u, r.offline);                    // keep the audio ahead of the playhead
-
     const VideoStep s = videoNextStep(in);
+    // Keep the audio ahead of the playhead -- but not before a seek, which throws the read-ahead away.
+    if (dir >= 0 && s.kind != VideoStepKind::Seek) pumpAudio(r.u, r.offline);
     switch (s.kind) {
         case VideoStepKind::Wait:    waitForWork(); break;
         case VideoStepKind::Fill:    fill(); break;
@@ -438,7 +518,7 @@ void VideoStream::wrap() {
 }
 
 // Convert `f` into a free buffer and queue it. False if no buffer is free or conversion fails.
-bool VideoStream::publishSlot(DecodedFrame& f, double t) {
+bool VideoStream::publishSlot(DecodedFrame& f, double t, double until) {
     int b = -1;
     { std::lock_guard<std::mutex> lk(m_); b = acquireLocked(); }
     if (b < 0) return false;
@@ -449,7 +529,7 @@ bool VideoStream::publishSlot(DecodedFrame& f, double t) {
     }
     {
         std::lock_guard<std::mutex> lk(m_);
-        insertReadyLocked(Slot{t, nextSerial_++, b});
+        insertReadyLocked(Slot{t, nextSerial_++, b, until});
     }
     cv_.notify_all();
     return true;
@@ -457,7 +537,7 @@ bool VideoStream::publishSlot(DecodedFrame& f, double t) {
 
 // Forward: queue the frame and extend the run of consecutive decided frames.
 bool VideoStream::publish(DecodedFrame& f, double t, bool runStart) {
-    if (!publishSlot(f, t)) return false;
+    if (!publishSlot(f, t, nextFrameTime())) return false;
     {
         std::lock_guard<std::mutex> lk(m_);
         if (runStart || !runValid_) { runValid_ = true; runLo_ = t; }
@@ -494,13 +574,15 @@ void VideoStream::reverseStretch(double to, bool fresh, bool offline) {
 
     double lo = lapOffset_;                        // how far down this stretch covers
     std::vector<Slot> ring;                        // the kept frames, oldest first (offline: the newest `cap`)
+    bool ringPending = false;                      // ring.back().until awaits the next frame's time
     auto keep = [&](DecodedFrame& f, double t, bool evict) {
         int b = -1;
         if (!evict || (int)ring.size() < cap) { std::lock_guard<std::mutex> lk(m_); b = acquireLocked(); }
         if (b < 0 && evict && !ring.empty()) { b = ring.front().buf; ring.erase(ring.begin()); }
         if (b < 0) return;                         // live: no room for this one -- skip it
         if (dec_.convert(f, pool_[(std::size_t)b].get(), winfo_.width * 4)) {
-            ring.push_back(Slot{t, 0, b});
+            ring.push_back(Slot{t, 0, b, kInf});
+            ringPending = true;
         } else {
             std::lock_guard<std::mutex> lk(m_);
             releaseLocked(b);
@@ -515,6 +597,7 @@ void VideoStream::reverseStretch(double to, bool fresh, bool offline) {
         lastT_ = t;
         peekNext();
         keep(f, t, false);
+        if (ringPending) { ring.back().until = nextFrameTime(); ringPending = false; }
     } else {
         // Live strides count back from half a frame below the stretch above, on the keyframe's grid, so a
         // frame a container rounded (by up to half a frame) still counts from the right place.
@@ -522,9 +605,12 @@ void VideoStream::reverseStretch(double to, bool fresh, bool offline) {
         const VideoStretch plan = videoPlanStretch(key, fresh ? to : to - 0.5 * fd, fd, cap, offline);
         cap = plan.keep;
         DecodedFrame spare;                        // live: the newest frame not kept, in case none is
-        double spareT = 0.0;
+        double spareT = 0.0, spareUntil = kInf;
+        bool sparePending = false;
         while (!stop_ && peekNext()) {
             const double t = lapOffset_ + next_.t;
+            if (ringPending && !ring.empty()) { ring.back().until = t; ringPending = false; }
+            if (sparePending) { spareUntil = t; sparePending = false; }
             if (fresh ? t > end + kVideoTimeEps : t > end) break;
             DecodedFrame f = std::move(next_);
             lastT_ = t;
@@ -536,6 +622,7 @@ void VideoStream::reverseStretch(double to, bool fresh, bool offline) {
             } else {
                 spare = std::move(f);
                 spareT = t;
+                sparePending = true;
             }
             if (directionChanged()) {              // abandon the stretch; the next step re-plans
                 std::lock_guard<std::mutex> lk(m_);
@@ -544,7 +631,9 @@ void VideoStream::reverseStretch(double to, bool fresh, bool offline) {
                 return;
             }
         }
-        if (!plan.contiguous && ring.empty() && spare.valid()) keep(spare, spareT, false);   // never empty
+        if (ringPending && !ring.empty()) { ring.back().until = nextFrameTime(); ringPending = false; }
+        if (sparePending) spareUntil = nextFrameTime();
+        if (!plan.contiguous && ring.empty() && spare.valid()) { keep(spare, spareT, false); if (!ring.empty()) ring.back().until = spareUntil; ringPending = false; }   // never empty
         // Covered down to the keyframe -- or the lap start, when the keyframe is the lap's first frame --
         // unless the offline ring evicted the stretch's lower frames: then only down to its oldest.
         const bool evicted = plan.contiguous && !ring.empty() && ring.front().t > key + kVideoTimeEps;
@@ -556,7 +645,7 @@ void VideoStream::reverseStretch(double to, bool fresh, bool offline) {
     audioClipHi_ = kInf;
     {
         std::lock_guard<std::mutex> lk(m_);
-        for (const Slot& s : ring) insertReadyLocked(Slot{s.t, nextSerial_++, s.buf});
+        for (const Slot& s : ring) insertReadyLocked(Slot{s.t, nextSerial_++, s.buf, s.until});
         const bool firstOfRun = !coverValid_;
         coverLo_ = lo;
         if (firstOfRun) coverHi_ = end;

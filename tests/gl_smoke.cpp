@@ -1305,12 +1305,14 @@ static double secondsSince(std::chrono::steady_clock::time_point t0) {
 }
 
 // A clip whose every frame paints its own index as 9 horizontal black/white bands (the top band is
-// bit 8), 160x90 at 25 fps with a 440 Hz tone, and keyframes exactly `gop` frames apart. Reading the
-// bands back says which frame is on screen -- and a wrong vertical flip reads a different number.
+// bit 8), 160x90 at 25 fps with a 440 Hz tone (unless `audio` is false), and keyframes exactly `gop`
+// frames apart. Reading the bands back says which frame is on screen -- and a wrong vertical flip reads
+// a different number.
 static const int kIdxW = 160, kIdxH = 90, kIdxFps = 25;
-static bool writeIndexedClip(const std::string& path, int frames, int gop, int w = kIdxW, int h = kIdxH) {
+static bool writeIndexedClip(const std::string& path, int frames, int gop, int w = kIdxW, int h = kIdxH,
+                             bool audio = true) {
     VideoEncoder enc; std::string err;
-    if (!enc.open(path, w, h, kIdxFps, 48000, 1, err, gop)) {
+    if (!enc.open(path, w, h, kIdxFps, audio ? 48000 : 0, 1, err, gop)) {
         std::fprintf(stderr, "writeIndexedClip: %s\n", err.c_str());
         return false;
     }
@@ -1326,6 +1328,7 @@ static bool writeIndexedClip(const std::string& path, int frames, int gop, int w
             }
         }
         if (!enc.addVideoFrame(px.data(), (double)f / kIdxFps)) return false;
+        if (!audio) continue;
         for (std::size_t i = 0; i < tone.size(); ++i)
             tone[i] = 0.5f * (float)std::sin(6.283185307179586 * 440.0 *
                                              (double)(f * tone.size() + i) / 48000.0);
@@ -1586,7 +1589,8 @@ static bool scenario_video_stream_reverse_files() {
 //      playhead) pins the playhead's lap: the worker must move there -- it used to wait at the end of the
 //      decoder's lap for ever, and offline report the earlier lap's frames ready;
 //  (b) loop off and back on near the end of the lap: the next lap's frames, decoded ahead, stay -- they
-//      were recycled, and the worker went on filling from past them, leaving a hole;
+//      were recycled, and the worker went on filling from past them, leaving a hole (loop goes off only
+//      once the next lap's first frame is ready, so a slow machine cannot pass it without the wrap);
 //  (c) the same at the start of the lap in reverse: the frames below the lap start are recycled, so what
 //      reverse covered must shrink with them -- or it waits for a playhead that has nothing to show.
 static bool scenario_video_stream_loop_toggles() {
@@ -1632,13 +1636,16 @@ static bool scenario_video_stream_loop_toggles() {
             const double D = s.info().duration;
             VideoRequest r;
             r.u = 3.0; r.rate = 1.0f;
-            drive(s, r, 0.3);                                     // decoded ahead through the wrap
+            const auto t0 = std::chrono::steady_clock::now();
+            while (!s.frameReadyFor(D + 0.02) && secondsSince(t0) < 5.0) drive(s, r, 0.05);   // through the wrap
+            if (!s.frameReadyFor(D + 0.02)) { return failed("loop toggles: the worker never decoded through the wrap"); }
+            const std::uint64_t seeks = s.seeks();
             r.u = 3.5; r.loop = false; r.lapLo = 0.0; r.lapHi = D;
             drive(s, r, 0.2);
             r.u = D + 0.02; r.loop = true; r.lapLo = -std::numeric_limits<double>::infinity();
             r.lapHi = std::numeric_limits<double>::infinity();
-            if (!exactFrom(s, r, 10, D, "loop off and on at the lap's end")) {
-                return failed("loop toggles: loop off and back on must keep the next lap's frames");
+            if (!exactFrom(s, r, 10, D, "loop off and on at the lap's end") || s.seeks() != seeks) {
+                return failed("loop toggles: loop off and back on must keep the next lap's frames, not decode them again");
             }
         }
         {   // (c)
@@ -1669,6 +1676,131 @@ static bool scenario_video_stream_loop_toggles() {
         }
         std::fprintf(stderr, "gl_smoke OK: loop off follows a playhead a lap ahead; loop off and on keeps the next lap and "
                      "reverse's lap below\n");
+    }
+    return true;
+}
+
+// --- Scenario: VideoStream -- offline readiness is exact; a stream can go at any time ---
+// Offline, readiness must mean the frame for the playhead is held: the frame decoded at or before it, with
+// none decoded between. The node asks for its guess at the next frame's playhead ahead of time, so nothing
+// recycled or planned for the guess may pass for the real playhead's frame:
+//  (a) an automated rate moves the real playhead off the guess: recycling for the guess released the real
+//      one's frame, and the older frame on screen still counted as ready (the frames the guess passed over
+//      now stay, so a rate change costs no seek -- unless the guess lies beyond every frame held: then they
+//      make room for it, and the real playhead's frame is decoded again); and a jump ahead must release the
+//      frames it passed, or a full pool leaves the worker nowhere to decode the frame it jumped to;
+//  (b) reverse, then forward (and back): the first frame after a flip repeated the last one before it;
+//  (c) a loop-off render that runs into the end of the clip (or, in reverse, its start) holds that frame;
+//  (d) reverse through an MPEG-TS whose keyframes are 3 s apart, where a seek lands a keyframe late and
+//      must back off further than 1 s;
+//  (e) a stream destroyed -- or retired -- while it opens goes quietly: stopping the probe part-way used to
+//      leave the pixel format unknown, and building the colour converter for it aborted the process.
+
+// Render offline the way the node does: advance the playhead, request it, wait for its frame and show it at
+// once, then request the guess at the next playhead -- at this frame's rate -- and wait, as the renderer's gate
+// does, until the guess is ready. Readiness must also hold while a request stands (the renderer does its own
+// work between its gate and the node's evaluate()), so look again a moment later -- and on a render's first
+// frame, which follows a jump or a flip that the worker answers by planning afresh, before showing it too.
+template <class RateAt>
+static bool renderExact(VideoStream& s, double u0, int frames, bool loop, int n, RateAt rateAt, const char* what) {
+    const double D = s.info().duration, dt = 1.0 / kIdxFps;
+    VideoPlayhead ph;
+    ph.u = u0;
+    for (int k = 0; k < frames; ++k) {
+        const double rate = rateAt(k);
+        if (k > 0) ph = videoAdvance(ph, true, rate, loop, dt, D);
+        VideoRequest r;
+        r.u = ph.u; r.rate = (float)rate; r.offline = true; r.loop = loop;
+        if (!loop) { r.lapLo = ph.lapLo; r.lapHi = ph.lapLo + D; }
+        s.request(r);
+        VideoStream::FrameView fv;
+        const double want = indexedFrameFor(ph.u, D, loop, n);
+        bool ok = s.waitForFrame(ph.u, 5.0);
+        if (k == 0) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            ok = ok && s.frameReadyFor(ph.u);
+        }
+        ok = ok && s.frameAt(ph.u, fv) && std::fabs(fv.t - want) <= 1e-4;
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        const bool still = s.frameReadyFor(ph.u);
+        ok = ok && still && s.frameAt(ph.u, fv) && std::fabs(fv.t - want) <= 1e-4;
+        if (!ok) {
+            std::fprintf(stderr, "%s: frame %d, u=%.4f at %+.1fx: showed %.4f (ready a moment later: %d), expected %.4f\n",
+                         what, k, ph.u, rate, fv.t, (int)still, want);
+            return false;
+        }
+        r.u = videoAdvance(ph, true, rate, loop, dt, D).u;
+        s.request(r);
+        if (!s.waitForFrame(r.u, 5.0)) {
+            std::fprintf(stderr, "%s: frame %d: the guess u=%.4f never became ready\n", what, k, r.u);
+            return false;
+        }
+    }
+    return true;
+}
+
+static bool scenario_video_stream_exactness() {
+    {
+        const std::string clip = "build/_exact_g25.mp4", quiet = "build/_exact_g25_quiet.mp4", ts = "build/_exact_keys3s.ts";
+        if (!writeIndexedClip(clip, 150, 25) || !writeIndexedClip(quiet, 150, 25, kIdxW, kIdxH, false) ||
+            !writeIndexedClip(ts, 150, 75)) {
+            return failed("exactness: could not write the clips");
+        }
+        auto twoOne = [](int k) { return k % 2 ? 1.0 : 2.0; };
+        auto flipAt = [](double first) { return [first](int k) { return k < 6 ? first : -first; }; };
+        const std::size_t four = (std::size_t)kIdxW * kIdxH * 4 * 4;
+        for (const std::string& path : {clip, quiet}) {
+            for (const std::size_t pool : {four, kVideoPoolBytes}) {   // a pool always full, and one never full
+                VideoStream s(path, pool);
+                if (!openStream(s)) { return failed("exactness: a clip did not open"); }
+                const double D = s.info().duration;
+                // (a)
+                if (!renderExact(s, 0.0, 40, true, 150, twoOne, "alternating 2x and 1x")) {
+                    return failed("exactness: an offline render whose rate changes between frames must show the frame for each playhead");
+                }
+                if (s.seeks() != 0) {
+                    std::fprintf(stderr, "exactness: %llu seeks\n", (unsigned long long)s.seeks());
+                    return failed("exactness: a rate change must not cost a seek");
+                }
+                if (!renderExact(s, 4.0, 40, true, 150, [&](int k) { return -twoOne(k); }, "alternating -2x and -1x")) {
+                    return failed("exactness: an offline render whose rate changes between frames must show the frame for each playhead");
+                }
+                if (!renderExact(s, 0.2, 5, true, 150, [](int) { return 1.0; }, "before a jump") ||
+                    !s.waitForFrame(0.48, 5.0) ||                 // the four-frame pool is full: 0.36 to 0.48
+                    !renderExact(s, 3.5, 5, true, 150, [](int) { return 1.0; }, "after a jump")) {
+                    return failed("exactness: an offline render must go on exactly after a jump ahead");
+                }
+                if (!renderExact(s, 1.0, 20, true, 150, [](int k) { return k % 2 ? 1.0 : 4.0; }, "alternating 4x and 1x") ||
+                    !renderExact(s, 5.0, 20, true, 150, [](int k) { return k % 2 ? -1.0 : -4.0; }, "alternating -4x and -1x")) {
+                    return failed("exactness: a guess beyond the frames held must not cost the real playhead its frame");
+                }
+                // (b)
+                if (!renderExact(s, 2.0, 12, true, 150, flipAt(-1.0), "reverse, then forward") ||
+                    !renderExact(s, 3.0, 12, true, 150, flipAt(1.0), "forward, then reverse")) {
+                    return failed("exactness: the first frame after a direction flip must be the one for its playhead");
+                }
+                // (c)
+                if (!renderExact(s, D - 0.4, 20, false, 150, [](int) { return 1.0; }, "loop off into the end") ||
+                    !renderExact(s, 0.4, 20, false, 150, [](int) { return -1.0; }, "loop off into the start")) {
+                    return failed("exactness: a loop-off render must hold the clip's last (or, in reverse, first) frame");
+                }
+            }
+        }
+        {   // (d)
+            VideoStream s(ts);
+            if (!openStream(s) || !reverseExact(s, 5.9, 0.0, false, 150, "MPEG-TS")) {
+                return failed("exactness: offline reverse through an MPEG-TS must be exact");
+            }
+        }
+        // (e) A crash here takes gl_smoke down with it.
+        for (int us = 0; us <= 3000; us += 100) {
+            { VideoStream s("tests/assets/test.mp4"); std::this_thread::sleep_for(std::chrono::microseconds(us)); }
+            auto r = std::make_unique<VideoStream>("tests/assets/test.mp4");
+            std::this_thread::sleep_for(std::chrono::microseconds(us));
+            VideoStream::retire(std::move(r));
+        }
+        std::fprintf(stderr, "gl_smoke OK: offline readiness is exact through rate changes and direction flips, into a "
+                     "loop-off end, and in reverse through an MPEG-TS; a stream destroyed or retired while it opens goes quietly\n");
     }
     return true;
 }
@@ -4197,6 +4329,7 @@ static bool (*const kScenarios[])() = {
     scenario_video_stream_basics,
     scenario_video_stream_reverse_files,
     scenario_video_stream_loop_toggles,
+    scenario_video_stream_exactness,
     scenario_video_player_decode,
     scenario_text_geometry_renderers,
     scenario_recorder_video_encoder,

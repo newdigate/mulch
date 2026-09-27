@@ -53,6 +53,11 @@ public:
     explicit VideoStream(std::string path, std::size_t poolBytes = kVideoPoolBytes,
                          std::size_t readAheadBytes = VideoDecoder::kMaxQueuedBytes);
     ~VideoStream();                        // stops and joins the worker
+
+    // Destroy `s` on a background thread and return at once: tearing a stream down -- joining its worker,
+    // freeing its frames, closing its decoder -- takes 0.1-0.5 s at 4K, too long for the UI thread. Its
+    // worker is told to stop straight away; streams go in the order retired, the last before the process exits.
+    static void retire(std::unique_ptr<VideoStream> s);
     VideoStream(const VideoStream&) = delete;
     VideoStream& operator=(const VideoStream&) = delete;
 
@@ -67,9 +72,11 @@ public:
     // show. The pointer stays valid until the next frameAt() call or destruction.
     bool frameAt(double u, FrameView& out);
 
-    // Offline: the frame for u is decided (no undecoded frame can fall between it and u) and held,
-    // and -- playing forward -- no more audio can arrive for times up to u. True once Failed.
+    // Offline: the frame for u is held -- the frame decoded at or before u with none decoded between it
+    // and u -- and, playing forward, no more audio can arrive for times up to u. True once Failed.
     bool frameReadyFor(double u) const;
+    // Wait until frameReadyFor(u), at most timeoutSeconds; its answer (false on a timeout, or once the
+    // stream is being destroyed).
     bool waitForFrame(double u, double timeoutSeconds);
 
     // n output samples spanning source time [u0, u1] (see TimedAudio::sample).
@@ -82,7 +89,8 @@ public:
     std::uint64_t reverseStretches() const { return reverseStretches_.load(); }
 
 private:
-    struct Slot { double t = 0.0; std::uint64_t serial = 0; int buf = -1; };
+    // A queued frame. `until` is the time of the next frame decoded after it: the frame for u covers [t, until).
+    struct Slot { double t = 0.0; std::uint64_t serial = 0; int buf = -1; double until = 0.0; };
 
     // Worker thread.
     void run();
@@ -99,12 +107,14 @@ private:
     void wrap();
     void reverseStretch(double to, bool fresh, bool offline);
     bool publish(DecodedFrame& f, double t, bool runStart);
-    bool publishSlot(DecodedFrame& f, double t);
+    bool publishSlot(DecodedFrame& f, double t, double until);
+    double nextFrameTime() const;
     bool directionChanged() const;
     void setFailed(const std::string& msg);
 
     // Under m_.
     int  readyFrameLocked(double u) const;   // index in ready_ of the frame for u, or -1
+    bool holdsLocked(double u) const;
     bool readyLocked(double u) const;
     int  acquireLocked();
     void releaseLocked(int buf);
@@ -127,6 +137,8 @@ private:
     Info          info_;
     VideoRequest  req_;
     int           dir_ = 1;                // direction of the latest request (a pause keeps it)
+    int           planDir_ = 1;            // the direction the worker last planned for...
+    bool          planOffline_ = false;    // ...and whether for an offline render
     std::uint64_t reqSerial_ = 0, freedSerial_ = 0;
     std::vector<std::unique_ptr<std::uint8_t[]>> pool_;
     std::vector<int>  free_;
@@ -147,8 +159,6 @@ private:
     double        lapOffset_ = 0.0;        // unwrapped time of the decoder's lap start
     double        lastT_ = 0.0;            // unwrapped time of the last frame taken from the decoder
     bool          eof_ = false;
-    int           planDir_ = 1;            // the direction the worker last planned for...
-    bool          planOffline_ = false;    // ...and whether for an offline render
     bool          coverValid_ = false;     // reverse: this run's stretches reach down to coverLo_...
     double        coverLo_ = 0.0;
     double        coverHi_ = 0.0;          // ...from here, the end of the run's first stretch
