@@ -10,11 +10,13 @@
 
 **Spec:** [`docs/superpowers/specs/2026-09-26-video-player-background-decode-design.md`](../specs/2026-09-26-video-player-background-decode-design.md) — read it first; it explains *why* each rule exists.
 
+**Status:** executed on `fix/video-player-ui-stall`. Once merged this is a historical record of how the feature was built; the code and `CLAUDE.md` are the reference after that.
+
 ---
 
 ## Before you start
 
-- Work on the branch `fix/video-player-ui-stall` (it already holds the spec). Never commit to `main`.
+- Work on the branch `fix/video-player-ui-stall` (it already holds the spec). Never commit to the base branch, `develop`.
 - Run every command from the repository root; `gl_smoke` resolves `shaders/` and `tests/assets/` relative to it.
 - The build directory is `build/` (configured by `cmake -S . -B build`). Every code block below is complete — copy it exactly.
 - This plan was generated from a prototype that passed all of `core_tests`, `gl_smoke` and `render_cli`, and a ThreadSanitizer build of `gl_smoke` with zero reports; each task's "verify it fails" and "verify it passes" outputs were checked by replaying the plan on a fresh copy of the repository.
@@ -1456,7 +1458,7 @@ EOF
 - Modify (full rewrite): `src/gfx/VideoDecoder.h`, `src/gfx/VideoDecoder.cpp`
 - Modify: `tests/gl_smoke.cpp`
 
-The worker must decode a frame, look at its time, and only then decide to convert it; convert with threads; and keep audio ahead of the video however few frames it buffers. So: `decodeNext()` returns a `DecodedFrame` (a counted reference, nothing copied); `convert()` writes TOP-DOWN RGBA with threaded swscale (the portable FFmpeg ≥ 5 path rejects a negative-stride destination, and FFmpeg 5–7 allocate a new buffer for a destination frame with none — so the caller's buffer is wrapped in a no-op-free `AVBufferRef`); video packets are queued (≤ 64 MB) so `pumpAudio()` can read audio ahead; `thread_count = 0`; an interrupt callback lets a stop abort blocking I/O — and since a stop interrupts `avformat_find_stream_info()` part-way, which then still succeeds with the pixel format unknown, `open()` fails ("stopped") when the flag is set once the probe returns. The legacy `decodeFrame()` keeps its exact behaviour (bottom-up, single-threaded conversion) — the 15 `gl_smoke` uses rely on it — but builds its converter from the first decoded frame's format, like `convert()`: the stream's may be unknown until a frame decodes (a stopped probe, or a video that starts past what the probe reads, which aborted libswscale). Every time in and out counts from the first video frame, which `open()` decodes (and the first `decodeNext()` hands out): a container that starts its clock late (MPEG-TS) or shows a B-frame delay with no edit list (FLV, fragmented MP4) would otherwise put the first frame after the playhead's 0 — an offline render could never have its first frame. `seek(t <= 0)` goes to the very start of the file, since a timestamp search (MPEG-TS) can overshoot the first frame's time by a keyframe interval; audio from before the first frame is dropped. `open()` seeks to the start before decoding that first frame, because some demuxers read their keyframe index only when first asked to seek (Matroska and WebM cues) — without it the worker could not seek ahead in the first lap. MPEG-TS and MPEG-PS indexes are ignored (`nextKeyframeAfter` reports none known): their demuxers list every packet they probe while seeking as a keyframe. A frame with no timestamp (the B-frame tail a decoder flushes from an AVI or MPEG-PS, every frame of a raw H.264 stream) takes the previous frame's time plus its duration; one with nothing before it since a seek into the file cannot be placed and is skipped. A raw stream has no times to seek by (a search reads the whole file, then fails), so `seek()` takes it to its first byte, falls back there whenever a seek fails, and returns false only when not even the start can be reached; `open()` fails when no frame decodes. Audio comes out in runs that follow its timestamps — a hole or an overlap starts a new run, which `takeAudio()` flags — the resampler is rebuilt when the audio format changes and reset by a seek, and once a caller waiting for the audio (an offline render: `pumpAudio(t, true)`) is stuck at the 64 MB cap — no packet taken off the queue since it last stopped there — the audio counts as settled up to the last packet read, so an offline render cannot wait forever (while packets are still being taken it only waits: a fragmented MOV puts each fragment's audio after its video; and a caller not waiting gives nothing up, since a live pause stops decoding too). A raw stream's frame duration comes from its decoder (its demuxer knows only 25 fps). The second scenario writes the awkward files itself; one needs FFmpeg's API directly (a remux that leaves a hole in the audio), and the FLV and raw H.264 cases SKIP where there is no H.264 encoder.
+The worker must decode a frame, look at its time, and only then decide to convert it; convert with threads; and keep audio ahead of the video however few frames it buffers. So: `decodeNext()` returns a `DecodedFrame` (a counted reference, nothing copied); `convert()` writes TOP-DOWN RGBA with threaded swscale (the portable FFmpeg ≥ 5 path rejects a negative-stride destination, and FFmpeg 5–7 allocate a new buffer for a destination frame with none — so the caller's buffer is wrapped in a no-op-free `AVBufferRef`); video packets are queued (≤ 64 MB) so `pumpAudio()` can read audio ahead; `thread_count = 0`; an interrupt callback lets a stop abort blocking I/O — and since a stop interrupts `avformat_find_stream_info()` part-way, which then still succeeds with the pixel format unknown, `open()` fails ("stopped") when the flag is set once the probe returns. The legacy `decodeFrame()` keeps its exact behaviour (bottom-up, single-threaded conversion) — the 15 `gl_smoke` uses rely on it — but builds its converter from the first decoded frame's format, like `convert()`: the stream's may be unknown until a frame decodes (a stopped probe, or a video that starts past what the probe reads, which aborted libswscale). Every time in and out counts from the first video frame, which `open()` decodes (and the first `decodeNext()` hands out): a container that starts its clock late (MPEG-TS) or shows a B-frame delay with no edit list (FLV, fragmented MP4) would otherwise put the first frame after the playhead's 0 — an offline render could never have its first frame. `seek(t <= 0)` goes to the very start of the file, since a timestamp search (MPEG-TS) can overshoot the first frame's time by a keyframe interval; audio from before the first frame is dropped. `open()` seeks to the start before decoding that first frame, because some demuxers read their keyframe index only when first asked to seek (Matroska and WebM cues) — without it the worker could not seek ahead in the first lap. MPEG-TS and MPEG-PS indexes are ignored (`nextKeyframeAfter` reports none known): their demuxers list every packet they probe while seeking as a keyframe. A frame with no timestamp (the B-frame tail a decoder flushes from an AVI or MPEG-PS, every frame of a raw H.264 stream) takes the previous frame's time plus its duration; one with nothing before it since a seek into the file cannot be placed and is skipped. A raw stream has no times to seek by (a search reads the whole file, then fails), so `seek()` takes it to its first byte, falls back there whenever a seek fails, and returns false only when not even the start can be reached; `open()` fails when no frame decodes. Audio comes out in runs that follow its timestamps — a hole or an overlap starts a new run, which `takeAudio()` flags — the resampler is rebuilt when the audio format changes and reset by a seek, and once a caller waiting for the audio (an offline render: `pumpAudio(t, true)`) is stuck at the 64 MB cap — no packet taken off the queue since it last stopped there — the audio counts as settled up to the last packet read, so an offline render cannot wait forever (while packets are still being taken it only waits: a fragmented MOV puts each fragment's audio after its video; and a caller not waiting gives nothing up, since a live pause stops decoding too). A raw stream's frame duration comes from its decoder (its demuxer knows only 25 fps), and a frame's own duration is `AVFrame::duration` from FFmpeg 6.0 but `pkt_duration` in 5.1, the oldest FFmpeg supported. The second scenario writes the awkward files itself; one needs FFmpeg's API directly (a remux that leaves a hole in the audio), and the FLV and raw H.264 cases SKIP where there is no H.264 encoder.
 
 - [ ] **Step 1: Add `#include <cstring>` to `tests/gl_smoke.cpp`, after `#include <cstdlib>`**. In `tests/gl_smoke.cpp`, replace:
 
@@ -1914,21 +1916,37 @@ static bool scenario_video_decoder_awkward_files() {
 
 ```
 
-- [ ] **Step 4: Register them in `kScenarios`, just above `scenario_video_player_decode,`**. In `tests/gl_smoke.cpp`, replace:
+- [ ] **Step 4: In `kScenarios`, take `scenario_video_player_decode` out of its place just above `scenario_text_geometry_renderers,`**. In `tests/gl_smoke.cpp`, replace:
 
 ```cpp
     scenario_video_player_decode,
+    scenario_text_geometry_renderers,
 ```
 
 with:
 
 ```cpp
+    scenario_text_geometry_renderers,
+```
+
+- [ ] **Step 5: Register the two scenarios at the end of `kScenarios`, followed by `scenario_video_player_decode`: the video scenarios run last, so a slow machine tripping one of their time bounds cannot hide the scenarios after it (`gl_smoke` stops at its first failure)**. In `tests/gl_smoke.cpp`, replace:
+
+```cpp
+    scenario_offline_late_starting_loader_gate,
+};
+```
+
+with:
+
+```cpp
+    scenario_offline_late_starting_loader_gate,
     scenario_video_decoder_split_decode,
     scenario_video_decoder_awkward_files,
     scenario_video_player_decode,
+};
 ```
 
-- [ ] **Step 5: Build to verify it fails**
+- [ ] **Step 6: Build to verify it fails**
 
 ```bash
 cmake --build build --target gl_smoke -j8
@@ -1936,7 +1954,7 @@ cmake --build build --target gl_smoke -j8
 
 Expected: the build FAILS, with an error mentioning `no member named 'decodeNext'`.
 
-- [ ] **Step 6: Replace `src/gfx/VideoDecoder.h`** — `src/gfx/VideoDecoder.h` (complete file)
+- [ ] **Step 7: Replace `src/gfx/VideoDecoder.h`** — `src/gfx/VideoDecoder.h` (complete file)
 
 ```cpp
 #pragma once
@@ -2167,7 +2185,7 @@ private:
 } // namespace oss
 ```
 
-- [ ] **Step 7: Replace `src/gfx/VideoDecoder.cpp`** — `src/gfx/VideoDecoder.cpp` (complete file)
+- [ ] **Step 8: Replace `src/gfx/VideoDecoder.cpp`** — `src/gfx/VideoDecoder.cpp` (complete file)
 
 ```cpp
 #include "gfx/VideoDecoder.h"
@@ -2181,6 +2199,7 @@ extern "C" {
 #include <libavutil/channel_layout.h>
 #include <libavutil/opt.h>
 #include <libavutil/samplefmt.h>
+#include <libavutil/version.h>
 #include <libswscale/swscale.h>
 #include <libswresample/swresample.h>
 }
@@ -2560,7 +2579,12 @@ bool VideoDecoder::decodeNext(DecodedFrame& out) {
             // of an MPEG-PS, the decoder may put out nothing else).
             if (ts == AV_NOPTS_VALUE && std::isnan(nextT_)) { av_frame_unref(frame_); continue; }
             const double t = ts != AV_NOPTS_VALUE ? ts * vTimeBase_ : nextT_;
-            nextT_ = t + (frame_->duration > 0 ? frame_->duration * vTimeBase_ : frameDuration());
+#if LIBAVUTIL_VERSION_INT >= AV_VERSION_INT(57, 30, 100)
+            const int64_t dur = frame_->duration;                // FFmpeg 6.0 and later
+#else
+            const int64_t dur = frame_->pkt_duration;            // FFmpeg 5.1
+#endif
+            nextT_ = t + (dur > 0 ? dur * vTimeBase_ : frameDuration());
             out.t = t - startT_;
             out.frame_ = av_frame_alloc();
             if (!out.frame_) { av_frame_unref(frame_); return false; }
@@ -2651,7 +2675,7 @@ bool VideoDecoder::decodeFrame(VideoFrame& out, std::vector<float>& audio,
 } // namespace oss
 ```
 
-- [ ] **Step 8: Build and run the scenarios (the second prints only if the first passed: `gl_smoke` stops at a failure)**
+- [ ] **Step 9: Build and run the scenarios (the second prints only if the first passed: `gl_smoke` stops at a failure)**
 
 ```bash
 cmake --build build --target gl_smoke -j8 && ./build/gl_smoke 2>&1 | grep -E 'decodeNext|untimed frames|FAIL'
@@ -2659,7 +2683,7 @@ cmake --build build --target gl_smoke -j8 && ./build/gl_smoke 2>&1 | grep -E 'de
 
 Expected output includes: `untimed frames follow the one before`
 
-- [ ] **Step 9: Run everything: the old Video Player still builds on the legacy API and every existing scenario (encoder round-trips, offline renders) still passes**
+- [ ] **Step 10: Run everything: the old Video Player still builds on the legacy API and every existing scenario (encoder round-trips, offline renders) still passes**
 
 ```bash
 cmake --build build -j8 && ctest --test-dir build --output-on-failure
@@ -2667,7 +2691,7 @@ cmake --build build -j8 && ctest --test-dir build --output-on-failure
 
 Expected output includes: `100% tests passed`
 
-- [ ] **Step 10: Commit**
+- [ ] **Step 11: Commit**
 
 ```bash
 git add src/gfx/VideoDecoder.h src/gfx/VideoDecoder.cpp tests/gl_smoke.cpp
@@ -4399,7 +4423,7 @@ EOF
 - Modify (full rewrite): `src/modules/VideoPlayerNode.h`, `src/modules/VideoPlayerNode.cpp`
 - Modify: `tests/gl_smoke.cpp`
 
-The node keeps its ports and semantics but no longer decodes. Each frame: advance the unwrapped playhead (`videoAdvance`; held at the start until the first frame is on screen), post it to the stream, upload the newest ready frame at or before it into a staging texture and flip it into the published texture with one `glBlitFramebuffer`, and read the matching audio. Offline, it waits for the exact frame (up to 10 s, for a frame its guess did not predict — but never on a render's first frame, a pre-roll frame the renderer never captures, which can need a whole reverse stretch) and prefetches the next one, reporting it through `loading()` so the renderer's gate does the waiting; a stream that fails after it opened keeps `loading()` true offline, so the render fails naming the node instead of going on without the picture. An old stream (a file change, the node's destructor) goes to `VideoStream::retire()`, never waited for. The existing scenario must now drive the node the way the renderer does (offline + gated on `loading()`), plus a live check that polls; four new scenarios pin the fix. At 160x90 decoding is so fast that time bounds alone prove little, so the hitch checks that `evaluate()` returned WITHOUT the new frame, and the shutdown fills a 1080p pool (about 100 ms to free in place) before timing the file change.
+The node keeps its ports and semantics but no longer decodes. Each frame: advance the unwrapped playhead (`videoAdvance`; held at the start until the first frame is on screen), post it to the stream, upload the newest ready frame at or before it into a staging texture and flip it into the published texture with one `glBlitFramebuffer` (when the file changes, the last picture stays up until the new file's first frame replaces it), and read the matching audio. Offline, it waits for the exact frame (up to 10 s, for a frame its guess did not predict — but never on a render's first frame, a pre-roll frame the renderer never captures, which can need a whole reverse stretch) and prefetches the next one, reporting it through `loading()` so the renderer's gate does the waiting; a stream that fails after it opened keeps `loading()` true offline, so the render fails naming the node instead of going on without the picture. An old stream (a file change, the node's destructor) goes to `VideoStream::retire()`, never waited for. The existing scenario must now drive the node the way the renderer does (offline + gated on `loading()`), plus a live check that polls; four new scenarios pin the fix. At 160x90 decoding is so fast that time bounds alone prove little, so the hitch checks that `evaluate()` returned WITHOUT the new frame, and the shutdown fills a 1080p pool (about 100 ms to free in place) before timing the file change.
 
 - [ ] **Step 1: Add the test helpers, just above `// --- Scenario 10: Video Player decodes a file to texture + audio ---`: gated evaluation, and reading the indexed clip's frame number back from a texture (a read-back names the frame on screen — and a wrong vertical flip reads a different number)**:
 
@@ -4600,7 +4624,9 @@ static bool scenario_video_player_decode() {
     }
     {
         // (d) live: the picture arrives from the worker with no evaluate() waiting for it, and the playhead
-        // holds at the start until the first frame is up (it would otherwise skip the first frames).
+        // holds at the start until the first frame is up (it would otherwise skip the first frames). Then a
+        // switch to another file (another size) keeps the last picture up until the new file's first frame
+        // replaces it, instead of flashing black while that file opens.
         Graph g;
         auto vid = std::make_unique<VideoPlayerNode>();
         vid->inputDefault(0) = std::string("tests/assets/test.mp4");
@@ -4625,6 +4651,19 @@ static bool scenario_video_player_decode() {
         }
         if (!sawColour) { return failed("live video: no picture within 5 s"); }
         if (worstMs > 50.0) { return failed("live video: an evaluate() waited for the worker"); }
+        const std::string next = "build/_video_switch.mp4";         // 160x90; test.mp4 is 128x96
+        if (!writeIndexedClip(next, 25, 25)) { return failed("live video: write the second clip"); }
+        vp->inputDefault(0) = next;
+        const auto s0 = std::chrono::steady_clock::now();
+        do {
+            g.evaluate(1.0f / 60.0f);
+            if (!vp->hasFrame() && outNode->current().id == 0) { return failed("live video: the output went black while the next file opened"); }
+            std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        } while (!vp->hasFrame() && secondsSince(s0) < 5.0);
+        const TexRef shown = outNode->current();
+        if (!vp->hasFrame() || shown.w != kIdxW || shown.h != kIdxH || readFrameIndex(shown) != 0) {
+            return failed("live video: the next file's first frame did not replace the last picture");
+        }
         std::fprintf(stderr, "gl_smoke OK: live VideoPlayer showed a picture after %.0f ms\n", secondsSince(t0) * 1000.0);
     }
     return true;
@@ -4975,7 +5014,8 @@ namespace oss {
 // than jumping back, so the worker can decode the next lap early -- see core/VideoPlan.h),
 // posts it to the stream, and uploads the newest ready frame at or before it. The worker
 // converts rows top-down, so the upload lands in a staging texture and one flipped
-// glBlitFramebuffer puts it bottom-up into the published texture.
+// glBlitFramebuffer puts it bottom-up into the published texture. When the file changes, the
+// last picture stays up until the new file's first frame replaces it.
 //
 // Offline renders stay frame-exact: evaluate() waits for the exact frame, and loading()
 // reports the NEXT frame not ready yet, so the renderer's gate does the waiting between frames.
@@ -5007,13 +5047,14 @@ private:
     void ensureTextures(int w, int h);
     void freeGL();
     void upload(const VideoStream::FrameView& f);
-    void publishEmpty(EvalContext& ctx);
+    void publishHeld(EvalContext& ctx);
     void updateStatus(bool play, float rate);
 
     std::unique_ptr<VideoStream> stream_;
     std::string   path_;
     std::string   status_;
     bool          needInfo_ = false;     // the stream is new: read its info once it is Ready
+    int           vidW_ = 0, vidH_ = 0;  // its frame size
     bool          opened_ = false;       // it has been Ready: a failure now is mid-play
     bool          failLogged_ = false;
     double        duration_ = 0.0;
@@ -5027,6 +5068,7 @@ private:
     int           texW_ = 0, texH_ = 0;
     std::uint64_t shownSerial_ = 0;      // 0: nothing uploaded from this stream yet
     double        shownT_ = -1.0;
+    bool          picture_ = false;      // tex_ holds a picture: this file's, or the last one's until then
 
     bool          offline_  = false;     // the last evaluate() was part of an offline render
     bool          stalled_  = false;     // offline: a frame missed its wait (latched until live again)
@@ -5080,7 +5122,7 @@ void VideoPlayerNode::evaluate(EvalContext& ctx) {
     loop_ = loop;
 
     if (path != path_) { path_ = path; openPath(path); }
-    if (!stream_) { publishEmpty(ctx); return; }
+    if (!stream_) { picture_ = false; publishHeld(ctx); return; }
 
     const VideoStream::State st = stream_->state();
     if (st == VideoStream::State::Failed) {
@@ -5089,12 +5131,13 @@ void VideoPlayerNode::evaluate(EvalContext& ctx) {
             std::fprintf(stderr, "[Video] %s (%s)\n", status_.c_str(), path_.c_str());
             failLogged_ = true;
         }
-        publishEmpty(ctx);
+        picture_ = false;
+        publishHeld(ctx);
         return;
     }
     if (st == VideoStream::State::Opening) {
         status_ = "opening...";
-        publishEmpty(ctx);
+        publishHeld(ctx);                              // the last file's picture, until this one's first frame
         return;
     }
     if (needInfo_) {
@@ -5102,7 +5145,8 @@ void VideoPlayerNode::evaluate(EvalContext& ctx) {
         const VideoStream::Info inf = stream_->info();
         duration_ = inf.duration;
         frameDur_ = inf.frameDur;
-        ensureTextures(inf.width, inf.height);
+        vidW_ = inf.width;
+        vidH_ = inf.height;
         needInfo_ = false;
         std::fprintf(stderr, "[Video] loaded %s (%dx%d, %.1fs, %s)\n", path_.c_str(),
                      inf.width, inf.height, inf.duration, inf.hasAudio ? "audio" : "no audio");
@@ -5125,8 +5169,11 @@ void VideoPlayerNode::evaluate(EvalContext& ctx) {
         stalled_ = true;                               // publish what we have; loading() fails the render
 
     VideoStream::FrameView fv;
-    if (stream_->frameAt(ph_.u, fv) && fv.serial != shownSerial_) upload(fv);
-    ctx.out<TexRef>(0, TexRef{ shownSerial_ ? tex_ : 0u, texW_, texH_ });
+    if (stream_->frameAt(ph_.u, fv) && fv.serial != shownSerial_) {
+        ensureTextures(vidW_, vidH_);                  // a new size: made here, so no evaluate() publishes it empty
+        upload(fv);
+    }
+    ctx.out<TexRef>(0, TexRef{ picture_ ? tex_ : 0u, texW_, texH_ });
 
     // Audio for the slice of source time just played. The playhead is unwrapped, so a loop wrap
     // is a continuous slice too; a pause is silent.
@@ -5222,6 +5269,7 @@ void VideoPlayerNode::freeGL() {
     if (tex_)      glDeleteTextures(1, &tex_);
     readFbo_ = drawFbo_ = stageTex_ = tex_ = 0;
     texW_ = texH_ = 0;
+    picture_ = false;
 }
 
 // Upload the worker's top-down rows to the staging texture, then flip them into the published
@@ -5237,10 +5285,12 @@ void VideoPlayerNode::upload(const VideoStream::FrameView& f) {
     glBlitFramebuffer(0, 0, texW_, texH_, 0, texH_, texW_, 0, GL_COLOR_BUFFER_BIT, GL_NEAREST);
     shownSerial_ = f.serial;
     shownT_ = f.t;
+    picture_ = true;
 }
 
-void VideoPlayerNode::publishEmpty(EvalContext& ctx) {
-    ctx.out<TexRef>(0, TexRef{});
+// No frame of this file yet: publish the picture held over from the last file (if any), and silence.
+void VideoPlayerNode::publishHeld(EvalContext& ctx) {
+    ctx.out<TexRef>(0, TexRef{ picture_ ? tex_ : 0u, texW_, texH_ });
     ctx.out<AudioRef>(1, AudioRef{});
 }
 
@@ -5338,8 +5388,8 @@ with:
   wrapped in an `AVBufferRef` whose free callback does nothing). Video packets are queued
   (≤ 64 MB) rather than decoded at once, so `pumpAudio()` keeps 48 kHz mono audio ahead of the
   video; `audioSettledUpTo()` says how far no more audio can arrive. The legacy `decodeFrame()`
-  (bottom-up RGBA + audio appended; its converter is built from the first frame's format) is
-  built on those and kept for `gl_smoke`. Every time in and out counts from the first video
+  (bottom-up RGBA + audio appended; its converter follows the decoded frames' own format, not the
+  stream's) is built on those and kept for `gl_smoke`. Every time in and out counts from the first video
   frame (decoded at `open()`), so a container that starts its clock late (MPEG-TS) or shows a
   B-frame delay (FLV, fragmented MP4) still plays from 0; `open()` also seeks to the start
   first, so indexes read only on a seek (Matroska cues) are there, and MPEG-TS/-PS indexes are
@@ -5363,19 +5413,21 @@ with:
   `readAudio()` return at once; the frame `frameAt()` returns stays checked out until the next
   `frameAt()`. Its decisions — fill, catch up (decode without converting; live, in 100 ms
   slices), seek (ahead only for jumps over 1 s, since a seek restarts the frame-thread pipeline;
-  always for a target behind everything held or a new direction), wrap, and reverse
+  always for a new direction, or a target behind everything held unless the last seek for it was
+  pinned before the file's first frame), wrap, and reverse
   keyframe-to-frame stretches published whole — are the pure, unit-tested `videoNextStep()`. A
   seek lands where its decode loop admits frames, backing off 1 s, 2 s, 4 s… to the file's start
   when it lands late (decode-time indexes, MPEG-TS), and a seek ahead that landed behind the
   decoder is not repeated nearby (`videoNoSeekBelow`). An offline render starting in reverse
-  restarts the run: live stretches keep every stride-th frame. A new audio chunk begins wherever
+  discards the live stretches, which keep every stride-th frame, and decodes offline ones. A new audio chunk begins wherever
   the decoder's audio jumps, and a file it cannot seek in at all fails the stream ("cannot seek in
   this file") rather than spinning.
   The node's playhead is UNWRAPPED (lap × D + position, `videoAdvance`), so the worker decodes the
   next lap early and loops are seamless; the playhead is held at 0 until the first frame is on
   screen. The node uploads the newest frame at or before the playhead into a staging texture and
   flips it into the published texture with one `glBlitFramebuffer` (scissor test off: a blit is
-  clipped by it).
+  clipped by it). When the file changes, the last picture stays up until the new file's first
+  frame replaces it.
   **Offline renders stay exact.** `loading()` reports the node's GUESS at the next frame (this
   frame's rate) not ready, so the renderer's gate does the waiting between frames with the UI
   running; offline `dt` is snapped to the exact frame step (`videoFrameStep`). Readiness names the
@@ -5383,12 +5435,13 @@ with:
   playing forward, needs its audio settled too. A frame the guess did not predict (an automated
   rate, a direction flip) is waited for inside `evaluate()` for up to `kOfflineFrameWaitSeconds`
   (10 s), blocking the UI (seconds, for a fresh reverse stretch at 4K) — except the render's first
-  frame, which is always an uncaptured pre-roll frame. A frame that misses that wait latches a
-  stall; that, a file still opening, or a stream that fails once open keeps `loading()` true, so
-  the render fails after `kRenderLoadTimeoutSeconds`, naming the node.
+  frame, which is always an uncaptured pre-roll frame. A file still opening holds the gate like any
+  loader; a frame that misses that wait latches a stall, and a stall or a stream that fails once
+  open keeps `loading()` true for good, so the render fails after `kRenderLoadTimeoutSeconds`,
+  naming the node.
   Old streams (a file change, the node's destructor) go to `VideoStream::retire()`: tearing a
   stream down takes 0.1–0.5 s at 4K, so a reaper thread does it (joined at exit), and a retired
-  stream holds its memory until then. Tests: `tests/test_video_plan.cpp`,
+  stream holds its memory until the reaper destroys it. Tests: `tests/test_video_plan.cpp`,
   `tests/test_timed_audio.cpp`, and the `gl_smoke` scenarios `scenario_video_decoder_*`,
   `scenario_video_stream_*` and `scenario_video_player_*` (untested: the stall latch, and the rule
   for a stream that fails once open).
@@ -5413,6 +5466,7 @@ unpolled future can't deadlock the gate; Image Sequencer via `futurePending` on 
 ```markdown
 GL-free `gfx/ImageLoader` (an `stb_image` wrapper mirroring `VideoDecoder`, rows flipped
   bottom-up to match) and publishes it as a `TexRef`; it loads once on path change and
+  republishes each frame. `KaleidoscopeNode`
 ```
 
 with:
@@ -5420,7 +5474,7 @@ with:
 ```markdown
 GL-free `gfx/ImageLoader` (an `stb_image` wrapper mirroring `VideoDecoder::decodeFrame()`,
   rows flipped bottom-up to match) and publishes it as a `TexRef`; it loads once on path
-  change and
+  change and republishes each frame. `KaleidoscopeNode`
 ```
 
 - [ ] **Step 5: Open the *`VideoEncoder`* bullet with whose mirror it is (a new bullet now stands between them), and mention the keyframe interval**. In `CLAUDE.md`, replace:
@@ -5429,6 +5483,7 @@ GL-free `gfx/ImageLoader` (an `stb_image` wrapper mirroring `VideoDecoder::decod
 - **`VideoEncoder` (`src/gfx/VideoEncoder.{h,cpp}`) is its mirror** — a GL-free
   FFmpeg muxer writing RGBA frames + interleaved float audio (mono or stereo) to
   an H.264/AAC mp4. The `RecorderNode` is a pass-through tap (video/audio in → same
+  out) that reads back the input texture and feeds the encoder while `record` is on;
 ```
 
 with:
@@ -5438,7 +5493,8 @@ with:
   FFmpeg muxer writing RGBA frames + interleaved float audio (mono or stereo) to
   an H.264/AAC mp4 (`open()`'s optional `keyframeInterval`, for test clips, places keyframes
   exactly every N frames, writing with libx264 or the MPEG-4 fallback only). The `RecorderNode`
-  is a pass-through tap (video/audio in → same
+  is a pass-through tap (video/audio in → same out) that reads back the input texture and feeds
+  the encoder while `record` is on;
 ```
 
 - [ ] **Step 6: Check the new text is in**
@@ -5709,4 +5765,4 @@ cmake --build build -j8 && ctest --test-dir build --output-on-failure
 
 Expected: `100% tests passed out of 3`.
 
-- [ ] **Step 2:** Use superpowers:finishing-a-development-branch to decide how to integrate `fix/video-player-ui-stall` (PR to `main`; the three CI workflows build Linux/macOS/Windows).
+- [ ] **Step 2:** Use superpowers:finishing-a-development-branch to decide how to integrate `fix/video-player-ui-stall` (PR to `develop`; the three CI workflows build Linux/macOS/Windows).

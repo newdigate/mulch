@@ -530,6 +530,37 @@ fixed, and each fix is pinned by a check that fails when it is reverted.
     now top-down), and the `VideoEncoder` bullet says whose mirror it is, since a new bullet now stands
     between them, and mentions its keyframe interval.
 
+### Revisions during execution (final review of the whole branch)
+
+82. **FFmpeg 5.1 builds again.** The decoder read `AVFrame::duration`, which first ships in FFmpeg 6.0
+    (lavu 57.30.100); 5.1, this spec's floor and Debian 12's FFmpeg, has only `pkt_duration`. The field is
+    now chosen by `LIBAVUTIL_VERSION_INT`. No CI job would have caught it: every runner's FFmpeg is newer.
+83. **A file change keeps the last picture up.** Live, a file change published `TexRef{0}` until the new
+    file's first frame: the review measured 3 to 80 black frames (67 ms to 1.4 s) from 360p to 4K 10-bit
+    HEVC, and switching 360p to 1080p, 1080p to 4K and 4K H.264 to 4K 10-bit HEVC gave 6, 19 and 24 here.
+    The old node never went black between two files -- it froze the whole app with the old picture on
+    screen. The node now publishes the last picture
+    while the new file opens, and (re)makes its textures at the new file's first upload rather than when
+    it opens, so no `evaluate()` publishes them empty: 0 black frames in all three switches, the new
+    picture as soon as before. A file that fails to open, or an empty path, still shows black. The live
+    part of Scenario 10 switches files (a new size) and checks that the output never goes black.
+84. **The video scenarios run last in `gl_smoke`.** It stops at its first failure, and CI runs it
+    best-effort, so a slow machine tripping one of the new scenarios' time bounds hid the 29 scenarios
+    after them. Task 5 now moves the Video Player's scenario to the end of `kScenarios`, and every video
+    scenario registers around it.
+85. **Wording.** CLAUDE.md now says that a file still opening only holds the gate (a stall, or a stream
+    that fails once open, fails the render), that `decodeFrame()`'s converter follows the decoded frames'
+    format, that a seek is skipped for a target pinned before the file's first frame, that a retired
+    stream holds its memory until the reaper destroys it, that an offline render starting in reverse
+    discards the live stretches, and that a file change keeps the last picture up. The plan says `develop`
+    (there is no `main`) and that, once merged, it is a historical record: the code and CLAUDE.md are the
+    reference after that.
+86. **Acceptance on the committed code (Task 10).** The first run shared the machine with a load
+    average of 9-11 and missed on every CPU-heavy path; measured again once the load had settled below 4
+    (the Claude app's renderer alone still used about 1.3 cores), every criterion held but one reading
+    of 10-bit HEVC (see the notes under Acceptance criteria). Follow-ups the final review found, none of
+    them a regression, are listed under Out of scope.
+
 ## Root cause
 
 Reproduced with a headless harness that compiles the real `VideoPlayerNode.cpp` and drives
@@ -781,12 +812,12 @@ widely spaced keyframes.
 ### Per-frame flow on the UI thread (live)
 
 1. **Path changed:** hand the old stream to `VideoStream::retire()` (it is torn down on another thread),
-   create a new one, and set u = 0.
-   Until the new file's first frame is uploaded the output is `TexRef{0}`, as today.
-2. **Opening or failed:** publish an empty texture and silence, and set the status to "opening…" or
-   "load failed: …".
-3. **First `Ready`:** allocate the staging and output textures at the video size, plus the flip
-   framebuffers.
+   create a new one, and set u = 0. Until the new file's first frame is uploaded, the last file's picture
+   stays up (a node's first file shows `TexRef{0}` until then).
+2. **Opening:** publish that picture and silence, and set the status to "opening…". **Failed:** an empty
+   texture and silence, and "load failed: …".
+3. **A frame to upload at a new size:** (re)allocate the staging and output textures, plus the flip
+   framebuffers, in the same `evaluate()` as the upload, so none publishes them empty.
 4. Advance u as in the Time model (held until a first frame is on screen), then call
    `request(u, play ? rate : 0, loop, ctx.offline)`.
 5. Call `frameAt(u)`. If the serial changed:
@@ -1050,7 +1081,8 @@ the UI keeps running.
 - The existing Video Player scenario (`tests/assets/test.mp4`: picture, audio, reverse) keeps passing.
   It runs with the graph in offline mode, so frames are exact and synchronous; one live-mode check
   polls until the texture has colour, with no `evaluate()` taking 50 ms and the playhead held at the start
-  until the first frame is up.
+  until the first frame is up; then it switches to a file of another size, and the output must never go
+  black before that file's first frame replaces the picture. The video scenarios run last.
 - The existing encoder round-trip checks keep `decodeFrame()`'s bottom-up output honest.
 - **`VideoDecoder` split decode:** `decodeNext()` + `convert()` equal `decodeFrame()` flipped,
   byte for byte, and a stride shorter than a row is refused; the keyframe lookup; a second of audio read
@@ -1140,6 +1172,16 @@ Measured on the development machine, in Debug and Release, with the acceptance h
 8. CLAUDE.md's Video Player and `VideoDecoder` notes describe the worker design. They currently
    describe synchronous decoding and the sliding keyframe window.
 
+**On the committed code (Task 10),** measured once the machine's load had settled (below 4, with the
+Claude app's renderer alone using about 1.3 cores): criteria 1-3, 5, 7 and 7a held [1× 1080p and 4K
+H.264 / 8-bit HEVC 100% on time, worst after 0.5 s 17-23 ms, mean 7-9 ms at 4K; 600 ms hitch back in step
+in 0 ms; 0.63-1.15 GB; TSan zero reports; MPEG-TS jump 0.10-0.40 s, no seeks, 5 of 5], and criterion 4
+[18.6 and 6.5 changes/s at 2× on 4K 8-bit and 10-bit HEVC]. 4K 10-bit HEVC at 1× was 100% on time in
+one run and 93.6% in another -- the thin headroom under Risks; at 2× on 4K H.264 the synchronous upload
+makes the worst frame 47 ms (asynchronous upload is under Out of scope). Under a load average of 9-11
+most of the CPU-heavy figures missed, as expected. Criterion 6 awaits the branch's first CI run, and the
+in-app trial (Task 10, Step 9) is open.
+
 ## Out of scope and future work
 
 - **GPU colour conversion (option B).** The next lever if 10-bit HEVC 4K headroom proves too thin: it
@@ -1155,6 +1197,17 @@ Measured on the development machine, in Debug and Release, with the acceptance h
   millisecond (MKV, FLV), two stretches holding the same audio disagree by up to half a millisecond, so
   the switch between them can click however early decoding starts; that needs the chunks anchored on
   the codec's frame grid, or a short crossfade where one gives way to the next.
+- **Rate automation through zero at 4K or with long keyframe intervals.** Every reverse-to-forward flip
+  seeks, even with the decoder head just below the target in the same keyframe interval, and the
+  catch-up then converts frames older than the one on screen; with the rate flipping every second, a
+  4K clip with keyframes 1 s apart changes picture about twice a second (the UI never stalls, and the old
+  node could not play it at all). A flip could seek only when the head is past the target, and a
+  catch-up could skip converting a frame older than the one on screen.
+- **Threads and CPU per node.** Each node runs the worker plus FFmpeg's automatic decode and swscale
+  threads (18 on an 8-thread machine), and a very short loop re-seeks every lap; capping the thread counts
+  and keeping a clip that fits in the pool decoded would help patches with several players.
+- **Structure.** `VideoStream.cpp`'s reaper is a generic utility, and `reverseStretch` its densest
+  function; both are worth splitting out when next touched.
 - **Faster offline reverse through long keyframe intervals.** An offline stretch converts every frame from
   its keyframe into its ring, though it keeps only the newest pool/2. Converting only those would shorten
   the wait at a frame the node's guess did not predict (2.5 s at 4K with keyframes 8 s apart) and speed up
