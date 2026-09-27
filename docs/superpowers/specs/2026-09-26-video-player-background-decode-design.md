@@ -386,6 +386,71 @@ fixed, and each fix is pinned by a check that fails when it is reverted.
     end-of-sequence tag as a keyframe, so its index lists a keyframe at the last frame's decode time --
     likely why a seek into an FLV's last frames finds nothing (revision 20's back-off already copes).
 
+### Revisions during execution (code review of Task 7)
+
+66. **Offline readiness names the frame for u exactly.** It asked only whether some held frame lay at or
+    before u inside the run. Recycling for the node's guess at the next frame's playhead then released
+    frames the real playhead needed (an automated rate, 2x then 1x), and after a flip from reverse to
+    forward the last reverse frame was still on screen; either way readiness said yes while `frameAt()`
+    gave an older frame -- 75 of 150 frames wrong alternating 2x and 1x, 2-4 of 400 on a random schedule,
+    and the first forward frame after reverse repeated the last reverse one. Each queued frame now carries
+    `until`, the time of the next frame decoded after it -- known when it is queued: the peeked frame, the
+    next frame of a reverse ring, the lap's end at the end of the file -- and readiness needs a held frame
+    with t <= u < until. Offline, when u's frame is not held but frames beyond it are (it was released),
+    the worker decodes it again: forward a seek, reverse a fresh stretch. The planner alone would have
+    waited forever, since it counts the frame on screen as held.
+67. **Offline, the frames the guess passed over stay.** While the guess's frame is held -- so nothing has
+    to make room for it -- recycling keeps the frames between the frame on screen and the guess, since
+    the real playhead may need one. (The review suggested keeping them while buffers are free; the worker
+    keeps its pool full, so that almost never held, and each rate change cost a seek: 20 in a 40-frame
+    render alternating 2x and 1x.) Only while the frame on screen is on the way to the guess: after a jump
+    or a flip it lies beyond it, and keeping "from the frame on screen" there released the frame just
+    decoded for the new playhead (the new scenario caught that in 1 run of 6). A guess beyond every frame
+    held still releases the ones before it, and the real playhead's frame is then decoded again (66).
+68. **Readiness waits for the worker's flush.** After a flip, or when an offline render starts in reverse
+    after live stretches, readiness could still say yes from the old run's frames just before the worker's
+    next step flushed them, and `frameAt()` then gave the frame on screen. The direction and offline flag
+    the worker last planned for are now guarded by the mutex and set together with the flush; readiness
+    says no while the request's differ.
+69. **Destroying a stream while it opens no longer aborts the process.** A stop interrupts
+    `avformat_find_stream_info()` part-way, which still returns success, with the pixel format unknown;
+    `open()` built the legacy converter from it, and libswscale aborted (every destroy 0.2-2 ms after
+    construction, on MP4, MKV, AVI and MOV). `open()` now fails ("stopped") when the abort flag is set once
+    the probe returns, and `decodeFrame()`'s converter is built from the first decoded frame's own format,
+    like `convert()`'s -- which also opens a MOV whose video starts past the probe (it aborted on main).
+70. **The UI never waits for a stream's teardown.** Tearing a stream down -- joining the worker (up to a
+    frame's decode: ~250 ms mid-seek on 4K 10-bit HEVC), freeing the touched pool (50-110 ms), closing the
+    decoder while its frame threads finish (15-110 ms) -- took 0.1-0.5 s at 4K, not "tens of ms".
+    `VideoStream::retire(std::unique_ptr<VideoStream>)` sets the stop flag at once and hands the stream to
+    a reaper thread, which destroys retired streams one after another and is joined at exit. The node
+    retires its stream on a file change and in its destructor: 0.01-0.1 ms where the destructor took
+    90-250 ms.
+71. **An offline render fails when its stream fails mid-render.** Readiness is true once a stream has failed
+    (nothing more will come), so a stream failing mid-render let the render finish with the picture gone.
+    The node now keeps `loading()` true for a stream that fails after it opened, so the render fails
+    through the renderer's timeout, naming the node; a stream that never opened still renders without
+    video, as a failed load always has (and as the Audio Player does). No test pins it: no regular file
+    makes an open stream fail, only a non-seekable input or an allocation failure.
+72. **Smaller fixes.** The worker plans before reading audio ahead, and skips the read-ahead before a seek,
+    which throws it away (up to 64 MB: 48-62 ms before an 8 s jump at 4K); `TimedAudio::retain()` compacts
+    its chunks in place (it allocated a vector every worker step, under the mutex); the pool reserves its
+    vector before allocating buffers (a throwing `emplace_back` leaked one); `waitForFrame()` says what it
+    returns. FFmpeg's errors when a stream is destroyed mid-read ("partial file", "Packet corrupt") still
+    reach stderr: its log callback is process-wide.
+73. **Tests.** A fourth `VideoStream` scenario drives offline renders the way the node does -- the frame is
+    shown the moment it is ready, and readiness must still hold a moment later (on a render's first frame,
+    after a jump or a flip, also before it is shown) -- with rates alternating 2x/1x and -2x/-1x (no seek),
+    4x/1x (a guess beyond every frame held), a jump ahead with the pool full of the frames it passed,
+    flips both ways, loop off into the clip's end and its start, and reverse through an MPEG-TS whose
+    keyframes are 3 s apart (a late landing backs off beyond 1 s); then it destroys and retires streams
+    0-3 ms into their open. Loop toggle (b) turns loop off only once the next lap's first frame is ready
+    (on a slow machine it could pass without the wrap), and must not seek. Each of 12 breakages fails it:
+    readiness ignoring `until`, no decoding again of a released frame, no keeping, keeping "from the frame
+    on screen", keeping only while buffers are free, the run or `until` ending at the last frame at the end
+    of the file (revision 25), a back-off that stops at 1 s (revision 20), no forward recycling, readiness
+    before the flush, dropping the next lap's frames when loop goes off, and the old `open()` (the process
+    aborts). The node's shutdown bound drops from 200 ms to 50 ms.
+
 ## Root cause
 
 Reproduced with a headless harness that compiles the real `VideoPlayerNode.cpp` and drives
@@ -508,7 +573,7 @@ functions, unit-tested in `core_tests` (the `StepSync.h` / `BarSync.h` pattern).
   before `clipHi` (a reverse stretch passes the start of the stretch above it).
 - `retain(lo, hi, u)` keeps the playhead u's neighbourhood: chunks wholly outside [lo, hi] go (never the
   current one), and a chunk's front (forward) or back (reverse) is cut once more than a second of it lies
-  outside.
+  outside. It compacts in place, allocating nothing.
 - A 180 s cap drops the audio farthest from the playhead first, never what plays at u: the farthest
   chunk goes whole -- or, if it is the one being filled, loses its far end, never past u.
 - `sample(u0, u1, out, n)` maps output sample j to time u0 + (u1 − u0)·j/n and interpolates linearly,
@@ -522,7 +587,8 @@ functions, unit-tested in `core_tests` (the `StepSync.h` / `BarSync.h` pattern).
 - **Owns:** a `VideoDecoder`, the worker `std::thread`, the pool (`std::unique_ptr<uint8_t[]>`
   buffers, never allocated or freed per frame), the ready queue, a `TimedAudio`, and status/info.
 - **Lifecycle:** the constructor starts the worker, which opens the file. The destructor sets a stop
-  flag, wakes the worker and joins it (the `MidiSyncEngine` pattern).
+  flag, wakes the worker and joins it (the `MidiSyncEngine` pattern). `retire(std::unique_ptr<VideoStream>)`
+  sets the flag and returns at once, leaving the rest to a reaper thread (see Shutdown and lifetime).
 - **API for the graph thread:**
 
   | Call | Purpose |
@@ -531,7 +597,7 @@ functions, unit-tested in `core_tests` (the `StepSync.h` / `BarSync.h` pattern).
   | `info()` | width, height, D, frame duration, has-audio |
   | `request(VideoRequest)` | `{u, rate, loop, offline, lapLo, lapHi}` (the lap bounds only matter with loop off); the latest request wins; wakes the worker |
   | `frameAt(u, FrameView&)` | the frame for u as `{rgba, t, serial}` (rows top-down, width·4 apart), valid until the next call |
-  | `frameReadyFor(u)` | offline: the frame for u is decided and held, and (forward) no more audio can arrive for times up to u |
+  | `frameReadyFor(u)` | offline: the frame for u is held -- the frame decoded at or before u, with none decoded between -- and (forward) no more audio can arrive for times up to u |
   | `waitForFrame(u, timeout)` | offline only: blocks until `frameReadyFor(u)` or the timeout |
   | `readAudio(u0, u1, out, n)` | samples the audio store |
 
@@ -543,6 +609,8 @@ functions, unit-tested in `core_tests` (the `StepSync.h` / `BarSync.h` pattern).
   - sets `thread_count = 0` (automatic) and `pkt_timebase` before `avcodec_open2`;
   - allocates the format context first so it can install an `AVIOInterruptCB` that returns
     `*abort`. A stop then aborts a stalled open or read;
+  - fails ("stopped") when `*abort` is set once the probe returns: a stop interrupts
+    `avformat_find_stream_info()` part-way, and it still succeeds with the streams half known;
   - fails when no frame decodes.
 - Video packets are read into a bounded queue (64 MB) instead of being decoded straight away.
 - `decodeNext(DecodedFrame& out)`: decode the next video frame *without* converting it.
@@ -581,7 +649,9 @@ functions, unit-tested in `core_tests` (the `StepSync.h` / `BarSync.h` pattern).
   raw streams, which only seek to their start. An entry may be a keyframe's decode time, a frame or two
   early.
 - `decodeFrame()` keeps its current behaviour, including single-threaded bottom-up output, for the
-  15 `gl_smoke` call sites (it is now built on `decodeNext()` + `takeAudio()`).
+  15 `gl_smoke` call sites (it is now built on `decodeNext()` + `takeAudio()`). Its converter is built
+  from the first decoded frame's format: the stream's may not be known until a frame decodes (a video
+  that starts past what the probe reads).
 - `convert()` passes the caller's buffer to `sws_scale_frame()` wrapped in a reference-counted buffer
   whose free callback does nothing: FFmpeg 5–7 allocate a new buffer for a destination frame that has
   none, which would silently write the pixels somewhere else.
@@ -708,6 +778,12 @@ The rules below are checked in order after each snapshot of the request.
 
 The pool therefore cannot deadlock on frames that will never be shown.
 
+**Offline, the request is the node's guess** at the next frame's playhead, and an automated rate can move
+the real one. So while the guess's frame is held, the frames between the frame on screen and the guess stay
+(when the frame on screen is on the way to the guess -- not after a jump or a flip). If the real playhead's
+frame was released all the same (the guess lay beyond every frame held) while frames beyond it are held,
+the worker decodes it again: forward a seek, reverse a fresh stretch.
+
 ### Worker: reverse playback
 
 1. **Plan a stretch.** A *fresh* one (a new run; the playhead fell below what is covered; or it is
@@ -772,9 +848,10 @@ the UI keeps running.
 ### Offline renders
 
 - The node records the last `ctx.offline`.
-- Two things count as `loading()`:
+- Three things count as `loading()`:
   - the file is still opening;
-  - in offline mode, `!frameReadyFor(pendingNextU)`.
+  - in offline mode, `!frameReadyFor(pendingNextU)`;
+  - in offline mode, a stream that failed after it opened (see Errors).
 - **Predicting the next frame:** after publishing frame k at u, the node computes the next
   u′ = u + (play ? rate : 0) · dt, with the same loop and clamp rules. Offline `dt` is the fixed
   1/fps, so this is the next frame's position unless the rate changes. It sets the worker's request
@@ -783,7 +860,9 @@ the UI keeps running.
 - **Exactness:** at the next `evaluate()`, when the actual u equals u′ the frame is already ready.
   When it doesn't (for example, the rate is automated), the node calls `waitForFrame(u, 2 s)` itself.
   Either way the frame and audio for u are published in the same `evaluate()`, which is the
-  `Node::loading()` contract.
+  `Node::loading()` contract. A wrong guess costs a wait, never a wrong frame: recycling for the guess
+  can release the frame the actual u needs (the worker then decodes it again), and readiness names u's
+  frame exactly.
 - **Stalls:** if that wait times out, the node latches a stall flag that keeps `loading()` true. The
   render then fails through the renderer's normal 30 s timeout naming the node, instead of finishing
   with a wrong frame. The flag clears when `ctx.offline` goes false or the file changes.
@@ -791,8 +870,11 @@ the UI keeps running.
   while live reverse is playing restarts the run, since live stretches keep every stride-th frame;
   until an offline stretch has landed, reverse readiness says no.
 - **Readiness** (`frameReadyFor(u)`): the frame for u lies in the run of consecutive decided frames
-  and is still held; playing forward, the audio is also settled up to u (or u is in an earlier lap,
-  whose audio is complete). In reverse the stretch that brings the frame also brought its audio.
+  and is held -- a queued frame, or the one on screen, with t ≤ u < the time of the next frame decoded
+  after it; playing forward, the audio is also settled up to u (or u is in an earlier lap, whose audio is
+  complete). In reverse the stretch that brings the frame also brought its audio. Never while the worker
+  has yet to flush for the request (a new direction, or an offline render starting in reverse after live
+  stretches), and it holds while a request stands.
 
 ### Errors
 
@@ -810,13 +892,20 @@ the UI keeps running.
 | A seek lands late or finds no frame (decode-time indexes, MPEG-TS) | retried 1 s, 2 s, 4 s… earlier, down to the start of the file |
 | Frame dimensions change mid-file | those frames are skipped (conversion is sized at open) |
 | Anything thrown on the worker | caught at the top of the thread and turned into `Failed`; nothing escapes the thread |
+| A stream fails after it opened (a non-seekable input, an allocation failure) | the node shows "failed: …"; offline, `loading()` stays true, so the render fails naming the node instead of going on without the picture |
+| The stream is destroyed while it opens | the probe is interrupted and `open()` fails ("stopped"); nobody sees it |
 
 ### Shutdown and lifetime
 
-- The stream is destroyed when the file changes, the node is deleted, `Graph::clear()` runs (project
-  load) or the app exits: set stop, wake, join.
-- The join is bounded by about one frame's decode (tens of ms at 4K). The worker checks stop between
-  steps, and the interrupt callback aborts blocking I/O on slow or network drives.
+- The stream goes when the file changes, the node is deleted, `Graph::clear()` runs (project load) or
+  the app exits. The node hands it to `VideoStream::retire()`, which sets stop, wakes the worker and
+  returns at once; a reaper thread then joins the worker and destroys the stream, one retired stream after
+  another, and is itself joined at exit. A retired stream holds its memory until then.
+- Tearing a stream down takes 0.1-0.5 s at 4K, which is why the UI thread never does it: the join waits
+  for up to one frame's decode (~250 ms right after a seek on 4K 10-bit HEVC), freeing the pool's touched
+  pages takes 50-110 ms, and closing the decoder waits 15-110 ms for its frame threads. The worker checks
+  stop between steps, and the interrupt callback aborts blocking I/O on slow or network drives (a stop
+  during the probe fails the open).
 - The decoder is destroyed after the join.
 - The node frees its textures and framebuffers on the main thread with the editor context current (the
   existing rule), after the stream has been destroyed.
@@ -904,8 +993,16 @@ the UI keeps running.
   frame and decoding stops; an offline render straight after live reverse is exact from its first frame;
   live reverse from the last frame of an AVI whose last keyframe is its last frame does not spin.
 - **`VideoStream` loop toggles:** loop off with the playhead a lap ahead of the decoder renders that
-  lap's frames; loop off and back on near a lap's end keeps the next lap's frames (offline exact); the
-  same at a lap's start in reverse goes on into the lap below.
+  lap's frames; loop off and back on near a lap's end -- once the next lap's first frame is ready --
+  keeps the next lap's frames (offline exact, and no seek); the same at a lap's start in reverse goes on
+  into the lap below.
+- **`VideoStream` exactness:** offline renders driven as the node drives them -- each frame shown the
+  moment it is ready, readiness still holding a moment later, and on a render's first frame (after a
+  jump or a flip) also before it is shown -- stay exact with the rate alternating 2x/1x and -2x/-1x
+  (without a seek), 4x/1x (a guess beyond every frame held), after a jump ahead with the pool full of the
+  frames it passed, through flips both ways, into a loop-off end and start, and in reverse through an
+  MPEG-TS whose keyframes are 3 s apart; each runs with a 4-frame pool and the full one, on a clip with
+  audio and one without. Streams destroyed or retired 0-3 ms into their open go quietly.
 - **`VideoDecoder`:** a 12 s Matroska file knows its keyframes past 7 s right after `open()`.
 - **A new generated clip,** `build/_video_longgop.mp4`:
   - 160×90, 25 fps, 12 s (300 frames), keyframes 250 frames apart, with a 440 Hz tone;
@@ -921,8 +1018,8 @@ the UI keeps running.
     `VideoDecoder`).
   - **Seamless loop** (offline): the frame after the last is frame 0, and no audio block across the
     loop boundary is silent.
-  - **Shutdown:** changing the file, or deleting the node, mid-seek returns within 200 ms with no hang
-    or crash.
+  - **Shutdown:** changing the file, or deleting the node, mid-seek returns within 50 ms (the old
+    stream is retired, not waited for) with no hang or crash.
 - Timing limits are deliberately loose so slower CI machines pass. The old design misses them by
   seconds.
 
