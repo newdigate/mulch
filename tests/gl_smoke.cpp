@@ -39,7 +39,11 @@
 #include "modules/MidiFilePlayerNode.h"
 #include "core/VertexShaders.h"
 #include "gfx/VideoDecoder.h"
+#include "gfx/VideoStream.h"
 #include "gfx/VideoEncoder.h"
+extern "C" {
+#include <libavformat/avformat.h>   // remuxWithAudioHole: a clip VideoEncoder cannot write
+}
 #include "gfx/TextGeometry.h"
 #define STB_IMAGE_WRITE_IMPLEMENTATION
 #include "stb_image_write.h"
@@ -54,6 +58,7 @@
 #include "core/OfflineRender.h"
 #include "app/OfflineRenderer.h"
 #include <cstdlib>
+#include <cstring>
 #include <fstream>
 #include <filesystem>
 #include <limits>
@@ -812,6 +817,1031 @@ static bool scenario_draco_compressed_gltf() {
     }
     return true;
 }
+// --- Scenario: VideoDecoder's split decode -- decodeNext() + convert() match decodeFrame() ---
+// The worker decodes a frame, looks at its time, and only then converts it (threaded, top-down).
+// That must produce exactly decodeFrame()'s pixels, flipped; the keyframe index, the frame rate and
+// the audio read-ahead are what its decisions rest on.
+static bool scenario_video_decoder_split_decode() {
+    {
+        VideoDecoder a, b; std::string err;
+        if (!a.open("tests/assets/test.mp4", err) || !b.open("tests/assets/test.mp4", err)) {
+            return failed(("split decode: open: " + err).c_str());
+        }
+        if (std::fabs(a.frameDuration() - 0.1) > 1e-9) { return failed("split decode: test.mp4 is 10 fps"); }
+        const int W = a.width(), H = a.height();
+        std::vector<unsigned char> top((std::size_t)W * H * 4);
+        VideoFrame vf; std::vector<float> au; double aS = 0; bool aV = false;
+        for (int i = 0; i < 10; ++i) {
+            DecodedFrame f;
+            if (!a.decodeNext(f) || !b.decodeFrame(vf, au, aS, aV)) { return failed("split decode: ran out of frames"); }
+            if (f.t != vf.t) { return failed("split decode: decodeNext and decodeFrame disagree on the time"); }
+            if (a.convert(f, top.data(), W * 4 - 4)) { return failed("split decode: convert() must refuse a stride shorter than a row"); }
+            if (!a.convert(f, top.data(), W * 4)) { return failed("split decode: convert failed"); }
+            for (int y = 0; y < H; ++y)
+                if (std::memcmp(top.data() + (std::size_t)y * W * 4, vf.rgba + (std::size_t)(H - 1 - y) * W * 4,
+                                (std::size_t)W * 4) != 0) {
+                    return failed("split decode: convert() is not decodeFrame() flipped top-down");
+                }
+        }
+        double key = 0.0;
+        if (!a.nextKeyframeAfter(0.1, key) || !(key > 0.1 && key <= 0.55)) { return failed("split decode: the next keyframe after 0.1 s is the one at 0.5 s"); }
+        if (!a.nextKeyframeAfter(1.0, key) || std::isfinite(key)) { return failed("split decode: nothing after the last keyframe should read +inf"); }
+
+        VideoDecoder c;                                   // one frame decoded, then the audio read ahead
+        if (!c.open("tests/assets/test.mp4", err)) { return failed("split decode: reopen"); }
+        DecodedFrame f;
+        if (!c.decodeNext(f)) { return failed("split decode: first frame"); }
+        c.pumpAudio(1.0);
+        std::vector<float> s; double st = 0.0; bool cont = true;
+        if (!c.takeAudio(s, st, cont) || cont || s.size() < 48000 || c.audioSettledUpTo() < 1.0) {
+            return failed("split decode: pumpAudio did not read a second of audio ahead of one video frame");
+        }
+
+        // A file whose video starts late -- an FLV with B-frames puts its first frame a frame in --
+        // counts from that frame: it is at 0, and the keyframe index, the duration, seek() and the
+        // audio count from it too. (FLV carries H.264, not VideoEncoder's MPEG-4 fallback.)
+        const std::string late = "build/_late_start.flv";
+        bool flv = false;
+        {
+            VideoEncoder enc;
+            if (enc.open(late, 64, 48, 25, 48000, 1, err)) {
+                std::vector<unsigned char> px((std::size_t)64 * 48 * 4);
+                std::vector<float> tone(48000 / 25);
+                for (int f = 0; f < 50; ++f) {
+                    std::fill(px.begin(), px.end(), (unsigned char)(f * 5));
+                    for (std::size_t i = 0; i < tone.size(); ++i)
+                        tone[i] = 0.5f * (float)std::sin(0.05 * (double)(f * tone.size() + i));
+                    if (!enc.addVideoFrame(px.data(), f / 25.0) || !enc.addAudio(tone.data(), (int)tone.size())) {
+                        return failed("late start: encode a frame");
+                    }
+                }
+                if (!enc.close(err)) { return failed(("late start: close: " + err).c_str()); }
+                flv = true;
+            }
+        }
+        if (!flv) {
+            std::fprintf(stderr, "gl_smoke SKIP: late-start FLV (no H.264 encoder: %s)\n", err.c_str());
+        } else {
+            VideoDecoder d;
+            if (!d.open(late, err)) { return failed(("late start: open: " + err).c_str()); }
+            DecodedFrame f0, f1;
+            if (!d.decodeNext(f0) || !d.decodeNext(f1) || f0.t != 0.0 || std::fabs(f1.t - 0.04) > 1e-6) {
+                std::fprintf(stderr, "late start: the first frames are at %.4f and %.4f\n", f0.t, f1.t);
+                return failed("late start: times must count from the first frame (0, then 0.04 s)");
+            }
+            double lateKey = 0.0;
+            if (!d.nextKeyframeAfter(0.1, lateKey) || !(lateKey > 0.9 && lateKey < 1.05)) {
+                return failed("late start: the keyframe index must count from the first frame (the next keyframe is at 1 s)");
+            }
+            if (std::fabs(d.duration() - 2.0) > 0.05) { return failed("late start: the duration must count from the first frame (2 s)"); }
+            DecodedFrame g;
+            if (!d.seek(0.0) || !d.decodeNext(g) || g.t != 0.0) { return failed("late start: seek(0) must return to the first frame"); }
+            d.pumpAudio(1.0);
+            std::vector<float> la; double laStart = -1.0; bool laCont = true;
+            if (!d.takeAudio(la, laStart, laCont) || laCont || laStart < 0.0 || laStart > 0.05) {
+                return failed("late start: the audio must count from the first frame");
+            }
+        }
+
+        // A Matroska file's cues -- its keyframe index -- are read only when the demuxer is first asked to
+        // seek; open() asks, so keyframes past what probing read (about 5 s) are known from the start.
+        const std::string cues = "build/_cues.mkv";
+        {
+            VideoEncoder enc;
+            if (!enc.open(cues, 64, 48, 25, 0, 0, err)) { return failed(("cues: encode: " + err).c_str()); }
+            std::vector<unsigned char> px((std::size_t)64 * 48 * 4);
+            for (int f = 0; f < 300; ++f) {                // 12 s, keyframes every second or sooner
+                std::fill(px.begin(), px.end(), (unsigned char)(f % 256));
+                if (!enc.addVideoFrame(px.data(), f / 25.0)) { return failed("cues: encode a frame"); }
+            }
+            if (!enc.close(err)) { return failed(("cues: close: " + err).c_str()); }
+        }
+        VideoDecoder m;
+        double cueKey = 0.0;
+        if (!m.open(cues, err) || !m.nextKeyframeAfter(7.0, cueKey) || !(cueKey > 7.0 && cueKey < 12.0)) {
+            std::fprintf(stderr, "cues: the keyframe after 7 s reads %g\n", cueKey);
+            return failed("cues: a Matroska file's keyframe index must be read at open (there are keyframes after 7 s)");
+        }
+
+        // An MPEG-TS demuxer lists every packet it reads while searching for a seek position as a keyframe:
+        // the decoder must not pass those on -- the worker would seek towards keyframes that are not there.
+        const std::string probes = "build/_probes.ts";
+        {
+            VideoEncoder enc;
+            if (!enc.open(probes, 64, 48, 25, 0, 0, err)) { return failed(("probes: encode: " + err).c_str()); }
+            std::vector<unsigned char> px((std::size_t)64 * 48 * 4);
+            for (int f = 0; f < 300; ++f) {
+                std::fill(px.begin(), px.end(), (unsigned char)(f % 256));
+                if (!enc.addVideoFrame(px.data(), f / 25.0)) { return failed("probes: encode a frame"); }
+            }
+            if (!enc.close(err)) { return failed(("probes: close: " + err).c_str()); }
+        }
+        VideoDecoder p;
+        DecodedFrame pf;
+        double probeKey = 0.0;
+        if (!p.open(probes, err)) { return failed(("probes: open: " + err).c_str()); }
+        // Its first frame is 0.04 s into the clock (the B-frame delay): times count from that frame, and so
+        // does the duration (counted from the clock's start it would read 12.04 s).
+        if (!p.decodeNext(pf) || pf.t != 0.0 || std::fabs(p.duration() - 12.0) > 0.02) {
+            std::fprintf(stderr, "probes: first frame at %.4f, duration %.4f\n", pf.t, p.duration());
+            return failed("probes: an MPEG-TS whose clock starts late must count from its first frame (at 0; 12 s long)");
+        }
+        p.seek(5.5);                                        // the search reads packets around 5.5 s
+        if (!p.decodeNext(pf) || !p.nextKeyframeAfter(0.1, probeKey) || std::isfinite(probeKey)) {
+            std::fprintf(stderr, "probes: after a seek, the keyframe after 0.1 s reads %g\n", probeKey);
+            return failed("probes: an MPEG-TS index lists seek probes, not keyframes: it must read as none known");
+        }
+        std::fprintf(stderr, "gl_smoke OK: decodeNext+convert == decodeFrame flipped; keyframe lookup; %.2f s of audio read ahead; "
+                     "a late-starting file counts from its first frame; Matroska cues are read at open; "
+                     "MPEG-TS seek probes are not keyframes\n", s.size() / 48000.0);
+    }
+    return true;
+}
+
+// Copy `src` to `dst` packet for packet, leaving out the audio packets that start in [from, to) seconds.
+static bool remuxWithAudioHole(const std::string& src, const std::string& dst, double from, double to) {
+    AVFormatContext* in = nullptr;
+    if (avformat_open_input(&in, src.c_str(), nullptr, nullptr) < 0) return false;
+    AVFormatContext* out = nullptr;
+    bool ok = avformat_find_stream_info(in, nullptr) >= 0 &&
+              avformat_alloc_output_context2(&out, nullptr, nullptr, dst.c_str()) >= 0;
+    for (unsigned i = 0; ok && i < in->nb_streams; ++i) {
+        AVStream* o = avformat_new_stream(out, nullptr);
+        ok = o && avcodec_parameters_copy(o->codecpar, in->streams[i]->codecpar) >= 0;
+        if (ok) { o->codecpar->codec_tag = 0; o->time_base = in->streams[i]->time_base; }
+    }
+    ok = ok && avio_open(&out->pb, dst.c_str(), AVIO_FLAG_WRITE) >= 0 && avformat_write_header(out, nullptr) >= 0;
+    AVPacket* p = av_packet_alloc();
+    while (ok && p && av_read_frame(in, p) >= 0) {
+        const AVStream* st = in->streams[p->stream_index];
+        const double t = p->pts * av_q2d(st->time_base);
+        if (!(st->codecpar->codec_type == AVMEDIA_TYPE_AUDIO && t >= from && t < to)) {
+            av_packet_rescale_ts(p, st->time_base, out->streams[p->stream_index]->time_base);
+            ok = av_interleaved_write_frame(out, p) >= 0;
+        }
+        av_packet_unref(p);
+    }
+    av_packet_free(&p);
+    ok = ok && av_write_trailer(out) >= 0;
+    if (out) { avio_closep(&out->pb); avformat_free_context(out); }
+    avformat_close_input(&in);
+    return ok;
+}
+
+// A 3 s clip: 64x48 at 25 fps, a 440 Hz tone at `rate`.
+static bool writeToneClip(const std::string& path, int rate = 48000) {
+    VideoEncoder enc; std::string err;
+    if (!enc.open(path, 64, 48, 25, rate, 1, err)) {
+        std::fprintf(stderr, "writeToneClip: %s\n", err.c_str());
+        return false;
+    }
+    std::vector<unsigned char> px((std::size_t)64 * 48 * 4, 128);
+    std::vector<float> tone((std::size_t)rate / 25);
+    for (int f = 0; f < 75; ++f) {
+        for (std::size_t i = 0; i < tone.size(); ++i)
+            tone[i] = 0.5f * (float)std::sin(6.283185307179586 * 440.0 * (double)(f * tone.size() + i) / rate);
+        if (!enc.addVideoFrame(px.data(), f / 25.0) || !enc.addAudio(tone.data(), (int)tone.size())) return false;
+    }
+    return enc.close(err);
+}
+
+// writeToneClip's clip without the audio packets that start in [from, to) seconds: a hole in the audio's
+// timestamps -- by default from 1.0 s to 1.6 s -- which VideoEncoder cannot write.
+static bool writeAudioHoleClip(const std::string& path, double from = 1.0, double to = 1.6) {
+    const std::string whole = path + ".whole.mkv";
+    return writeToneClip(whole) && remuxWithAudioHole(whole, path, from, to);
+}
+
+// The runs of audio `d` hands out (see VideoDecoder::takeAudio).
+struct AudioRunSeen { double start, end; bool continues; };
+static std::vector<AudioRunSeen> takeRuns(VideoDecoder& d) {
+    std::vector<AudioRunSeen> runs;
+    std::vector<float> a; double s = 0.0; bool c = false;
+    while (d.takeAudio(a, s, c)) runs.push_back({s, s + a.size() / 48000.0, c});
+    return runs;
+}
+
+// Every frame VideoDecoder `d` has left: false unless their times rise strictly; `n` counts them, `last` is the last time.
+static bool decodeRest(VideoDecoder& d, int& n, double& last) {
+    DecodedFrame f;
+    bool rising = true;
+    n = 0; last = -1.0;
+    while (d.decodeNext(f)) { rising = rising && f.t > last; last = f.t; ++n; }
+    return rising;
+}
+
+// --- Scenario: VideoDecoder on awkward files ---
+// Frames with no timestamps (an AVI's B-frame tail, a raw stream), a seek in a file whose video starts
+// late, a hole in the audio, and a stream whose audio format and picture size change midway.
+static bool scenario_video_decoder_awkward_files() {
+    std::string err;
+    std::vector<unsigned char> px((std::size_t)64 * 48 * 4);
+
+    // An AVI with B-frames: the decoder flushes its last frames with no timestamp. They follow the frame
+    // before them (they used to read as before the first frame, and the worker sought forever).
+    const std::string avi = "build/_untimed_tail.avi";
+    {
+        VideoEncoder enc;
+        if (!enc.open(avi, 64, 48, 25, 0, 0, err)) { return failed(("untimed tail: encode: " + err).c_str()); }
+        for (int f = 0; f < 50; ++f) {
+            std::fill(px.begin(), px.end(), (unsigned char)(f * 5));
+            if (!enc.addVideoFrame(px.data(), f / 25.0)) { return failed("untimed tail: encode a frame"); }
+        }
+        if (!enc.close(err)) { return failed(("untimed tail: close: " + err).c_str()); }
+    }
+    VideoDecoder a;
+    if (!a.open(avi, err)) { return failed(("untimed tail: open: " + err).c_str()); }
+    for (int lap = 0; lap < 2; ++lap) {
+        int n = 0; double last = 0.0;
+        if (!decodeRest(a, n, last) || n != 50 || std::fabs(last - 1.96) > 1e-6) {
+            std::fprintf(stderr, "untimed tail: lap %d: %d frames, the last at %.4f\n", lap, n, last);
+            return failed("untimed tail: 50 frames, 0.04 s apart, the last at 1.96 s -- every lap");
+        }
+        if (!a.seek(0.0)) { return failed("untimed tail: seek(0)"); }
+    }
+
+    // A raw H.264 stream has no timestamps at all, and no times to seek by: a search by time read the whole
+    // file and failed, leaving nothing to decode. Its seeks go to the start instead. At 30 fps: its demuxer
+    // knows only a default of 25, so the frame duration must come from the decoder.
+    const std::string raw = "build/_raw.h264";
+    bool rawWritten = false;
+    {
+        VideoEncoder enc;                                   // the raw H.264 muxer takes H.264 only
+        if (enc.open(raw, 64, 48, 30, 0, 0, err)) {
+            for (int f = 0; f < 50; ++f) {
+                std::fill(px.begin(), px.end(), (unsigned char)(f * 5));
+                if (!enc.addVideoFrame(px.data(), f / 30.0)) { return failed("raw stream: encode a frame"); }
+            }
+            if (!enc.close(err)) { return failed(("raw stream: close: " + err).c_str()); }
+            rawWritten = true;
+        }
+    }
+    if (!rawWritten) {
+        std::fprintf(stderr, "gl_smoke SKIP: raw stream (no H.264 encoder: %s)\n", err.c_str());
+    } else {
+        VideoDecoder r;
+        if (!r.open(raw, err)) { return failed(("raw stream: open: " + err).c_str()); }
+        int n = 0; double last = 0.0, key = 0.0;
+        DecodedFrame g;
+        if (!decodeRest(r, n, last) || n != 50 || std::fabs(last - 49.0 / 30.0) > 1e-6 || std::fabs(r.frameDuration() - 1.0 / 30.0) > 1e-6) {
+            std::fprintf(stderr, "raw stream: %d frames, the last at %.4f; frameDuration %.5f\n", n, last, r.frameDuration());
+            return failed("raw stream: 50 frames, 1/30 s apart, and a frame duration of 1/30 s");
+        }
+        if (!r.seek(1.0) || !r.decodeNext(g) || g.t != 0.0) { return failed("raw stream: a seek goes back to the start"); }
+        if (!r.nextKeyframeAfter(0.5, key) || std::isfinite(key)) { return failed("raw stream: its index is no guide to seeking"); }
+    }
+
+    // Video that starts 1 s into the file, its audio at 0: times count from the first frame, so seek(2.02)
+    // lands on the keyframe 2 s after it -- not on the one 2 s into the file -- and the audio before the
+    // first frame is dropped.
+    const std::string lateVideo = "build/_late_video.mkv";
+    {
+        VideoEncoder enc;
+        if (!enc.open(lateVideo, 64, 48, 25, 48000, 1, err)) { return failed(("late video: encode: " + err).c_str()); }
+        std::vector<float> tone(48000 / 25, 0.25f);
+        for (int f = 0; f < 100; ++f) {                    // audio from 0 s, video from 1 s (frame 25)
+            std::fill(px.begin(), px.end(), (unsigned char)(f * 2));
+            if ((f >= 25 && !enc.addVideoFrame(px.data(), f / 25.0)) || !enc.addAudio(tone.data(), (int)tone.size())) {
+                return failed("late video: encode a frame");
+            }
+        }
+        if (!enc.close(err)) { return failed(("late video: close: " + err).c_str()); }
+    }
+    VideoDecoder m;
+    DecodedFrame m0, m2;
+    std::vector<float> run; double runStart = -1.0; bool runCont = true;
+    if (!m.open(lateVideo, err) || !m.decodeNext(m0) || m0.t != 0.0) { return failed("late video: the first frame is at 0"); }
+    m.pumpAudio(0.5);
+    if (!m.takeAudio(run, runStart, runCont) || runCont || runStart < 0.0 || runStart > 0.001) {
+        std::fprintf(stderr, "late video: the first audio starts at %.4f\n", runStart);
+        return failed("late video: the audio must start with the first frame (what came before it is dropped)");
+    }
+    if (!m.seek(2.02) || !m.decodeNext(m2) || std::fabs(m2.t - 2.0) > 1e-6) {
+        std::fprintf(stderr, "late video: seek(2.02) landed at %.4f\n", m2.t);
+        return failed("late video: seek(2.02) must land on the keyframe 2 s after the first frame");
+    }
+
+    // A hole in the audio's timestamps is kept: the audio after it resumes at its own time, as a new run
+    // (it used to carry straight on from where the hole began, early by the hole's length ever after).
+    // So is a hole of 64 ms -- three AAC packets -- which is more than timestamp rounding.
+    for (const double to : {1.6, 1.06}) {
+        const std::string hole = to > 1.5 ? "build/_audio_hole.mkv" : "build/_audio_small_hole.mkv";
+        if (!writeAudioHoleClip(hole, 1.0, to)) { return failed("audio hole: writing the clip failed"); }
+        VideoDecoder h;
+        if (!h.open(hole, err)) { return failed(("audio hole: open: " + err).c_str()); }
+        h.pumpAudio(1.3);
+        if (h.audioSettledUpTo() < 1.3) { return failed("audio hole: pumpAudio must settle the audio through the hole"); }
+        h.pumpAudio(2.5);
+        const std::vector<AudioRunSeen> runs = takeRuns(h);
+        bool resumed = false;
+        for (std::size_t i = 1; i < runs.size(); ++i)
+            resumed = resumed || (!runs[i].continues && std::fabs(runs[i - 1].end - 1.0) < 0.03 && std::fabs(runs[i].start - to) < 0.03);
+        if (!resumed) {
+            for (std::size_t i = 0; i < runs.size(); ++i)
+                std::fprintf(stderr, "audio hole: run %zu [%.4f, %.4f)%s\n", i, runs[i].start, runs[i].end, runs[i].continues ? " continues" : "");
+            std::fprintf(stderr, "audio hole: expected a new run at %.2f s\n", to);
+            return failed("audio hole: the audio after a hole must resume at its own time, as a new run");
+        }
+        DecodedFrame hf;
+        while (h.decodeNext(hf)) {}
+        if (!std::isinf(h.audioSettledUpTo())) { return failed("audio hole: at the end of the input all the audio is settled"); }
+    }
+
+    // The read-ahead cap (1 byte here: full after a single packet), with audio that starts 1.5 s in. A caller
+    // waiting for the audio (an offline render) that is still taking packets off the queue only waits at
+    // the cap -- audio a file puts after a run of video (fragmented MOV) still arrives. Once it has taken
+    // none since the last stop, nothing will drain the queue: what was read counts as settled (it would
+    // wait forever). A caller that is not waiting (live) gives nothing up, even when it stops decoding.
+    const std::string lateAudio = "build/_late_audio.mkv";
+    if (!writeAudioHoleClip(lateAudio, -1.0, 1.5)) { return failed("read-ahead cap: writing the clip failed"); }
+    VideoDecoder q;
+    q.setMaxQueuedBytes(1);
+    DecodedFrame q0, q1;
+    if (!q.open(lateAudio, err) || !q.decodeNext(q0)) { return failed("read-ahead cap: open"); }
+    q.pumpAudio(1.0, true);                              // stops at the cap
+    const double atCap = q.audioSettledUpTo();
+    if (!q.decodeNext(q1)) { return failed("read-ahead cap: decode"); }
+    q.pumpAudio(1.0, true);                              // a packet was taken since: still draining
+    const double draining = q.audioSettledUpTo();
+    q.pumpAudio(1.0, true);                              // none since: stuck
+    const double stuck = q.audioSettledUpTo();
+    q.pumpAudio(1.0);                                    // not waiting: what was given up is forgotten...
+    q.pumpAudio(1.0);                                    // ...and stuck again, nothing is given up
+    const double live = q.audioSettledUpTo();
+    q.pumpAudio(1.0, true);                              // waiting again: its first stop -- not stuck yet
+    const double rewaiting = q.audioSettledUpTo();
+    q.pumpAudio(1.0, true);                              // stuck
+    const double restuck = q.audioSettledUpTo();
+    if (atCap >= 0.0 || draining >= 0.0 || !(stuck >= q1.t) || live >= 0.0 || rewaiting >= 0.0 || !(restuck >= q1.t)) {
+        std::fprintf(stderr, "read-ahead cap: settled up to %.3f at the cap, %.3f while draining, %.3f once stuck, "
+                     "%.3f live, %.3f waiting again, %.3f stuck again\n", atCap, draining, stuck, live, rewaiting, restuck);
+        return failed("read-ahead cap: the audio must settle through the cap once, and only once, a waiting caller is stuck");
+    }
+
+    // A seek resets the resampler: the audio after seek(1.0) is the same whatever played before it (at
+    // 44.1 kHz the resampler holds samples from one call to the next).
+    const std::string tone441 = "build/_tone441.mkv";
+    if (!writeToneClip(tone441, 44100)) { return failed("resampler: writing the clip failed"); }
+    VideoDecoder played, fresh;
+    if (!played.open(tone441, err) || !fresh.open(tone441, err)) { return failed("resampler: open"); }
+    DecodedFrame rf;
+    for (int i = 0; i < 50 && played.decodeNext(rf); ++i) takeRuns(played);
+    std::vector<float> afterPlayed, afterFresh;
+    for (VideoDecoder* d : {&played, &fresh}) {
+        if (!d->seek(1.0) || !d->decodeNext(rf)) { return failed("resampler: seek"); }
+        d->pumpAudio(1.5);
+        std::vector<float> a; double st = 0.0; bool c = false;
+        if (!d->takeAudio(a, st, c)) { return failed("resampler: no audio after the seek"); }
+        (d == &played ? afterPlayed : afterFresh) = a;
+    }
+    if (afterPlayed.size() < 4800 || afterPlayed != afterFresh) {
+        return failed("resampler: the audio after a seek must not depend on what played before it");
+    }
+
+    // Two MPEG-TS files end to end: stereo 64x48, then mono 80x64. The resampler is rebuilt for the new
+    // format (one built for two channels read a second plane that mono audio does not have: a crash),
+    // and convert() refuses the frames of the new size.
+    const std::string partA = "build/_fmt_a.ts", partB = "build/_fmt_b.ts", joined = "build/_fmt_change.ts";
+    for (int part = 0; part < 2; ++part) {
+        const int w = part ? 80 : 64, hgt = part ? 64 : 48, ch = part ? 1 : 2;
+        VideoEncoder enc;
+        if (!enc.open(part ? partB : partA, w, hgt, 25, 48000, ch, err)) { return failed(("format change: encode: " + err).c_str()); }
+        std::vector<unsigned char> img((std::size_t)w * hgt * 4, 128);
+        std::vector<float> tone((std::size_t)(48000 / 25) * ch, 0.25f);
+        for (int f = 0; f < 25; ++f) {
+            if (!enc.addVideoFrame(img.data(), f / 25.0) || !enc.addAudio(tone.data(), (int)tone.size())) {
+                return failed("format change: encode a frame");
+            }
+        }
+        if (!enc.close(err)) { return failed(("format change: close: " + err).c_str()); }
+    }
+    {
+        std::ofstream out(joined, std::ios::binary);
+        for (const std::string& part : {partA, partB}) { std::ifstream in(part, std::ios::binary); out << in.rdbuf(); }
+    }
+    VideoDecoder x;
+    if (!x.open(joined, err)) { return failed(("format change: open: " + err).c_str()); }
+    DecodedFrame xf;
+    int converted = 0, refused = 0;
+    std::size_t audio = 0;
+    std::vector<float> xa; double xs = 0.0; bool xc = false;
+    while (x.decodeNext(xf)) {
+        ++(x.convert(xf, px.data(), 64 * 4) ? converted : refused);
+        while (x.takeAudio(xa, xs, xc)) audio += xa.size();
+    }
+    while (x.takeAudio(xa, xs, xc)) audio += xa.size();
+    if (converted < 20 || refused < 20 || audio < (std::size_t)(1.6 * 48000)) {
+        std::fprintf(stderr, "format change: %d converted, %d refused, %.2f s of audio\n", converted, refused, audio / 48000.0);
+        return failed("format change: both halves must decode -- the second half's frames refused (another size), its audio resampled");
+    }
+    std::fprintf(stderr, "gl_smoke OK: untimed frames follow the one before; %sa late start seeks from its first frame; "
+                 "audio holes are kept; the read-ahead cap settles only when stuck; a seek resets the resampler; "
+                 "a format change mid-stream decodes\n", rawWritten ? "a raw stream decodes and seeks to its start; " : "");
+    return true;
+}
+
+// --- Scenario: VideoEncoder places keyframes exactly every keyframeInterval frames ---
+// Hard cuts every 10 frames would earn scene-cut keyframes; with an explicit interval there must be
+// none -- the long-keyframe test clips depend on it.
+static bool scenario_video_encoder_keyframe_interval() {
+    {
+        const std::string path = "build/_enc_keyint.mp4";
+        VideoEncoder enc; std::string err;
+        if (!enc.open(path, 64, 48, 25, 0, 0, err, 50)) { return failed(("keyint: open: " + err).c_str()); }
+        std::vector<unsigned char> px((std::size_t)64 * 48 * 4);
+        for (int f = 0; f < 120; ++f) {
+            std::fill(px.begin(), px.end(), (unsigned char)(((f / 10) & 1) ? 255 : 0));
+            if (!enc.addVideoFrame(px.data(), f / 25.0)) { return failed("keyint: add frame"); }
+        }
+        if (!enc.close(err)) { return failed(("keyint: close: " + err).c_str()); }
+        VideoDecoder dec;
+        if (!dec.open(path, err)) { return failed(("keyint: decode: " + err).c_str()); }
+        double k1 = 0.0, k2 = 0.0;
+        if (!dec.nextKeyframeAfter(0.1, k1) || std::fabs(k1 - 2.0) > 0.1 ||
+            !dec.nextKeyframeAfter(2.1, k2) || std::fabs(k2 - 4.0) > 0.1) {
+            std::fprintf(stderr, "keyint: keyframes after 0.1 s and 2.1 s at %.3f and %.3f\n", k1, k2);
+            return failed("keyint: expected keyframes 50 frames apart -- at 2 s and 4 s (the index may list them by "
+                          "decode time, a frame or two early) -- and none at the cuts between");
+        }
+
+        // Walking the index: nextKeyframeAfter(the key it gave last) moves strictly forward and ends. Every frame
+        // is a keyframe here, so every frame's time is asked about -- and 1.16 s, divided back into ticks, lands a
+        // hair below its tick (1/12800 s, MP4) or a whole tick below (a frame, AVI), which used to return that
+        // same keyframe again, forever.
+        for (const std::string every : {"build/_enc_keyint_every.mp4", "build/_enc_keyint_every.avi"}) {
+            VideoEncoder e1;
+            if (!e1.open(every, 64, 48, 25, 0, 0, err, 1)) { return failed(("keyint: open: " + err).c_str()); }
+            for (int f = 0; f < 100; ++f) {
+                std::fill(px.begin(), px.end(), (unsigned char)(f * 2));
+                if (!e1.addVideoFrame(px.data(), f / 25.0)) { return failed("keyint: add frame"); }
+            }
+            if (!e1.close(err)) { return failed(("keyint: close: " + err).c_str()); }
+            VideoDecoder w;
+            if (!w.open(every, err)) { return failed(("keyint: decode: " + err).c_str()); }
+            double k = -1.0, next = 0.0;
+            int walked = 0;
+            while (walked <= 100 && w.nextKeyframeAfter(k, next) && std::isfinite(next)) {
+                if (!(next > k)) {
+                    std::fprintf(stderr, "keyint: %s: nextKeyframeAfter(%.17g) gave %.17g\n", every.c_str(), k, next);
+                    return failed("keyint: the keyframe after t must come strictly after it");
+                }
+                k = next;
+                ++walked;
+            }
+            if (walked != 100) {
+                std::fprintf(stderr, "keyint: %s: walked %d keyframes of 100\n", every.c_str(), walked);
+                return failed("keyint: walking the index must visit every keyframe once");
+            }
+        }
+        std::fprintf(stderr, "gl_smoke OK: an explicit keyframe interval places keyframes exactly (%.2f s, %.2f s); "
+                     "walking the index visits every keyframe once\n", k1, k2);
+    }
+    return true;
+}
+
+// Seconds since t0.
+static double secondsSince(std::chrono::steady_clock::time_point t0) {
+    return std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+}
+
+// A clip whose every frame paints its own index as 9 horizontal black/white bands (the top band is
+// bit 8), 160x90 at 25 fps with a 440 Hz tone (unless `audio` is false), and keyframes exactly `gop`
+// frames apart. Reading the bands back says which frame is on screen -- and a wrong vertical flip reads
+// a different number.
+static const int kIdxW = 160, kIdxH = 90, kIdxFps = 25;
+static bool writeIndexedClip(const std::string& path, int frames, int gop, int w = kIdxW, int h = kIdxH,
+                             bool audio = true) {
+    VideoEncoder enc; std::string err;
+    if (!enc.open(path, w, h, kIdxFps, audio ? 48000 : 0, 1, err, gop)) {
+        std::fprintf(stderr, "writeIndexedClip: %s\n", err.c_str());
+        return false;
+    }
+    std::vector<unsigned char> px((std::size_t)w * h * 4);
+    std::vector<float> tone(48000 / kIdxFps);
+    for (int f = 0; f < frames; ++f) {
+        for (int y = 0; y < h; ++y) {                      // y = 0 is the BOTTOM row (GL order)
+            const int bandFromTop = (h - 1 - y) * 9 / h;
+            const unsigned char v = ((f >> (8 - bandFromTop)) & 1) ? 255 : 0;
+            for (int x = 0; x < w; ++x) {
+                std::size_t i = ((std::size_t)y * w + x) * 4;
+                px[i] = px[i + 1] = px[i + 2] = v; px[i + 3] = 255;
+            }
+        }
+        if (!enc.addVideoFrame(px.data(), (double)f / kIdxFps)) return false;
+        if (!audio) continue;
+        for (std::size_t i = 0; i < tone.size(); ++i)
+            tone[i] = 0.5f * (float)std::sin(6.283185307179586 * 440.0 *
+                                             (double)(f * tone.size() + i) / 48000.0);
+        if (!enc.addAudio(tone.data(), (int)tone.size())) return false;
+    }
+    return enc.close(err);
+}
+
+// --- Scenario: VideoStream -- open, the exact frame for a playhead, its audio, a failed open ---
+static bool scenario_video_stream_basics() {
+    {
+        VideoStream bad("tests/assets/does_not_exist.mp4");
+        const auto t0 = std::chrono::steady_clock::now();
+        while (bad.state() == VideoStream::State::Opening && secondsSince(t0) < 5.0)
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        if (bad.state() != VideoStream::State::Failed || bad.error().empty()) {
+            return failed("video stream: a missing file should end Failed with a reason");
+        }
+
+        VideoStream s("tests/assets/test.mp4");
+        while (s.state() == VideoStream::State::Opening && secondsSince(t0) < 10.0)
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        if (s.state() != VideoStream::State::Ready) { return failed("video stream: test.mp4 did not open"); }
+        const VideoStream::Info inf = s.info();
+        if (inf.width != 128 || inf.height != 96 || std::fabs(inf.frameDur - 0.1) > 1e-9 || !inf.hasAudio) {
+            return failed("video stream: wrong info for test.mp4");
+        }
+        VideoRequest r;
+        r.u = 0.73; r.rate = 1.0f; r.offline = true; r.loop = false; r.lapLo = 0.0; r.lapHi = inf.duration;
+        s.request(r);
+        if (!s.waitForFrame(0.73, 5.0)) { return failed("video stream: the frame for 0.73 s never became ready"); }
+        VideoStream::FrameView fv;
+        if (!s.frameAt(0.73, fv) || std::fabs(fv.t - 0.7) > 1e-6) {
+            return failed("video stream: the frame for 0.73 s must be the one at 0.7 s");
+        }
+        std::vector<float> a(4800);
+        s.readAudio(0.63, 0.73, a.data(), (int)a.size());
+        bool loud = false;
+        for (float v : a) if (v > 0.01f || v < -0.01f) { loud = true; break; }
+        if (!loud) { return failed("video stream: no audio for the slice before the playhead"); }
+
+        // Audio with a hole in its timestamps plays with the hole: silent across it, and what follows at
+        // its own time. Rendered offline from 0, reading each frame's audio the way the node does: the
+        // slice since the last frame, up to the playhead (as far as readiness says it is settled).
+        const std::string hole = "build/_stream_audio_hole.mkv";
+        if (!writeAudioHoleClip(hole)) { return failed("video stream: writing the audio-hole clip failed"); }
+        VideoStream h(hole);
+        while (h.state() == VideoStream::State::Opening && secondsSince(t0) < 20.0)
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        if (h.state() != VideoStream::State::Ready) { return failed("video stream: the audio-hole clip did not open"); }
+        std::vector<float> out, blk(1920);
+        for (int k = 1; k <= 50; ++k) {
+            VideoRequest hr;
+            hr.u = k / 25.0; hr.rate = 1.0f; hr.offline = true;
+            h.request(hr);
+            VideoStream::FrameView hv;
+            if (!h.waitForFrame(hr.u, 5.0) || !h.frameAt(hr.u, hv)) { return failed("video stream: the audio-hole clip stalled"); }
+            h.readAudio(hr.u - 0.04, hr.u, blk.data(), (int)blk.size());
+            out.insert(out.end(), blk.begin(), blk.end());
+        }
+        auto rms = [&](double t0s, double t1s) {
+            double e = 0.0;
+            const std::size_t i0 = (std::size_t)(t0s * 48000), i1 = (std::size_t)(t1s * 48000);
+            for (std::size_t i = i0; i < i1; ++i) e += (double)out[i] * out[i];
+            return std::sqrt(e / (double)(i1 - i0));
+        };
+        if (rms(1.1, 1.5) > 1e-3 || rms(1.7, 1.9) < 0.1) {
+            std::fprintf(stderr, "video stream: audio RMS %.4f inside the hole, %.4f after it\n", rms(1.1, 1.5), rms(1.7, 1.9));
+            return failed("video stream: the audio after a hole must play at its own time, with silence across the hole");
+        }
+
+        // An offline render must not wait forever for audio the read-ahead cannot reach: with it capped at a
+        // byte, 4 buffers and the audio starting 1.5 s in, the worker's frames all wait on audio nothing will
+        // read, so it gives that audio up (VideoDecoder::pumpAudio) -- and only then.
+        const std::string lateAudio = "build/_stream_late_audio.mkv";
+        if (!writeAudioHoleClip(lateAudio, -1.0, 1.5)) { return failed("video stream: writing the late-audio clip failed"); }
+        VideoStream l(lateAudio, (std::size_t)64 * 48 * 4 * 4, 1);
+        while (l.state() == VideoStream::State::Opening && secondsSince(t0) < 30.0)
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        if (l.state() != VideoStream::State::Ready) { return failed("video stream: the late-audio clip did not open"); }
+        for (int k = 0; k <= 50; ++k) {
+            VideoRequest lr;
+            lr.u = k / 25.0; lr.rate = 1.0f; lr.offline = true;
+            l.request(lr);
+            VideoStream::FrameView lv;
+            if (!l.waitForFrame(lr.u, 5.0) || !l.frameAt(lr.u, lv)) {
+                std::fprintf(stderr, "video stream: the late-audio clip stalled at u=%.2f\n", lr.u);
+                return failed("video stream: an offline render must not wait forever for audio the read-ahead cannot reach");
+            }
+        }
+        std::fprintf(stderr, "gl_smoke OK: VideoStream opens, reports its info, fails cleanly, and serves the exact frame + audio\n");
+    }
+    return true;
+}
+
+// --- Scenario: VideoStream reverse through awkward files ---
+// Offline reverse must stay exact, and live reverse must not spin, whatever the file does:
+//  (a) a first keyframe interval longer than a stretch's ring: offline, the ring evicts the stretch's
+//      lower frames, so the stretch covers only down to its oldest -- claiming the lap start stalled a
+//      loop-off render and, looping, served the previous lap's frames;
+//  (b) an FLV with B-frames: its first frame comes a frame in (times count from it), a seek just below
+//      a keyframe lands ON it (an empty stretch, planned again forever), and a seek into its last
+//      frames finds nothing (the loop seam raced through laps with the picture frozen);
+//  (c) paused in reverse, the picture settles on the playhead's frame and decoding stops.
+// A frame's time names it, so the checks read FrameView::t.
+static bool openStream(VideoStream& s) {
+    const auto t0 = std::chrono::steady_clock::now();
+    while (s.state() == VideoStream::State::Opening && secondsSince(t0) < 10.0)
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    return s.state() == VideoStream::State::Ready;
+}
+
+// The frame for u in a writeIndexedClip of `n` frames: the greatest frame time i/kIdxFps <= u.
+static double indexedFrameFor(double u, double duration, bool loop, int n) {
+    const double lap = loop ? duration * std::floor(u / duration) : 0.0;
+    return lap + std::min(std::floor((u - lap) * kIdxFps + 1e-6), n - 1.0) / kIdxFps;
+}
+
+// Drive `s` offline in reverse the way the node does, from u0 down to u1 at kIdxFps, checking every
+// frame is the one for the playhead.
+static bool reverseExact(VideoStream& s, double u0, double u1, bool loop, int n, const char* what) {
+    const double D = s.info().duration;
+    for (double u = u0; u >= u1; u -= 1.0 / kIdxFps) {
+        VideoRequest r;
+        r.u = u; r.rate = -1.0f; r.offline = true; r.loop = loop;
+        if (!loop) { r.lapLo = 0.0; r.lapHi = D; }
+        s.request(r);
+        VideoStream::FrameView fv;
+        const double want = indexedFrameFor(u, D, loop, n);
+        if (!s.waitForFrame(u, 5.0) || !s.frameAt(u, fv) || std::fabs(fv.t - want) > 1e-4) {
+            std::fprintf(stderr, "%s: at u=%.3f showed %.4f, expected %.4f\n", what, u, fv.t, want);
+            return false;
+        }
+    }
+    return true;
+}
+
+static bool scenario_video_stream_reverse_files() {
+    {
+        const std::string gop = "build/_rev_long_gop.mp4", flv = "build/_rev_bframes.flv", avi = "build/_rev_untimed_tail.avi";
+        if (!writeIndexedClip(gop, 60, 60) || !writeIndexedClip(avi, 26, 25)) {
+            return failed("reverse files: could not write the clips");
+        }
+        const bool haveFlv = writeIndexedClip(flv, 100, 25);   // FLV carries H.264, not VideoEncoder's MPEG-4 fallback
+        // (a) 8 buffers -- a ring of 4 -- against a first keyframe interval of 60 frames.
+        const std::size_t eight = (std::size_t)kIdxW * kIdxH * 4 * 8;
+        {
+            VideoStream s(gop, eight);
+            if (!openStream(s) || !reverseExact(s, 2.30, 0.0, false, 60, "long keyframe interval, loop off")) {
+                return failed("reverse files: offline reverse through a long first keyframe interval (loop off)");
+            }
+        }
+        {
+            VideoStream s(gop, eight);
+            if (!openStream(s) || !reverseExact(s, 2.30, -1.0, true, 60, "long keyframe interval, loop on")) {
+                return failed("reverse files: offline reverse through a long first keyframe interval (loop on)");
+            }
+        }
+        VideoStream::FrameView fv;
+        // Live reverse from u0 for `seconds` of wall time at -1x, the way the node drives it; the playhead
+        // ends in `u`. How many stretches it decoded tells whether it spun.
+        auto liveReverse = [&](VideoStream& s, double u0, double seconds, double& u) {
+            u = u0;
+            const auto t0 = std::chrono::steady_clock::now();
+            auto last = t0;
+            while (secondsSince(t0) < seconds) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(16));
+                const auto now = std::chrono::steady_clock::now();
+                u -= std::chrono::duration<double>(now - last).count();
+                last = now;
+                VideoRequest r;
+                r.u = u; r.rate = -1.0f; r.loop = true;
+                s.request(r);
+                s.frameAt(u, fv);
+            }
+            return (unsigned long long)s.reverseStretches();
+        };
+        unsigned long long live = 0;
+        if (!haveFlv) {
+            std::fprintf(stderr, "gl_smoke SKIP: reverse across an FLV's loop seam (no H.264 encoder)\n");
+        } else {
+            // (b) Offline across the FLV's loop seam...
+            {
+                VideoStream s(flv);
+                if (!openStream(s) || !reverseExact(s, 3.90, -1.0, true, 100, "FLV")) {
+                    return failed("reverse files: offline reverse across an FLV's loop seam");
+                }
+            }
+            // ...then live: across the seam in 2.5 s, a handful of stretches (a spinning one decodes thousands).
+            VideoStream s(flv);
+            if (!openStream(s)) { return failed("reverse files: the FLV did not open"); }
+            const double D = s.info().duration;
+            double u = 0.0;
+            live = liveReverse(s, 1.2, 2.5, u);
+            if (live > 40 || !(std::fabs(fv.t - u) < 0.75)) {
+                std::fprintf(stderr, "reverse files: live: %llu stretches; u=%.3f showing %.3f\n", live, u, fv.t);
+                return failed("reverse files: live reverse over an FLV must not spin, and must follow the playhead across the seam");
+            }
+            // (c) Paused: the picture settles on the playhead's frame, and decoding stops.
+            VideoRequest paused;
+            paused.u = u; paused.rate = 0.0f; paused.loop = true;
+            s.request(paused);
+            std::this_thread::sleep_for(std::chrono::milliseconds(300));
+            const std::uint64_t settled = s.reverseStretches();
+            for (int i = 0; i < 30; ++i) {
+                s.request(paused);
+                s.frameAt(u, fv);
+                std::this_thread::sleep_for(std::chrono::milliseconds(16));
+            }
+            if (std::fabs(fv.t - indexedFrameFor(u, D, true, 100)) > 1e-4 || s.reverseStretches() != settled) {
+                std::fprintf(stderr, "reverse files: paused at u=%.3f showing %.4f; %llu stretches after settling, %llu now\n",
+                             u, fv.t, (unsigned long long)settled, (unsigned long long)s.reverseStretches());
+                return failed("reverse files: paused in reverse, the picture must settle on the playhead's frame and decoding stop");
+            }
+        }
+        // (d) An offline render straight after live reverse: the live stretches kept every 15th frame of the
+        // long keyframe interval, so offline starts a fresh, whole run -- the first frame included.
+        {
+            VideoStream g(gop, eight);
+            if (!openStream(g)) { return failed("reverse files: the long clip did not open"); }
+            double gu = 2.30;
+            for (int i = 0; i < 20; ++i) {
+                gu -= 0.016;
+                VideoRequest gr;
+                gr.u = gu; gr.rate = -1.0f; gr.loop = true;
+                g.request(gr);
+                g.frameAt(gu, fv);
+                std::this_thread::sleep_for(std::chrono::milliseconds(16));
+            }
+            if (!reverseExact(g, gu - 1.0 / kIdxFps, gu - 1.0, true, 60, "offline after live reverse")) {
+                return failed("reverse files: an offline render straight after live reverse must be exact");
+            }
+        }
+        // (e) An AVI whose last keyframe is its last frame: a seek there yields only a frame with no timestamp
+        // and nothing before it, which cannot be placed and is skipped, so the seek backs off. Placed at the
+        // seek's target instead, every stretch would cover just that frame and be planned again forever.
+        unsigned long long tail = 0;
+        {
+            VideoStream a(avi);
+            if (!openStream(a)) { return failed("reverse files: the AVI did not open"); }
+            double au = 0.0;
+            tail = liveReverse(a, a.info().duration - 0.02, 1.5, au);
+            if (tail > 40) {
+                std::fprintf(stderr, "reverse files: live reverse from the AVI's last frame: %llu stretches in 1.5 s\n", tail);
+                return failed("reverse files: live reverse from an AVI's untimed last frame must not spin");
+            }
+        }
+        std::fprintf(stderr, "gl_smoke OK: reverse stays exact through a long first keyframe interval%s, and offline straight "
+                     "after live; live it does not spin (%llu stretches in 2.5 s; %llu from an AVI's untimed last frame); "
+                     "paused it settles\n", haveFlv ? " and across an FLV's seam" : "", live, tail);
+    }
+    return true;
+}
+
+// --- Scenario: VideoStream -- toggling loop ---
+// Loop is a live control, and the worker must follow it wherever the decoder happens to be:
+//  (a) loop off with the playhead a lap ahead of the decoder (a hitch, or a decoder slower than the
+//      playhead) pins the playhead's lap: the worker must move there -- it used to wait at the end of the
+//      decoder's lap for ever, and offline report the earlier lap's frames ready;
+//  (b) loop off and back on near the end of the lap: the next lap's frames, decoded ahead, stay -- they
+//      were recycled, and the worker went on filling from past them, leaving a hole (loop goes off only
+//      once the next lap's first frame is ready, so a slow machine cannot pass it without the wrap);
+//  (c) the same at the start of the lap in reverse: the frames below the lap start are recycled, so what
+//      reverse covered must shrink with them -- or it waits for a playhead that has nothing to show.
+static bool scenario_video_stream_loop_toggles() {
+    {
+        const std::string path = "build/_loop_toggles.mp4";      // 4 s, one keyframe
+        if (!writeIndexedClip(path, 100, 100)) { return failed("loop toggles: could not write the clip"); }
+        VideoStream::FrameView fv;
+        auto drive = [&fv](VideoStream& s, VideoRequest r, double seconds) {   // live, the playhead held
+            const auto t0 = std::chrono::steady_clock::now();
+            while (secondsSince(t0) < seconds) {
+                s.request(r);
+                s.frameAt(r.u, fv);
+                std::this_thread::sleep_for(std::chrono::milliseconds(16));
+            }
+        };
+        auto exactFrom = [&fv](VideoStream& s, VideoRequest r, int frames, double D, const char* what) {
+            r.offline = true;
+            for (int k = 0; k < frames; ++k, r.u += r.rate / kIdxFps) {
+                s.request(r);
+                const double want = indexedFrameFor(r.u, D, true, 100);
+                if (!s.waitForFrame(r.u, 5.0) || !s.frameAt(r.u, fv) || std::fabs(fv.t - want) > 1e-4) {
+                    std::fprintf(stderr, "%s: at u=%.3f showed %.4f, expected %.4f\n", what, r.u, fv.t, want);
+                    return false;
+                }
+            }
+            return true;
+        };
+        {   // (a)
+            VideoStream s(path);
+            if (!openStream(s)) { return failed("loop toggles: the clip did not open"); }
+            const double D = s.info().duration;
+            VideoRequest r;
+            r.u = 0.0; r.rate = 1.0f;
+            drive(s, r, 0.3);                                     // the pool fills; the decoder waits in lap 0
+            r.u = D + 0.30; r.loop = false; r.lapLo = D; r.lapHi = 2.0 * D;
+            if (!exactFrom(s, r, 10, D, "loop off, a lap behind")) {
+                return failed("loop toggles: loop off with the decoder a lap behind must move it into the playhead's lap");
+            }
+        }
+        {   // (b)
+            VideoStream s(path);
+            if (!openStream(s)) { return failed("loop toggles: the clip did not open"); }
+            const double D = s.info().duration;
+            VideoRequest r;
+            r.u = 3.0; r.rate = 1.0f;
+            const auto t0 = std::chrono::steady_clock::now();
+            while (!s.frameReadyFor(D + 0.02) && secondsSince(t0) < 5.0) drive(s, r, 0.05);   // through the wrap
+            if (!s.frameReadyFor(D + 0.02)) { return failed("loop toggles: the worker never decoded through the wrap"); }
+            const std::uint64_t seeks = s.seeks();
+            r.u = 3.5; r.loop = false; r.lapLo = 0.0; r.lapHi = D;
+            drive(s, r, 0.2);
+            r.u = D + 0.02; r.loop = true; r.lapLo = -std::numeric_limits<double>::infinity();
+            r.lapHi = std::numeric_limits<double>::infinity();
+            if (!exactFrom(s, r, 10, D, "loop off and on at the lap's end") || s.seeks() != seeks) {
+                return failed("loop toggles: loop off and back on must keep the next lap's frames, not decode them again");
+            }
+        }
+        {   // (c)
+            VideoStream s(path);
+            if (!openStream(s)) { return failed("loop toggles: the clip did not open"); }
+            const double D = s.info().duration;
+            VideoRequest r;
+            r.u = D + 0.6; r.rate = -1.0f;
+            drive(s, r, 0.3);                                     // covered down into lap 0
+            r.u = D; r.loop = false; r.lapLo = D; r.lapHi = 2.0 * D;
+            drive(s, r, 0.2);                                     // loop off: lap 0's frames are recycled
+            r.loop = true; r.lapLo = -std::numeric_limits<double>::infinity();
+            r.lapHi = std::numeric_limits<double>::infinity();
+            const auto t0 = std::chrono::steady_clock::now();
+            auto last = t0;
+            while (secondsSince(t0) < 0.8) {                      // on again, playing on down into lap 0
+                std::this_thread::sleep_for(std::chrono::milliseconds(16));
+                const auto now = std::chrono::steady_clock::now();
+                r.u -= std::chrono::duration<double>(now - last).count();
+                last = now;
+                s.request(r);
+                s.frameAt(r.u, fv);
+            }
+            if (!(r.u < D - 0.5) || std::fabs(fv.t - r.u) > 0.3) {
+                std::fprintf(stderr, "loop toggles: reverse at u=%.3f shows %.3f\n", r.u, fv.t);
+                return failed("loop toggles: after loop off and on at the lap's start, reverse must go on into the lap below");
+            }
+        }
+        std::fprintf(stderr, "gl_smoke OK: loop off follows a playhead a lap ahead; loop off and on keeps the next lap and "
+                     "reverse's lap below\n");
+    }
+    return true;
+}
+
+// --- Scenario: VideoStream -- offline readiness is exact; a stream can go at any time ---
+// Offline, readiness must mean the frame for the playhead is held: the frame decoded at or before it, with
+// none decoded between. The node asks for its guess at the next frame's playhead ahead of time, so nothing
+// recycled or planned for the guess may pass for the real playhead's frame:
+//  (a) an automated rate moves the real playhead off the guess: recycling for the guess released the real
+//      one's frame, and the older frame on screen still counted as ready (the frames the guess passed over
+//      now stay, so a rate change costs no seek -- unless the guess lies beyond every frame held: then they
+//      make room for it, and the real playhead's frame is decoded again); a jump ahead must release the
+//      frames it passed, or a full pool leaves the worker nowhere to decode the frame it jumped to; and a
+//      playhead that stops after a guess far ahead -- whose catch-up restarted the run past the frame on
+//      screen -- gets that frame decoded again (readiness waited for ever);
+//  (b) reverse, then forward (and back): the first frame after a flip repeated the last one before it;
+//  (c) a loop-off render that runs into the end of the clip (or, in reverse, its start) holds that frame;
+//  (d) reverse through an MPEG-TS whose keyframes are 3 s apart, where a seek lands a keyframe late and
+//      must back off further than 1 s;
+//  (e) a stream destroyed -- or retired -- while it opens goes quietly: stopping the probe part-way used to
+//      leave the pixel format unknown, and building the colour converter for it aborted the process.
+
+// Render offline the way the node does: advance the playhead, request it, wait for its frame and show it at
+// once, then request the guess at the next playhead -- at this frame's rate -- and wait, as the renderer's gate
+// does, until the guess is ready. Readiness must also hold while a request stands (the renderer does its own
+// work between its gate and the node's evaluate()), so look again a moment later -- and on a render's first
+// frame, which follows a jump or a flip that the worker answers by planning afresh, before showing it too.
+template <class RateAt>
+static bool renderExact(VideoStream& s, double u0, int frames, bool loop, int n, RateAt rateAt, const char* what) {
+    const double D = s.info().duration, dt = 1.0 / kIdxFps;
+    VideoPlayhead ph;
+    ph.u = u0;
+    for (int k = 0; k < frames; ++k) {
+        const double rate = rateAt(k);
+        if (k > 0) ph = videoAdvance(ph, true, rate, loop, dt, D);
+        VideoRequest r;
+        r.u = ph.u; r.rate = (float)rate; r.offline = true; r.loop = loop;
+        if (!loop) { r.lapLo = ph.lapLo; r.lapHi = ph.lapLo + D; }
+        s.request(r);
+        VideoStream::FrameView fv;
+        const double want = indexedFrameFor(ph.u, D, loop, n);
+        bool ok = s.waitForFrame(ph.u, 5.0);
+        if (k == 0) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            ok = ok && s.frameReadyFor(ph.u);
+        }
+        ok = ok && s.frameAt(ph.u, fv) && std::fabs(fv.t - want) <= 1e-4;
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        const bool still = s.frameReadyFor(ph.u);
+        ok = ok && still && s.frameAt(ph.u, fv) && std::fabs(fv.t - want) <= 1e-4;
+        if (!ok) {
+            std::fprintf(stderr, "%s: frame %d, u=%.4f at %+.1fx: showed %.4f (ready a moment later: %d), expected %.4f\n",
+                         what, k, ph.u, rate, fv.t, (int)still, want);
+            return false;
+        }
+        r.u = videoAdvance(ph, true, rate, loop, dt, D).u;
+        s.request(r);
+        if (!s.waitForFrame(r.u, 5.0)) {
+            std::fprintf(stderr, "%s: frame %d: the guess u=%.4f never became ready\n", what, k, r.u);
+            return false;
+        }
+    }
+    return true;
+}
+
+static bool scenario_video_stream_exactness() {
+    {
+        const std::string clip = "build/_exact_g25.mp4", quiet = "build/_exact_g25_quiet.mp4", ts = "build/_exact_keys3s.ts";
+        if (!writeIndexedClip(clip, 150, 25) || !writeIndexedClip(quiet, 150, 25, kIdxW, kIdxH, false) ||
+            !writeIndexedClip(ts, 150, 75)) {
+            return failed("exactness: could not write the clips");
+        }
+        auto twoOne = [](int k) { return k % 2 ? 1.0 : 2.0; };
+        auto flipAt = [](double first) { return [first](int k) { return k < 6 ? first : -first; }; };
+        const std::size_t four = (std::size_t)kIdxW * kIdxH * 4 * 4;
+        for (const std::string& path : {clip, quiet}) {
+            for (const std::size_t pool : {four, kVideoPoolBytes}) {   // a pool always full, and one never full
+                VideoStream s(path, pool);
+                if (!openStream(s)) { return failed("exactness: a clip did not open"); }
+                const double D = s.info().duration;
+                // (a)
+                if (!renderExact(s, 0.0, 40, true, 150, twoOne, "alternating 2x and 1x")) {
+                    return failed("exactness: an offline render whose rate changes between frames must show the frame for each playhead");
+                }
+                if (s.seeks() != 0) {
+                    std::fprintf(stderr, "exactness: %llu seeks\n", (unsigned long long)s.seeks());
+                    return failed("exactness: a rate change must not cost a seek");
+                }
+                if (!renderExact(s, 4.0, 40, true, 150, [&](int k) { return -twoOne(k); }, "alternating -2x and -1x")) {
+                    return failed("exactness: an offline render whose rate changes between frames must show the frame for each playhead");
+                }
+                if (!renderExact(s, 0.2, 5, true, 150, [](int) { return 1.0; }, "before a jump") ||
+                    !s.waitForFrame(0.48, 5.0) ||                 // the four-frame pool is full: 0.36 to 0.48
+                    !renderExact(s, 3.5, 5, true, 150, [](int) { return 1.0; }, "after a jump")) {
+                    return failed("exactness: an offline render must go on exactly after a jump ahead");
+                }
+                if (!renderExact(s, 1.0, 20, true, 150, [](int k) { return k % 2 ? 1.0 : 4.0; }, "alternating 4x and 1x") ||
+                    !renderExact(s, 5.0, 20, true, 150, [](int k) { return k % 2 ? -1.0 : -4.0; }, "alternating -4x and -1x")) {
+                    return failed("exactness: a guess beyond the frames held must not cost the real playhead its frame");
+                }
+                if (!renderExact(s, 1.0, 6, true, 150, [](int k) { return k < 3 ? 8.0 : 0.0; }, "8x, then paused")) {
+                    return failed("exactness: a render that stops after a guess far ahead must go on");
+                }
+                // (b)
+                if (!renderExact(s, 2.0, 12, true, 150, flipAt(-1.0), "reverse, then forward") ||
+                    !renderExact(s, 3.0, 12, true, 150, flipAt(1.0), "forward, then reverse")) {
+                    return failed("exactness: the first frame after a direction flip must be the one for its playhead");
+                }
+                // (c)
+                if (!renderExact(s, D - 0.4, 20, false, 150, [](int) { return 1.0; }, "loop off into the end") ||
+                    !renderExact(s, 0.4, 20, false, 150, [](int) { return -1.0; }, "loop off into the start")) {
+                    return failed("exactness: a loop-off render must hold the clip's last (or, in reverse, first) frame");
+                }
+            }
+        }
+        {   // (d)
+            VideoStream s(ts);
+            if (!openStream(s) || !reverseExact(s, 5.9, 0.0, false, 150, "MPEG-TS")) {
+                return failed("exactness: offline reverse through an MPEG-TS must be exact");
+            }
+        }
+        // (e) A crash here takes gl_smoke down with it.
+        for (int us = 0; us <= 3000; us += 100) {
+            { VideoStream s("tests/assets/test.mp4"); std::this_thread::sleep_for(std::chrono::microseconds(us)); }
+            auto r = std::make_unique<VideoStream>("tests/assets/test.mp4");
+            std::this_thread::sleep_for(std::chrono::microseconds(us));
+            VideoStream::retire(std::move(r));
+        }
+        std::fprintf(stderr, "gl_smoke OK: offline readiness is exact through rate changes and direction flips, into a "
+                     "loop-off end, and in reverse through an MPEG-TS; a stream destroyed or retired while it opens goes quietly\n");
+    }
+    return true;
+}
+
+// Evaluate the way the OfflineRenderer does: wait while any node reports loading() (the Video
+// Player decodes on a worker thread), then run one frame. False on timeout.
+static bool evaluateGated(Graph& g, float dt, double timeoutSeconds = 10.0) {
+    const auto t0 = std::chrono::steady_clock::now();
+    for (const auto& n : g.nodes())
+        while (n->loading()) {
+            if (std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count() > timeoutSeconds)
+                return false;
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        }
+    g.evaluate(dt);
+    return true;
+}
+
+// The index painted by writeIndexedClip, read from bottom-up RGBA pixels (a texture or a decoded
+// VideoFrame).
+static int readFrameIndex(const unsigned char* px, int w, int h) {
+    int idx = 0;
+    for (int band = 0; band < 9; ++band) {
+        const int fromTop = (2 * band + 1) * h / 18;       // the band's centre row, from the top
+        const int y = h - 1 - fromTop;
+        idx = idx * 2 + (px[((std::size_t)y * w + w / 2) * 4] > 127 ? 1 : 0);
+    }
+    return idx;
+}
+static int readFrameIndex(TexRef t) {
+    std::vector<unsigned char> px((std::size_t)t.w * t.h * 4);
+    glBindTexture(GL_TEXTURE_2D, t.id);
+    glGetTexImage(GL_TEXTURE_2D, 0, GL_RGBA, GL_UNSIGNED_BYTE, px.data());
+    return readFrameIndex(px.data(), t.w, t.h);
+}
+
 // --- Scenario 10: Video Player decodes a file to texture + audio ---
 // Decodes tests/assets/test.mp4 (a 128x96 colour pattern with a 330 Hz tone),
 // first through the bare VideoDecoder, then through the VideoPlayerNode wired
@@ -853,11 +1883,13 @@ static bool scenario_video_player_decode() {
         auto* outNode = dynamic_cast<OutputNode*>(g.findNode(oId));
         auto* vidNode = dynamic_cast<VideoPlayerNode*>(g.findNode(vId));
 
-        // Traverse most of the clip so the sliding window has to extend forward
-        // across several keyframes, accumulating "did we ever see picture/audio".
+        // Decoding is asynchronous, so drive it like an offline render: exact frames, gated on
+        // loading(). Traverse most of the clip across several keyframes, accumulating "did we ever
+        // see picture/audio".
+        g.setOffline(true);
         bool sawColour = false, sawNodeAudio = false;
         for (int f = 0; f < 12; ++f) {
-            g.evaluate(1.0f / 10.0f);   // ~10 fps clip, 12 frames ~= 1.2s
+            if (!evaluateGated(g, 1.0f / 10.0f)) { return failed("video: loading() never cleared"); }   // ~10 fps clip, 12 frames ~= 1.2s
             AudioRef na = vidNode->audioOut();
             for (std::size_t i = 0; i < na.count; ++i)
                 if (na.samples[i] > 0.01f || na.samples[i] < -0.01f) { sawNodeAudio = true; break; }
@@ -876,15 +1908,347 @@ static bool scenario_video_player_decode() {
         double fwd = vidNode->playhead();
         if (!(fwd > 0.5)) { return failed("playhead did not advance through the clip on forward play"); }
 
-        // (c) reverse: a negative rate walks the playhead backwards, forcing the
-        // window to re-seek to an earlier keyframe and rebuild.
+        // (c) reverse: a negative rate walks the playhead backwards (the worker decodes reverse stretches).
         vidNode->inputDefault(1) = -1.0f;   // rate
         double before = vidNode->playhead();
-        for (int f = 0; f < 5; ++f) g.evaluate(1.0f / 10.0f);
+        for (int f = 0; f < 5; ++f)
+            if (!evaluateGated(g, 1.0f / 10.0f)) { return failed("video reverse: loading() never cleared"); }
         double after = vidNode->playhead();
         if (!(after < before)) { return failed("playhead did not move backwards on reverse play"); }
         std::fprintf(stderr, "gl_smoke OK: VideoPlayer rendered + audio, advanced to %.2fs, reversed %.2f->%.2f\n",
                      fwd, before, after);
+    }
+    {
+        // (d) live: the picture arrives from the worker with no evaluate() waiting for it, and the playhead
+        // holds at the start until the first frame is up (it would otherwise skip the first frames). Then a
+        // switch to another file (another size) keeps the last picture up until the new file's first frame
+        // replaces it, instead of flashing black while that file opens.
+        Graph g;
+        auto vid = std::make_unique<VideoPlayerNode>();
+        vid->inputDefault(0) = std::string("tests/assets/test.mp4");
+        auto out = std::make_unique<OutputNode>();
+        vid->initGL(); out->initGL();
+        int vId = g.addNode(std::move(vid));
+        int oId = g.addNode(std::move(out));
+        if (!g.connect(vId, 0, oId, 0)) { return failed("live video: connect"); }
+        auto* outNode = dynamic_cast<OutputNode*>(g.findNode(oId));
+        auto* vp = dynamic_cast<VideoPlayerNode*>(g.findNode(vId));
+        const auto t0 = std::chrono::steady_clock::now();
+        bool sawColour = false;
+        double worstMs = 0.0;
+        while (!sawColour && secondsSince(t0) < 5.0) {
+            const auto f0 = std::chrono::steady_clock::now();
+            g.evaluate(1.0f / 60.0f);
+            worstMs = std::max(worstMs, secondsSince(f0) * 1000.0);
+            if (!vp->hasFrame() && vp->playhead() != 0.0) { return failed("live video: the playhead ran before the first frame was up"); }
+            TexRef t = outNode->current();
+            if (t.id) { int r, gg, b, a; readCentre(t, r, gg, b, a); sawColour = r > 30 || gg > 30 || b > 30; }
+            std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        }
+        if (!sawColour) { return failed("live video: no picture within 5 s"); }
+        if (worstMs > 50.0) { return failed("live video: an evaluate() waited for the worker"); }
+        const std::string next = "build/_video_switch.mp4";         // 160x90; test.mp4 is 128x96
+        if (!writeIndexedClip(next, 25, 25)) { return failed("live video: write the second clip"); }
+        vp->inputDefault(0) = next;
+        const auto s0 = std::chrono::steady_clock::now();
+        do {
+            g.evaluate(1.0f / 60.0f);
+            if (!vp->hasFrame() && outNode->current().id == 0) { return failed("live video: the output went black while the next file opened"); }
+            std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        } while (!vp->hasFrame() && secondsSince(s0) < 5.0);
+        const TexRef shown = outNode->current();
+        if (!vp->hasFrame() || shown.w != kIdxW || shown.h != kIdxH || readFrameIndex(shown) != 0) {
+            return failed("live video: the next file's first frame did not replace the last picture");
+        }
+        std::fprintf(stderr, "gl_smoke OK: live VideoPlayer showed a picture after %.0f ms\n", secondsSince(t0) * 1000.0);
+    }
+    return true;
+}
+
+// --- Scenario: a hitch between keyframes no longer locks the Video Player up ---
+// The bug: decoding ran on the UI thread, a slow frame pushed the playhead out of the cached window,
+// and the rebuild -- seek back to the keyframe, decode up to 48 frames -- made the next frame slower
+// still. With keyframes more than 48 frames apart the rebuilt window even ended BEFORE the playhead,
+// so every frame rebuilt forever. Now a 3 s jump into the middle of a 250-frame keyframe interval
+// must neither block evaluate() -- it returns without the new frame, which the worker has yet to
+// decode (at 160x90 decoding is so fast that a time bound alone could not tell) -- nor stop the
+// picture catching up. A 1-pixel scissor box is left on throughout: the upload must ignore it.
+static bool scenario_video_player_hitch_recovery() {
+    {
+        const std::string clip = "build/_video_longgop.mp4";
+        if (!writeIndexedClip(clip, 300, 250)) { return failed("video hitch: write clip"); }
+        Graph g;
+        auto vid = std::make_unique<VideoPlayerNode>();
+        vid->inputDefault(0) = clip;
+        vid->inputDefault(3) = false;                                // loop off
+        auto out = std::make_unique<OutputNode>();
+        vid->initGL(); out->initGL();
+        int vId = g.addNode(std::move(vid));
+        int oId = g.addNode(std::move(out));
+        if (!g.connect(vId, 0, oId, 0)) { return failed("video hitch: connect"); }
+        auto* vp = dynamic_cast<VideoPlayerNode*>(g.findNode(vId));
+        auto* outNode = dynamic_cast<OutputNode*>(g.findNode(oId));
+        glEnable(GL_SCISSOR_TEST);
+        glScissor(0, 0, 1, 1);
+
+        auto t0 = std::chrono::steady_clock::now();
+        while (!vp->hasFrame() && secondsSince(t0) < 5.0) {   // live: open + first frame
+            g.evaluate(0.0f);
+            std::this_thread::sleep_for(std::chrono::milliseconds(2));
+        }
+        if (!vp->hasFrame()) { return failed("video hitch: no first frame within 5 s"); }
+
+        t0 = std::chrono::steady_clock::now();
+        g.evaluate(3.0f);                                            // the hitch: 75 frames past keyframe 0
+        const double hitchMs = secondsSince(t0) * 1000.0;
+        if (hitchMs > 50.0) {
+            std::fprintf(stderr, "video hitch: evaluate() took %.0f ms\n", hitchMs);
+            return failed("video hitch: evaluate() blocked after the hitch -- decoding is on the UI thread");
+        }
+        if (!(vp->shownFrameTime() < vp->playhead() - 1.0 / kIdxFps)) {
+            return failed("video hitch: evaluate() returned with the caught-up frame -- it waited for the worker");
+        }
+        double worstMs = 0.0;
+        bool caughtUp = false;
+        t0 = std::chrono::steady_clock::now();
+        while (!caughtUp && secondsSince(t0) < 1.0) {
+            const auto f0 = std::chrono::steady_clock::now();
+            g.evaluate(1.0f / 60.0f);
+            worstMs = std::max(worstMs, secondsSince(f0) * 1000.0);
+            caughtUp = std::fabs(vp->playhead() - vp->shownFrameTime()) <= 1.0 / kIdxFps + 1e-6;
+            std::this_thread::sleep_for(std::chrono::milliseconds(16));
+        }
+        if (!caughtUp) { return failed("video hitch: the picture did not catch up with the playhead within 1 s"); }
+        if (worstMs > 50.0) { return failed("video hitch: an evaluate() blocked while catching up"); }
+        const int expect = (int)std::lround(vp->shownFrameTime() * kIdxFps);
+        const int got = readFrameIndex(outNode->current());
+        if (got != expect) {
+            std::fprintf(stderr, "video hitch: texture shows frame %d, expected %d\n", got, expect);
+            return failed("video hitch: the texture does not hold the frame the node reports");
+        }
+        glDisable(GL_SCISSOR_TEST);
+        std::fprintf(stderr, "gl_smoke OK: a 3 s hitch mid-keyframe-interval: evaluate %.1f ms, caught up to frame %d in %.0f ms (worst frame %.1f ms)\n",
+                     hitchMs, got, secondsSince(t0) * 1000.0, worstMs);
+    }
+    return true;
+}
+
+// Render `frames` frames of a VideoPlayer -> Output (+ Audio Out) graph through the real
+// OfflineRenderer at the indexed clip's size and rate, one frame per step(), then decode the file: the
+// band index of every frame, and the RMS of every frame's audio block. `rateAt(e)`, if given, sets `vp`'s
+// rate before the e-th frame is evaluated (e from 0, the one pre-roll frame first): an automated rate.
+// `worstStepMs`, if given, gets the longest step() -- the longest the UI waited.
+static bool renderVideoPlayer(Graph& g, int frames, const std::string& outPath,
+                              std::vector<int>& idx, std::vector<double>& rms, VideoPlayerNode* vp = nullptr,
+                              float (*rateAt)(long long) = nullptr, double* worstStepMs = nullptr) {
+    g.transport().bpm = 120.0;                                       // 2 s per bar
+    RenderSettings s;
+    s.startBar = 0.0; s.endBar = frames / (double)kIdxFps / 2.0; s.prerollBars = 0.0;
+    s.fps = kIdxFps; s.width = kIdxW; s.height = kIdxH; s.outPath = outPath;
+    std::remove(s.outPath.c_str());
+    OfflineRenderer r; std::string err;
+    if (!r.start(g, s, err)) { std::fprintf(stderr, "render: %s\n", err.c_str()); return false; }
+    long long evaluated = 0;
+    for (int guard = 0;; ++guard) {
+        if (rateAt && vp) vp->inputDefault(1) = rateAt(evaluated);
+        const long long before = r.progress().prerollDone + r.progress().framesDone;
+        const auto s0 = std::chrono::steady_clock::now();
+        const bool more = r.step(0.0);                               // at most one frame
+        if (worstStepMs) *worstStepMs = std::max(*worstStepMs, secondsSince(s0) * 1000.0);
+        evaluated += r.progress().prerollDone + r.progress().framesDone - before;
+        if (!more) break;
+        if (r.progress().waitingForLoad) std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        if (guard > 1000000) return false;
+    }
+    if (r.progress().phase != OfflineRenderer::Phase::Done) {
+        std::fprintf(stderr, "render: %s\n", r.progress().status.c_str());
+        return false;
+    }
+    VideoDecoder dec; std::string derr;
+    if (!dec.open(s.outPath, derr)) return false;
+    VideoFrame vf; std::vector<float> au; double aS = 0; bool aV = false;
+    idx.clear();
+    std::vector<float> all;
+    while (dec.decodeFrame(vf, au, aS, aV)) idx.push_back(readFrameIndex(vf.rgba, vf.width, vf.height));
+    all.swap(au);
+    rms.clear();
+    const std::size_t block = 48000 / kIdxFps;
+    for (std::size_t b = 0; b + block <= all.size(); b += block) {
+        double e = 0.0;
+        for (std::size_t i = b; i < b + block; ++i) e += (double)all[i] * all[i];
+        rms.push_back(std::sqrt(e / block));
+    }
+    return true;
+}
+
+// A graph with one Video Player on the indexed clip feeding an Output and an Audio Out.
+static VideoPlayerNode* buildVideoRenderGraph(Graph& g, const std::string& clip, bool loop, float rate) {
+    auto vid = std::make_unique<VideoPlayerNode>();
+    vid->inputDefault(0) = clip;
+    vid->inputDefault(1) = rate;
+    vid->inputDefault(3) = loop;
+    auto out = std::make_unique<OutputNode>();
+    auto ao  = std::make_unique<AudioOutputNode>();
+    vid->initGL(); out->initGL();
+    int vId = g.addNode(std::move(vid));
+    int oId = g.addNode(std::move(out));
+    int aId = g.addNode(std::move(ao));
+    if (!g.connect(vId, 0, oId, 0) || !g.connect(vId, 1, aId, 0) || !g.connect(vId, 1, aId, 1)) return nullptr;
+    return dynamic_cast<VideoPlayerNode*>(g.findNode(vId));
+}
+
+// Place the (live) playhead at `seconds`: open the file, then one evaluate() with that dt.
+static bool parkPlayhead(Graph& g, VideoPlayerNode* vp, float seconds) {
+    const auto t0 = std::chrono::steady_clock::now();
+    while (!vp->hasFrame() && secondsSince(t0) < 5.0) {
+        g.evaluate(0.0f);
+        std::this_thread::sleep_for(std::chrono::milliseconds(2));
+    }
+    if (!vp->hasFrame()) return false;
+    g.evaluate(seconds);
+    return true;
+}
+
+// --- Scenario: offline renders of the Video Player are frame-exact, forward and reverse ---
+// Parked mid-way between keyframes 250 frames apart, a render forward must show every frame in
+// order, and a render in reverse every frame backwards -- through the real OfflineRenderer, so
+// loading() and the renderer's gate are part of what is tested. So must a render whose rate is
+// automated (+1, +2, then -1): each change leaves the node's guess at the next frame wrong, and
+// evaluate() waits for the exact frame itself. And a render's first frame -- a pre-roll frame, never
+// captured -- is not waited for inside evaluate(): here it needs a reverse stretch through 87 frames
+// of 1080p (seconds at 4K), so a render could not even start without freezing the UI.
+static bool scenario_video_player_offline_exact() {
+    const std::string clip = "build/_video_longgop.mp4";            // written by the hitch scenario
+    for (float rate : {1.0f, -1.0f}) {
+        Graph g;
+        VideoPlayerNode* vp = buildVideoRenderGraph(g, clip, false, 1.0f);
+        if (!vp) { return failed("video offline: build graph"); }
+        if (!parkPlayhead(g, vp, rate > 0 ? 5.0f : 7.0f)) { return failed("video offline: open"); }
+        vp->inputDefault(1) = rate;                                  // park playing forward, then set the rate
+        const int start = (int)std::lround(vp->playhead() * kIdxFps);   // 125 or 175
+        std::vector<int> idx; std::vector<double> rms;
+        if (!renderVideoPlayer(g, 20, "build/_video_offline_exact.mp4", idx, rms)) { return failed("video offline: render"); }
+        if (idx.size() != 20) { return failed("video offline: expected 20 frames"); }
+        // One burned pre-roll frame, then frame k shows start + (k + 2) * direction.
+        for (int k = 0; k < 20; ++k) {
+            const int expect = start + (k + 2) * (rate > 0 ? 1 : -1);
+            if (idx[(std::size_t)k] != expect) {
+                std::fprintf(stderr, "video offline (rate %.0f): frame %d shows %d, expected %d\n", rate, k, idx[(std::size_t)k], expect);
+                return failed("video offline: a rendered frame is not the exact frame for the playhead");
+            }
+        }
+        std::fprintf(stderr, "gl_smoke OK: offline render at rate %+.0f from frame %d is frame-exact (%d..%d)\n",
+                     rate, start, idx.front(), idx.back());
+    }
+    {
+        Graph g;
+        VideoPlayerNode* vp = buildVideoRenderGraph(g, clip, false, 1.0f);
+        if (!vp || !parkPlayhead(g, vp, 5.0f)) { return failed("video offline: open"); }
+        auto rateAt = [](long long e) { return e < 10 ? 1.0f : (e < 20 ? 2.0f : -1.0f); };
+        double u = std::round(vp->playhead() * kIdxFps);             // in frames: 125
+        std::vector<int> idx; std::vector<double> rms;
+        if (!renderVideoPlayer(g, 30, "build/_video_offline_rates.mp4", idx, rms, vp, rateAt)) {
+            return failed("video offline: render with an automated rate");
+        }
+        if (idx.size() != 30) { return failed("video offline: expected 30 frames"); }
+        for (long long e = 0; e <= 30; ++e) {                        // evaluate e moves u; frame e - 1 shows it
+            u += rateAt(e);
+            if (e >= 1 && idx[(std::size_t)(e - 1)] != (int)u) {
+                std::fprintf(stderr, "video offline (automated rate): frame %lld shows %d, expected %d\n", e - 1, idx[(std::size_t)(e - 1)], (int)u);
+                return failed("video offline: an automated rate renders a wrong frame");
+            }
+        }
+    }
+    {
+        const std::string big = "build/_video_1080.mp4";              // 1080p, one keyframe; reused by shutdown
+        if (!writeIndexedClip(big, 100, 100, 1920, 1080)) { return failed("video offline: write the 1080p clip"); }
+        Graph g;
+        VideoPlayerNode* vp = buildVideoRenderGraph(g, big, false, 1.0f);
+        if (!vp || !parkPlayhead(g, vp, 3.5f)) { return failed("video offline: open the 1080p clip"); }
+        vp->inputDefault(1) = -1.0f;
+        const int start = (int)std::floor(vp->playhead() * kIdxFps + 1e-6);   // 3.5 s: frame 87
+        std::vector<int> idx; std::vector<double> rms;
+        double worstMs = 0.0;
+        if (!renderVideoPlayer(g, 10, "build/_video_offline_first.mp4", idx, rms, nullptr, nullptr, &worstMs) ||
+            idx.size() != 10) {
+            return failed("video offline: render 10 frames of the 1080p clip in reverse");
+        }
+        for (int k = 0; k < 10; ++k)
+            if (idx[(std::size_t)k] != start - (k + 2)) {
+                std::fprintf(stderr, "video offline (1080p): frame %d shows %d, expected %d\n", k, idx[(std::size_t)k], start - (k + 2));
+                return failed("video offline: the 1080p reverse render is not frame-exact");
+            }
+        if (worstMs > 100.0) {
+            std::fprintf(stderr, "video offline: longest step() %.0f ms\n", worstMs);
+            return failed("video offline: the render's first frame was waited for inside evaluate()");
+        }
+        std::fprintf(stderr, "gl_smoke OK: an automated rate (+1, +2, -1) renders every frame exactly; a render's "
+                     "first frame is not waited for (longest step %.0f ms)\n", worstMs);
+    }
+    return true;
+}
+
+// --- Scenario: a loop is seamless -- no stale frame and no silent audio block at the wrap ---
+static bool scenario_video_player_loop_seam() {
+    {
+        const std::string clip = "build/_video_longgop.mp4";
+        Graph g;
+        VideoPlayerNode* vp = buildVideoRenderGraph(g, clip, true, 1.0f);
+        if (!vp) { return failed("video loop: build graph"); }
+        if (!parkPlayhead(g, vp, 11.6f)) { return failed("video loop: open"); }   // 10 frames before the end
+        std::vector<int> idx; std::vector<double> rms;
+        if (!renderVideoPlayer(g, 20, "build/_video_loop_seam.mp4", idx, rms)) { return failed("video loop: render"); }
+        for (int k = 0; k < (int)idx.size(); ++k) {
+            const int expect = (290 + k + 2) % 300;
+            if (idx[(std::size_t)k] != expect) {
+                std::fprintf(stderr, "video loop: frame %d shows %d, expected %d\n", k, idx[(std::size_t)k], expect);
+                return failed("video loop: the frames across the loop are not consecutive");
+            }
+        }
+        for (std::size_t b = 1; b + 1 < rms.size(); ++b)        // skip the encoder's first/last blocks
+            if (rms[b] < 0.05) {
+                std::fprintf(stderr, "video loop: audio block %zu RMS %.3f\n", b, rms[b]);
+                return failed("video loop: a silent audio block -- the loop is not seamless");
+            }
+        std::fprintf(stderr, "gl_smoke OK: looping across the end is seamless (frames %d..%d, no silent audio block)\n",
+                     idx.front(), idx.back());
+    }
+    return true;
+}
+
+// --- Scenario: changing the file or deleting the node mid-catch-up returns at once ---
+// The old stream goes to VideoStream::retire(), which tears it down on another thread. Torn down in place
+// -- here with a full 1080p pool, 530 MB -- it takes about 100 ms (0.1-0.5 s at 4K), and the UI would
+// wait it out.
+static bool scenario_video_player_shutdown() {
+    {
+        const std::string clip = "build/_video_1080.mp4";           // written by the offline scenario
+        for (int mode = 0; mode < 2; ++mode) {
+            Graph g;
+            auto vid = std::make_unique<VideoPlayerNode>();
+            vid->inputDefault(0) = clip;
+            vid->initGL();
+            int vId = g.addNode(std::move(vid));
+            auto* vp = dynamic_cast<VideoPlayerNode*>(g.findNode(vId));
+            if (!parkPlayhead(g, vp, 0.0f)) { return failed("video shutdown: open"); }
+            const auto p0 = std::chrono::steady_clock::now();
+            while (secondsSince(p0) < 0.6) {                        // play: the worker fills the pool
+                g.evaluate(1.0f / 60.0f);
+                std::this_thread::sleep_for(std::chrono::milliseconds(16));
+            }
+            g.evaluate(3.0f);                                        // a jump past the pool: a catch-up
+            std::this_thread::sleep_for(std::chrono::milliseconds(5));
+            const auto t0 = std::chrono::steady_clock::now();
+            if (mode == 0) { vp->inputDefault(0) = std::string("tests/assets/test.mp4"); g.evaluate(0.0f); }
+            else           { g.removeNode(vId); }
+            const double ms = secondsSince(t0) * 1000.0;
+            if (ms > 25.0) {
+                std::fprintf(stderr, "video shutdown: %s took %.0f ms\n", mode == 0 ? "changing the file" : "deleting the node", ms);
+                return failed("video shutdown: the caller waited for the old stream's teardown");
+            }
+            std::fprintf(stderr, "gl_smoke OK: %s mid-catch-up returned in %.1f ms\n",
+                         mode == 0 ? "changing the file" : "deleting the node", ms);
+        }
     }
     return true;
 }
@@ -3330,7 +4694,6 @@ static bool (*const kScenarios[])() = {
     scenario_load_mesh_data_diagnostics,
     scenario_meshopt_compressed_gltf,
     scenario_draco_compressed_gltf,
-    scenario_video_player_decode,
     scenario_text_geometry_renderers,
     scenario_recorder_video_encoder,
     scenario_audio_file_player_stereo,
@@ -3360,6 +4723,18 @@ static bool (*const kScenarios[])() = {
     scenario_offline_destination_unwritable,
     scenario_offline_loader_gate_timeout_cancel,
     scenario_offline_late_starting_loader_gate,
+    scenario_video_decoder_split_decode,
+    scenario_video_decoder_awkward_files,
+    scenario_video_encoder_keyframe_interval,
+    scenario_video_stream_basics,
+    scenario_video_stream_reverse_files,
+    scenario_video_stream_loop_toggles,
+    scenario_video_stream_exactness,
+    scenario_video_player_decode,
+    scenario_video_player_hitch_recovery,
+    scenario_video_player_offline_exact,
+    scenario_video_player_loop_seam,
+    scenario_video_player_shutdown,
 };
 
 #ifndef _WIN32

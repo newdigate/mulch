@@ -229,9 +229,9 @@ shaders by CWD-relative path, each package launches the app with `shaders/` as t
   render / GL-state / burn checks run only where the library is installed (they print SKIP in CI).
 - **Image Streamer / Kaleidoscope** — `ImageStreamerNode` (`src/modules/ImageStreamerNode.h`,
   header-only) loads a still image (a new **Image** `AssetType`, the fifth Assets tab) via the
-  GL-free `gfx/ImageLoader` (an `stb_image` wrapper mirroring `VideoDecoder`, rows flipped
-  bottom-up to match) and publishes it as a `TexRef`; it loads once on path change and
-  republishes each frame. `KaleidoscopeNode` (`src/modules/KaleidoscopeNode.h`, header-only
+  GL-free `gfx/ImageLoader` (an `stb_image` wrapper mirroring `VideoDecoder::decodeFrame()`,
+  rows flipped bottom-up to match) and publishes it as a `TexRef`; it loads once on path
+  change and republishes each frame. `KaleidoscopeNode` (`src/modules/KaleidoscopeNode.h`, header-only
   `ShaderNode`) folds an input texture into a mirrored pattern in `shaders/kaleidoscope.frag`
   (polar wedge fold with `segments`/`rotation`/`zoom`/`center` ports — wire `rotation` to an
   LFO to spin). Both live in the **Texture** category. `ImageLoader` is unit-tested in
@@ -411,7 +411,9 @@ shaders by CWD-relative path, each package launches the app with `shaders/` as t
   latching the audio track from it and writing a video-only file at exit 0. Between
   frames it waits while any node reports the `Node::loading()` hook (Audio Player / Drum Machine /
   Mesh Loader via `AsyncLoader::pending()` — in flight AND not yet consumed, so a finished-but-
-  unpolled future can't deadlock the gate; Image Sequencer via `futurePending` on its prefetch),
+  unpolled future can't deadlock the gate; Image Sequencer via `futurePending` on its prefetch;
+  the Video Player while its file opens, while its next frame is not ready, after a stall, or
+  after its stream failed once open),
   surfacing that as `Progress::waitingForLoad` (a structured signal, so the CLI sleeps instead of
   spinning) and failing after `kRenderLoadTimeoutSeconds` naming the node. `Graph::setOffline(true)`
   flows `EvalContext::offline` to every node: **Audio Out** builds its stereo block *before* any
@@ -492,10 +494,11 @@ shaders by CWD-relative path, each package launches the app with `shaders/` as t
   ImGui windows, so their popups use standard ImGui — the old canvas-coordinate `NodePopup` /
   `PortWidgets` machinery was removed. `inputSlot` + `nodeConnectionSummary` are unit-tested; the
   panels are app-only (no headless test), like Assets/Preferences.
-- **Real-time threads bridge through queues, not the graph.** Audio (libsoundio) and
-  mesh loading (`std::async`) run off the graph thread; they hand data back via a
-  lock-free SPSC ring buffer (`src/audio/SpscRingBuffer.h`) or `AsyncLoader`
-  (`src/core/AsyncLoader.h`). GL uploads always happen on the main thread.
+- **Real-time threads bridge through queues, not the graph.** Audio (libsoundio),
+  mesh loading (`std::async`) and video decoding (a worker per Video Player, `gfx/VideoStream`)
+  run off the graph thread; they hand data back via a lock-free SPSC ring buffer
+  (`src/audio/SpscRingBuffer.h`), `AsyncLoader` (`src/core/AsyncLoader.h`), or the stream's
+  mutex-guarded frame queue and audio store. GL uploads always happen on the main thread.
 - **Text geometry** (`src/gfx/TextGeometry.{h,cpp}`, GL-free): turns a string into
   vertex buffers via `stb_truetype` (glyph outlines) + `earcut` (triangulation) —
   filled flat letters or extruded solid 3D, mirroring Mesh Loader's wireframe+shaded
@@ -503,14 +506,76 @@ shaders by CWD-relative path, each package launches the app with `shaders/` as t
   default font is one of ImGui's bundled TTFs, baked in by absolute path via the
   `OSS_DEFAULT_FONT` compile definition (no font file ships); the `font` input overrides it.
 - **`VideoDecoder` (`src/gfx/VideoDecoder.{h,cpp}`) is a GL-free FFmpeg wrapper** —
-  it produces CPU RGBA frames (bottom-up) + 48 kHz mono float audio; FFmpeg headers
-  are confined to its `.cpp`. The `VideoPlayerNode` decodes synchronously on the
-  graph thread and keeps a sliding keyframe-window frame cache to play forward,
-  reverse, and at variable `rate` off a forward-only decoder.
-- **`VideoEncoder` (`src/gfx/VideoEncoder.{h,cpp}`) is its mirror** — a GL-free
+  FFmpeg headers are confined to its `.cpp`. Decoding uses FFmpeg's frame threads
+  (`thread_count = 0`). `decodeNext()` hands back a `DecodedFrame` (a counted reference,
+  not yet converted) and `convert()` turns it into TOP-DOWN RGBA with threaded swscale
+  (`sws_scale_frame`, which only writes into refcounted frames, so the caller's buffer is
+  wrapped in an `AVBufferRef` whose free callback does nothing). Video packets are queued
+  (≤ 64 MB) rather than decoded at once, so `pumpAudio()` keeps 48 kHz mono audio ahead of the
+  video; `audioSettledUpTo()` says how far no more audio can arrive. The legacy `decodeFrame()`
+  (bottom-up RGBA + audio appended; its converter follows the decoded frames' own format, not the
+  stream's) is built on those and kept for `gl_smoke`. Every time in and out counts from the first video
+  frame (decoded at `open()`), so a container that starts its clock late (MPEG-TS) or shows a
+  B-frame delay (FLV, fragmented MP4) still plays from 0; `open()` also seeks to the start
+  first, so indexes read only on a seek (Matroska cues) are there, and MPEG-TS/-PS indexes are
+  ignored: their demuxers list every packet a seek probes as a keyframe. A frame with no
+  timestamp (the B-frame tail of an AVI or MPEG-PS, a raw H.264 stream) follows the one before
+  it, and is skipped when nothing precedes it since a seek into the file. A raw stream has no
+  times to seek by, so `seek()` sends it to its first byte (the fallback for any failed seek;
+  `seek()` returns false only when not even the start is reachable). Audio comes out in runs
+  that follow its timestamps (`takeAudio(out, startT, continues)`: a hole or an overlap starts a
+  new run), the resampler is rebuilt when the audio format changes and reset by a seek, and once
+  an offline caller (`pumpAudio(t, true)`) is stuck at the 64 MB cap (nothing taken off the queue
+  since it last stopped there) the audio counts as settled up to the last packet read. `open()`
+  takes an abort flag that FFmpeg's I/O polls; set during the probe, it fails the open
+  ("stopped"). A decoder is used by one thread only: its stream's worker.
+- **The Video Player decodes on a worker.** `VideoPlayerNode` (`src/modules/VideoPlayerNode.{h,cpp}`)
+  drives a `VideoStream` (`src/gfx/VideoStream.{h,cpp}`, one per node, GL-free) whose worker thread
+  opens the file, keeps a fixed pool of RGBA frames (512 MB budget, allocated at open:
+  `core/VideoPlan.h` `videoPoolFrames`, 4 to 64 frames) decoded ahead of the requested playhead,
+  and reads audio into a `core/TimedAudio.h` store. **The worker holds the stream's mutex only
+  for bookkeeping, never while decoding or converting**, so `request()`, `frameAt()` and
+  `readAudio()` return at once; the frame `frameAt()` returns stays checked out until the next
+  `frameAt()`. Its decisions — fill, catch up (decode without converting; live, in 100 ms
+  slices), seek (ahead only for jumps over 1 s, since a seek restarts the frame-thread pipeline;
+  always for a new direction, or a target behind everything held unless the last seek for it was
+  pinned before the file's first frame), wrap, and reverse
+  keyframe-to-frame stretches published whole — are the pure, unit-tested `videoNextStep()`. A
+  seek lands where its decode loop admits frames, backing off 1 s, 2 s, 4 s… to the file's start
+  when it lands late (decode-time indexes, MPEG-TS), and a seek ahead that landed behind the
+  decoder is not repeated nearby (`videoNoSeekBelow`). An offline render starting in reverse
+  discards the live stretches, which keep every stride-th frame, and decodes offline ones. A new audio chunk begins wherever
+  the decoder's audio jumps, and a file it cannot seek in at all fails the stream ("cannot seek in
+  this file") rather than spinning.
+  The node's playhead is UNWRAPPED (lap × D + position, `videoAdvance`), so the worker decodes the
+  next lap early and loops are seamless; the playhead is held at 0 until the first frame is on
+  screen. The node uploads the newest frame at or before the playhead into a staging texture and
+  flips it into the published texture with one `glBlitFramebuffer` (scissor test off: a blit is
+  clipped by it). When the file changes, the last picture stays up until the new file's first
+  frame replaces it.
+  **Offline renders stay exact.** `loading()` reports the node's GUESS at the next frame (this
+  frame's rate) not ready, so the renderer's gate does the waiting between frames with the UI
+  running; offline `dt` is snapped to the exact frame step (`videoFrameStep`). Readiness names the
+  frame for the playhead exactly (each queued frame knows when the next one decoded starts) and,
+  playing forward, needs its audio settled too. A frame the guess did not predict (an automated
+  rate, a direction flip) is waited for inside `evaluate()` for up to `kOfflineFrameWaitSeconds`
+  (10 s), blocking the UI (seconds, for a fresh reverse stretch at 4K) — except the render's first
+  frame, which is always an uncaptured pre-roll frame. A file still opening holds the gate like any
+  loader; a frame that misses that wait latches a stall, and a stall or a stream that fails once
+  open keeps `loading()` true for good, so the render fails after `kRenderLoadTimeoutSeconds`,
+  naming the node.
+  Old streams (a file change, the node's destructor) go to `VideoStream::retire()`: tearing a
+  stream down takes 0.1–0.5 s at 4K, so a reaper thread does it (joined at exit), and a retired
+  stream holds its memory until the reaper destroys it. Tests: `tests/test_video_plan.cpp`,
+  `tests/test_timed_audio.cpp`, and the `gl_smoke` scenarios `scenario_video_decoder_*`,
+  `scenario_video_stream_*` and `scenario_video_player_*` (untested: the stall latch, and the rule
+  for a stream that fails once open).
+- **`VideoEncoder` (`src/gfx/VideoEncoder.{h,cpp}`) is `VideoDecoder`'s mirror** — a GL-free
   FFmpeg muxer writing RGBA frames + interleaved float audio (mono or stereo) to
-  an H.264/AAC mp4. The `RecorderNode` is a pass-through tap (video/audio in → same
-  out) that reads back the input texture and feeds the encoder while `record` is on;
+  an H.264/AAC mp4 (`open()`'s optional `keyframeInterval`, for test clips, places keyframes
+  exactly every N frames, writing with libx264 or the MPEG-4 fallback only). The `RecorderNode`
+  is a pass-through tap (video/audio in → same out) that reads back the input texture and feeds
+  the encoder while `record` is on;
   it takes `left`/`right` mono inputs and records an interleaved stereo track
   (mirroring a lone connected side).
   **`encodeWrite` must set `pkt->duration` before handing a packet to the muxer** — libx264 and
