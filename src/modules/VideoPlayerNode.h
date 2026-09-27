@@ -43,8 +43,10 @@ public:
     double   shownFrameTime() const { return shownT_; }       // its unwrapped time (valid when hasFrame())
     AudioRef audioOut() const { return AudioRef{outBuf_.data(), (std::size_t)lastAudioN_, outRate_}; }
 
-    // Offline: how long evaluate() waits for a frame the prefetch did not predict.
-    static constexpr double kOfflineFrameWaitSeconds = 2.0;
+    // Offline: how long evaluate() waits for a frame the prefetch did not predict (an automated rate, a
+    // direction flip). A reverse stretch through a long keyframe interval at 4K takes seconds, and the UI
+    // waits with it; a frame that takes longer latches a stall, and the render fails naming the node.
+    static constexpr double kOfflineFrameWaitSeconds = 10.0;
 
 private:
     void openPath(const std::string& path);

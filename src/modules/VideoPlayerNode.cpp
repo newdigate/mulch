@@ -29,6 +29,7 @@ void VideoPlayerNode::evaluate(EvalContext& ctx) {
     const float rate = ctx.in<float>(1);
     const bool  play = ctx.in<bool>(2);
     const bool  loop = ctx.in<bool>(3);
+    const bool  wasOffline = offline_;
     offline_ = ctx.offline;
     if (!offline_) stalled_ = false;
     loop_ = loop;
@@ -71,8 +72,10 @@ void VideoPlayerNode::evaluate(EvalContext& ctx) {
     ph_ = videoAdvance(ph_, advancing, rate, loop, dt, duration_);
     stream_->request(makeRequest(ph_, play, rate, loop));
 
-    // Offline renders are exact: wait for the frame for u (normally already there -- see below).
-    if (offline_ && !stream_->frameReadyFor(ph_.u) &&
+    // Offline renders are exact: wait for the frame for u (normally already there -- see below). Not on a
+    // render's first frame: it can need a whole reverse stretch decoded, and it is never captured -- the
+    // renderer always runs a pre-roll frame first (Node::loading()) -- so the gate waits for the next one.
+    if (offline_ && wasOffline && !stream_->frameReadyFor(ph_.u) &&
         !stream_->waitForFrame(ph_.u, kOfflineFrameWaitSeconds))
         stalled_ = true;                               // publish what we have; loading() fails the render
 
@@ -117,6 +120,7 @@ void VideoPlayerNode::openPath(const std::string& path) {
     shownSerial_ = 0;
     shownT_ = -1.0;
     stalled_ = false;
+    pendingU_ = 0.0;
     failLogged_ = false;
     opened_ = false;
     needInfo_ = !path.empty();
