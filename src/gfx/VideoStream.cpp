@@ -321,7 +321,7 @@ void VideoStream::step() {
                 lostTarget = shown_.buf >= 0 && shown_.t > r.u + kVideoTimeEps;
                 for (const Slot& s : ready_) lostTarget = lostTarget || s.t > r.u + kVideoTimeEps;
             } else {
-                lostTarget = !runValid_ || r.u < runLo_ - kVideoTimeEps;
+                lostTarget = runValid_ && r.u < runLo_ - kVideoTimeEps;
             }
         }
     }
