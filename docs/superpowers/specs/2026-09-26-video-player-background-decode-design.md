@@ -474,6 +474,16 @@ fixed, and each fix is pinned by a check that fails when it is reverted.
     pool. Two optimisations stay unpinned: skipping the audio read-ahead before a seek, and the `open()`
     abort check on its own (the lazily built converter alone prevents the crash).
 
+### Revisions during execution (third code review of Task 7)
+
+76. **Smaller fixes.** Revision 74's recovery for a held frame before the run now applies only while there
+    is a run. With no run, a held frame for u only goes with a seek that happens anyway (a direction change,
+    or one in progress), so that half was untested, and is dropped. The Errors table now says what a
+    mid-file change of frame size does offline: frames of the new size are never converted, so readiness
+    never comes for them, and the render stalls and fails naming the node (a 160×90 MPEG-TS that goes on at
+    192×108 stalls at its first 192×108 frame); live, the picture holds the last frame of the old size.
+    That is unchanged since the worker was first built, and loud rather than wrong.
+
 ## Root cause
 
 Reproduced with a headless harness that compiles the real `VideoPlayerNode.cpp` and drives
@@ -917,7 +927,7 @@ the UI keeps running.
 | Holes or overlaps in the audio's timestamps | a new chunk at the audio's own time; a hole is silence |
 | The audio format changes mid-file | the resampler is rebuilt |
 | A seek lands late or finds no frame (decode-time indexes, MPEG-TS) | retried 1 s, 2 s, 4 s… earlier, down to the start of the file |
-| Frame dimensions change mid-file | those frames are skipped (conversion is sized at open) |
+| Frame dimensions change mid-file | those frames are not converted (conversion is sized at open): live, the picture holds the last frame of the old size; an offline render stalls there and fails, naming the node |
 | Anything thrown on the worker | caught at the top of the thread and turned into `Failed`; nothing escapes the thread |
 | A stream fails after it opened (a non-seekable input, an allocation failure) | the node shows "failed: …"; offline, `loading()` stays true, so the render fails naming the node instead of going on without the picture |
 | The stream is destroyed while it opens | the probe is interrupted and `open()` fails ("stopped"); nobody sees it |
