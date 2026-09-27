@@ -484,6 +484,39 @@ fixed, and each fix is pinned by a check that fails when it is reverted.
     192×108 stalls at its first 192×108 frame); live, the picture holds the last frame of the old size.
     That is unchanged since the worker was first built, and loud rather than wrong.
 
+### Revisions during execution (code review of Task 8)
+
+77. **A render's first frame is not waited for inside `evaluate()`.** The node makes its first guess at the
+    end of its first offline `evaluate()`, so the render's first frame always waited inside `evaluate()` --
+    and in reverse that frame needs a fresh offline stretch, every frame decoded and converted from the
+    keyframe. On a 4K clip with keyframes 8.3 s apart, a reverse render after live play froze the UI for
+    the whole 2 s wait, latched a stall and failed ("timed out waiting for Video Player #1"); renders that
+    succeeded still froze the UI for 0.5-1 s at their first frame. That frame is a pre-roll frame, never
+    captured -- the renderer always runs at least one, for this very reason (`Node::loading()`) -- so the
+    node no longer waits for it: the gate waits for the next frame instead, with the UI running (the
+    longest step of that 4K render: 115 ms).
+78. **A frame the guess did not predict is waited for up to 10 s, not 2.** Mid-render, a frame the node's
+    guess did not predict (an automated rate; a direction flip) must still be waited for inside
+    `evaluate()`, since the renderer captures right after it. A fresh reverse stretch through that 4K
+    clip's keyframe interval took 2.55 s, so the 2 s bound failed the render. It is now 10 s: the UI waits
+    that long at such a frame, and a frame slower than that still latches the stall. Converting only the
+    frames an offline stretch keeps would shorten the wait (see Out of scope).
+79. **The node's scenarios now catch what they are named for.** A 160x90 clip decodes so fast that a node
+    waiting for the decoder live passed the hitch scenario's 50 ms bound, and destroying the old stream in
+    place (17-27 ms at 640x360) passed the shutdown's. The hitch now checks that `evaluate()` returned
+    without the new frame (the worker had yet to decode it), under a 1-pixel scissor box the upload must
+    ignore; the shutdown fills a 1080p pool (530 MB; about 100-180 ms in place) and allows 25 ms; the live
+    check requires the playhead to hold at the start until the first frame and no `evaluate()` to take
+    50 ms; and the offline scenario adds an automated rate (+1, +2, -1: a wrong guess) and a reverse
+    render whose first frame needs 87 frames of 1080p (its longest step must stay under 100 ms). Each of
+    7 breakages fails its check: waiting on the render's first frame (longest step 222 ms, against 16-18),
+    waiting live, destroying the old stream in place (181 ms, against 0.1-1.1), no offline wait at all,
+    no hold at the start, no scissor disable, and no flip.
+80. **Smaller fixes.** `openPath()` resets the pending guess; stale comments go (the old window and
+    rebuild; a live check that claimed more than it tested); the per-frame flow no longer speaks of a join.
+    Still untested: the stall latch (it needs a frame slower than 10 s) and the rule for a stream that fails
+    after opening (no regular file makes an open stream fail).
+
 ## Root cause
 
 Reproduced with a headless harness that compiles the real `VideoPlayerNode.cpp` and drives
@@ -734,7 +767,8 @@ widely spaced keyframes.
 
 ### Per-frame flow on the UI thread (live)
 
-1. **Path changed:** destroy the old stream (a bounded join), create a new one, and set u = 0.
+1. **Path changed:** hand the old stream to `VideoStream::retire()` (it is torn down on another thread),
+   create a new one, and set u = 0.
    Until the new file's first frame is uploaded the output is `TexRef{0}`, as today.
 2. **Opening or failed:** publish an empty texture and silence, and set the status to "opening…" or
    "load failed: …".
@@ -895,11 +929,16 @@ the UI keeps running.
   to u′ and stores it as `pendingNextU`. The renderer's existing gate (`OfflineRenderer::step` yields
   while any node is `loading()`) then waits between frames without blocking the UI.
 - **Exactness:** at the next `evaluate()`, when the actual u equals u′ the frame is already ready.
-  When it doesn't (for example, the rate is automated), the node calls `waitForFrame(u, 2 s)` itself.
+  When it doesn't (for example, the rate is automated), the node calls `waitForFrame(u, 10 s)` itself,
+  and the UI waits with it (seconds, for a fresh reverse stretch through a long keyframe interval at 4K).
   Either way the frame and audio for u are published in the same `evaluate()`, which is the
   `Node::loading()` contract. A wrong guess costs a wait, never a wrong frame: recycling for the guess
   can release the frame the actual u needs (the worker then decodes it again), and readiness names u's
   frame exactly.
+- **The render's first frame** is not waited for: it is a pre-roll frame, which the renderer never
+  captures (it always runs at least one), and it can need a whole reverse stretch. The node requests it,
+  publishes what it has, and makes its first guess; the gate then waits for that guess with the UI
+  running.
 - **Stalls:** if that wait times out, the node latches a stall flag that keeps `loading()` true. The
   render then fails through the renderer's normal 30 s timeout naming the node, instead of finishing
   with a wrong frame. The flag clears when `ctx.offline` goes false or the file changes.
@@ -997,7 +1036,8 @@ the UI keeps running.
 
 - The existing Video Player scenario (`tests/assets/test.mp4`: picture, audio, reverse) keeps passing.
   It runs with the graph in offline mode, so frames are exact and synchronous; one live-mode check
-  polls until the texture has colour.
+  polls until the texture has colour, with no `evaluate()` taking 50 ms and the playhead held at the start
+  until the first frame is up.
 - The existing encoder round-trip checks keep `decodeFrame()`'s bottom-up output honest.
 - **`VideoDecoder` split decode:** `decodeNext()` + `convert()` equal `decodeFrame()` flipped,
   byte for byte, and a stride shorter than a row is refused; the keyframe lookup; a second of audio read
@@ -1050,14 +1090,18 @@ the UI keeps running.
 
   The tests using it:
   - **Lock-up regression:** a simulated 3 s hitch lands between keyframes. `evaluate()` must return in
-    < 50 ms, and within 1 s of wall time the frame on screen must match the playhead (±1 frame).
+    < 50 ms without the new frame (the worker has yet to decode it), and within 1 s of wall time the frame
+    on screen must match the playhead (±1 frame) -- all under a 1-pixel scissor box, which the upload must
+    ignore.
   - **Offline exactness:** through the real `OfflineRenderer` — forward play, a jump between
     keyframes, and reverse — the output frame sequence matches the expected indices (read back with
-    `VideoDecoder`).
+    `VideoDecoder`); so does an automated rate (+1, +2, -1). A reverse render whose first frame needs 87
+    frames of 1080p decoded never takes 100 ms over a `step()`.
   - **Seamless loop** (offline): the frame after the last is frame 0, and no audio block across the
     loop boundary is silent.
-  - **Shutdown:** changing the file, or deleting the node, mid-seek returns within 50 ms (the old
-    stream is retired, not waited for) with no hang or crash.
+  - **Shutdown:** changing the file, or deleting the node, with a full 1080p pool and mid-catch-up
+    returns within 25 ms (the old stream is retired, not waited for; in place it takes about 100 ms) with
+    no hang or crash.
 - Timing limits are deliberately loose so slower CI machines pass. The old design misses them by
   seconds.
 
@@ -1098,6 +1142,10 @@ Measured on the development machine, in Debug and Release, with the acceptance h
   millisecond (MKV, FLV), two stretches holding the same audio disagree by up to half a millisecond, so
   the switch between them can click however early decoding starts; that needs the chunks anchored on
   the codec's frame grid, or a short crossfade where one gives way to the next.
+- **Faster offline reverse through long keyframe intervals.** An offline stretch converts every frame from
+  its keyframe into its ring, though it keeps only the newest pool/2. Converting only those would shorten
+  the wait at a frame the node's guess did not predict (2.5 s at 4K with keyframes 8 s apart) and speed up
+  offline reverse renders.
 - **Open-GOP MPEG-2 and MPEG-4 Part 2 after a seek.** FFmpeg's first frames after a seek into such a
   file are the frame after the keyframe or broken B-frames, and in an MPEG-PS they can be labelled up to
   0.1 s early, so reverse on those files can be a couple of frames off where a stretch starts.
