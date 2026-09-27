@@ -177,7 +177,7 @@ private:
     AVFormatContext* fmt_     = nullptr;
     AVCodecContext*  vctx_    = nullptr;   // video decoder
     AVCodecContext*  actx_    = nullptr;   // audio decoder (null if no audio)
-    SwsContext*      sws_     = nullptr;   // decodeFrame(): -> RGBA, single-threaded, bottom-up
+    SwsContext*      sws_     = nullptr;   // decodeFrame(): -> RGBA, single-threaded, bottom-up; built on first use
     SwsContext*      swsThr_  = nullptr;   // convert(): -> RGBA, threaded, top-down
     int              swsThrFmt_ = -1;      // the pixel format swsThr_ was built for
     SwrContext*      swr_     = nullptr;   // -> 48 kHz mono float, for the input below

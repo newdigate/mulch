@@ -104,6 +104,8 @@ bool VideoDecoder::open(const std::string& path, std::string& err, const std::at
     if (avformat_find_stream_info(fmt_, nullptr) < 0) {
         err = "could not read stream info"; close(); return false;
     }
+    // Stopped while probing: the probe gives up part-way but still succeeds, with the streams half known.
+    if (abort && abort->load()) { err = "stopped"; close(); return false; }
 
     vstream_ = av_find_best_stream(fmt_, AVMEDIA_TYPE_VIDEO, -1, -1, nullptr, 0);
     if (vstream_ < 0) { err = "no video stream"; close(); return false; }
@@ -124,11 +126,6 @@ bool VideoDecoder::open(const std::string& path, std::string& err, const std::at
     height_    = vctx_->height;
     vTimeBase_ = av_q2d(vs->time_base);
     if (width_ <= 0 || height_ <= 0) { err = "video has no dimensions"; close(); return false; }
-
-    sws_ = sws_getContext(width_, height_, vctx_->pix_fmt,
-                          width_, height_, AV_PIX_FMT_RGBA,
-                          SWS_BILINEAR, nullptr, nullptr, nullptr);
-    if (!sws_) { err = "could not init colour converter"; close(); return false; }
     rgba_.assign((std::size_t)width_ * height_ * 4, 0);
 
     // --- Audio decoder (optional; swr is set up lazily on the first frame so it
@@ -461,6 +458,11 @@ bool VideoDecoder::decodeFrame(VideoFrame& out, std::vector<float>& audio,
     }
     if (!ok) return false;
 
+    // Built from the frame's own format: the stream's may not be known until a frame decodes (a video that
+    // starts past what the probe reads).
+    sws_ = sws_getCachedContext(sws_, width_, height_, (AVPixelFormat)f.frame_->format,
+                                width_, height_, AV_PIX_FMT_RGBA, SWS_BILINEAR, nullptr, nullptr, nullptr);
+    if (!sws_) return false;
     // Flip vertically (negative stride from the last row) so the buffer is bottom-up, matching how
     // the rest of the app's textures are oriented.
     uint8_t* dst[4] = { rgba_.data() + (std::size_t)(height_ - 1) * width_ * 4,
