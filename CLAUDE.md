@@ -22,7 +22,12 @@ Deps are pinned via CMake FetchContent, with one exception: **FFmpeg** (the Vide
 node's decoder) is a system package found via pkg-config (`brew install ffmpeg`) —
 it doesn't FetchContent cleanly. When a fetched dep's bundled CMake is too old for
 CMake 4.x, it's relaxed with `CMAKE_POLICY_VERSION_MINIMUM 3.5` around its
-`FetchContent_MakeAvailable`.
+`FetchContent_MakeAvailable`. **libsoundio 2.0.0 is patched at fetch time**
+(`cmake/patch_libsoundio.cmake`, its `PATCH_COMMAND`): when its ALSA backend fails to start
+(a Linux machine with no sound devices, like the CI runner), it closed file descriptor 0 on
+its way to the Dummy backend — stdin, then whatever file the process opened next (on CI, a
+live Recorder's mp4). The script is safe to re-run and fails the configure if the lines it
+patches ever change; `gl_smoke`'s `scenario_soundio_connect_keeps_fd0` guards the fix.
 
 **CI / packaging.** `.github/workflows/build-{linux,macos,windows}.yml` build + package the app per
 OS: Linux AppImage (`linuxdeploy` + `appimagetool`, GTK plugin), macOS `.app` for arm64 (`macos-14`)

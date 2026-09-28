@@ -53,9 +53,13 @@ FetchContent_MakeAvailable(doctest)
 unset(CMAKE_POLICY_VERSION_MINIMUM)
 
 # --- libsoundio (cross-platform audio output) ---
+# Patched at fetch time by cmake/patch_libsoundio.cmake: when its ALSA backend fails to start (a
+# Linux machine with no sound devices, like the CI runner), 2.0.0 closes file descriptor 0 on its
+# way to the Dummy backend -- stdin the first time, then whatever file the process opened next.
 FetchContent_Declare(libsoundio
   GIT_REPOSITORY https://github.com/andrewrk/libsoundio.git
-  GIT_TAG 2.0.0)
+  GIT_TAG 2.0.0
+  PATCH_COMMAND ${CMAKE_COMMAND} -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/patch_libsoundio.cmake)
 # Build only the static lib we link; skip the shared lib, example programs, and
 # the library's own test suite.
 set(BUILD_DYNAMIC_LIBS   OFF CACHE BOOL "" FORCE)

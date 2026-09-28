@@ -67,7 +67,11 @@ extern "C" {
 #include <thread>
 #ifndef _WIN32
 #include <csignal>
+#include <fcntl.h>
 #include <sys/resource.h>
+#include <sys/stat.h>
+#include <unistd.h>
+#include <soundio/soundio.h>
 #endif
 
 using namespace oss;
@@ -4672,10 +4676,49 @@ static bool scenario_recorder_lost_frames() {
 }
 #endif   // _WIN32: the three RLIMIT_FSIZE scenarios above
 
+#ifndef _WIN32
+// --- Scenario: connecting libsoundio leaves file descriptor 0 alone ---
+// libsoundio 2.0.0's ALSA backend, failing to start where there are no sound devices, closed
+// fd 0 on its way to the Dummy backend (cmake/patch_libsoundio.cmake has the details): stdin at
+// first, then whatever file the process opened next -- on the Linux CI, an Audio Out node
+// starting up closed a live Recorder's mp4 under it. Put a file of our own on fd 0, connect and
+// destroy a context, and check the same file is still there. Only a Linux machine whose ALSA
+// backend fails to start can fail this; elsewhere it passes without testing much.
+static bool scenario_soundio_connect_keeps_fd0() {
+    const char* path = "build/_fd0_probe";
+    const int saved = dup(0);                          // stdin (-1 if closed), put back below
+    const int fd = open(path, O_CREAT | O_TRUNC | O_RDWR, 0644);
+    if (fd < 0) {
+        if (saved >= 0) close(saved);
+        return failed("fd 0: cannot create build/_fd0_probe");
+    }
+    if (fd != 0) { dup2(fd, 0); close(fd); }
+    struct stat want {};
+    fstat(0, &want);
+
+    if (SoundIo* sio = soundio_create()) {
+        soundio_connect(sio);                          // on Linux, tries ALSA before Dummy
+        soundio_destroy(sio);
+    }
+
+    struct stat got {};
+    const bool kept = fcntl(0, F_GETFD) != -1 && fstat(0, &got) == 0 &&
+                      got.st_dev == want.st_dev && got.st_ino == want.st_ino;
+    if (saved >= 0) { dup2(saved, 0); close(saved); } else { close(0); }
+    std::remove(path);
+    if (!kept) { return failed("connecting libsoundio closed file descriptor 0 (see cmake/patch_libsoundio.cmake)"); }
+    std::fprintf(stderr, "gl_smoke OK: connecting libsoundio leaves file descriptor 0 open\n");
+    return true;
+}
+#endif
+
 // The main-body scenarios, in the exact order they must run (several depend on files an
 // earlier one wrote, so when one fails, a later one can fail with it: read the first FAIL
 // first). Adding a scenario is a one-line addition here.
 static bool (*const kScenarios[])() = {
+#ifndef _WIN32
+    scenario_soundio_connect_keeps_fd0,
+#endif
     scenario_colour_output,
     scenario_image_streamer,
     scenario_kaleidoscope_fold,
