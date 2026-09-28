@@ -2753,16 +2753,13 @@ static bool scenario_world_transform_shared() {
 // --- Scenario 15: Compositor blends two colours; shader matches the C++ reference ---
 // Feed two solid colours into the Compositor and assert the rendered centre pixel
 // matches blendPixel() for one mode per code path: Multiply (separable), Hue
-// (non-separable setSat/setLum), XOR (bitwise). The reference is computed on the
-// 8-bit-quantised inputs (what the textures actually carry) so only output rounding
-// can differ; the near() tolerance is +/-3.
+// (non-separable setSat/setLum), XOR (bitwise). Both colours are whole 8-bit steps, so
+// the textures carry exactly what the reference is given and only output rounding can
+// differ; the near() tolerance is +/-3. A colour between two steps would not do: one
+// exactly halfway (0.5 is 127.5 steps) is stored as 127 by Mesa's llvmpipe and as 128 by
+// macOS, and XOR, being bitwise, turns that one-step difference into an unrelated byte.
 static bool scenario_compositor_blend_matches_shader() {
     {
-        auto quant = [](glm::vec3 c) {
-            return glm::vec3(std::round(c.x*255.0f)/255.0f,
-                             std::round(c.y*255.0f)/255.0f,
-                             std::round(c.z*255.0f)/255.0f);
-        };
         auto check = [&](int mode, glm::vec3 ca, glm::vec3 cb) -> bool {
             Graph g;
             auto a = std::make_unique<ColourNode>(); a->inputDefault(0) = glm::vec4(ca, 1.0f);
@@ -2781,13 +2778,14 @@ static bool scenario_compositor_blend_matches_shader() {
             TexRef t = dynamic_cast<OutputNode*>(g.findNode(oId))->current();
             if (!t.id) return false;
             int r, gg, bb, aa; readCentre(t, r, gg, bb, aa);
-            glm::vec3 e = blendPixel(mode, quant(ca), quant(cb));
+            glm::vec3 e = blendPixel(mode, ca, cb);
             int er = (int)std::lround(e.x*255.0f), eg = (int)std::lround(e.y*255.0f), eb = (int)std::lround(e.z*255.0f);
             std::fprintf(stderr, "gl_smoke compositor mode %d: got (%d,%d,%d) expected (%d,%d,%d)\n",
                          mode, r, gg, bb, er, eg, eb);
             return near(r,er) && near(gg,eg) && near(bb,eb);
         };
-        glm::vec3 ca(0.2f, 0.5f, 0.8f), cb(0.9f, 0.3f, 0.1f);   // distinct channels (no setSat ties)
+        const glm::vec3 ca = glm::vec3(51, 128, 204) / 255.0f;   // distinct channels (no setSat ties)
+        const glm::vec3 cb = glm::vec3(230, 77, 26) / 255.0f;
         if (!check(5,  ca, cb)) { return failed("Compositor Multiply mismatch vs reference"); }
         if (!check(16, ca, cb)) { return failed("Compositor Hue mismatch vs reference"); }
         if (!check(22, ca, cb)) { return failed("Compositor XOR mismatch vs reference"); }
@@ -4675,11 +4673,8 @@ static bool scenario_recorder_lost_frames() {
 #endif   // _WIN32: the three RLIMIT_FSIZE scenarios above
 
 // The main-body scenarios, in the exact order they must run (several depend on files an
-// earlier one wrote). Looping over this table instead of writing one
-// "if (!scenario_x()) { glfwDestroyWindow(win); glfwTerminate(); return 1; }" per scenario
-// means adding a 47th scenario is a one-line addition here, and can no longer forget the
-// window/context teardown -- the copy-pasted teardown clause used to be the single most
-// copy-pasteable line in this file.
+// earlier one wrote, so when one fails, a later one can fail with it: read the first FAIL
+// first). Adding a scenario is a one-line addition here.
 static bool (*const kScenarios[])() = {
     scenario_colour_output,
     scenario_image_streamer,
@@ -4752,7 +4747,12 @@ int main() {
     // libx264/aac statistics per encoder open bury the scenario log.
     quietFFmpegLog();
 
-    if (!scenario_asset_backed_inputs()) return 1;      // pure CPU: runs before any GL setup
+    // Every scenario runs, even after one fails, so a single failure (one driver's rounding, a
+    // flaky timing check) cannot hide the rest; the exit code still fails the run.
+    int run = 0, failures = 0;
+    auto runScenario = [&](bool (*scenario)()) { ++run; if (!scenario()) ++failures; };
+
+    runScenario(scenario_asset_backed_inputs);      // pure CPU: runs before any GL setup
 
     if (!glfwInit()) return fail("glfwInit");
     glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 4);
@@ -4765,17 +4765,17 @@ int main() {
     glfwMakeContextCurrent(win);
     if (!gladLoadGL((GLADloadfunc)glfwGetProcAddress)) { glfwTerminate(); return fail("gladLoadGL"); }
 
-    for (bool (*scenario)() : kScenarios)
-        if (!scenario()) { glfwDestroyWindow(win); glfwTerminate(); return 1; }
+    for (bool (*scenario)() : kScenarios) runScenario(scenario);
 
 #ifndef _WIN32
-    for (bool (*scenario)() : kEncodeFailureScenarios)
-        if (!scenario()) { glfwDestroyWindow(win); glfwTerminate(); return 1; }
+    for (bool (*scenario)() : kEncodeFailureScenarios) runScenario(scenario);
 #else
     std::fprintf(stderr, "gl_smoke SKIP: the three encode-write-failure scenarios (RLIMIT_FSIZE is POSIX-only)\n");
 #endif
 
     glfwDestroyWindow(win);
     glfwTerminate();
-    return 0;
+    if (failures) std::fprintf(stderr, "gl_smoke: %d of %d scenarios failed\n", failures, run);
+    else          std::fprintf(stderr, "gl_smoke: all %d scenarios passed\n", run);
+    return failures ? 1 : 0;
 }
