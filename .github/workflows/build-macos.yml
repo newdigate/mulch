@@ -14,9 +14,17 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - { runner: macos-14, arch: arm64 }
-          - { runner: self-hosted, arch: x64 }   # Intel: GitHub-hosted macos-13 is scarce; use a registered self-hosted x86 runner
+        # Intel x64 runs on a self-hosted runner, the maintainer's own Mac (GitHub-hosted macos-13
+        # is scarce). The repo is public and a runner executes a pull request's code, so a pull
+        # request from a fork gets the arm64 build only: that keeps ordinary fork pull requests off
+        # the Mac, and from waiting on it while it is offline. It cannot stop a malicious one, which
+        # can edit this file in its own pull request; the repository setting that requires approval
+        # for outside contributors' workflow runs is the real guard.
+        include: >-
+          ${{ fromJSON(github.event_name == 'pull_request' &&
+          github.event.pull_request.head.repo.full_name != github.repository &&
+          '[{"runner":"macos-14","arch":"arm64"}]' ||
+          '[{"runner":"macos-14","arch":"arm64"},{"runner":"self-hosted","arch":"x64"}]') }}
     runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v4
