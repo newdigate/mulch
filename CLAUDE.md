@@ -31,7 +31,8 @@ patches ever change; `gl_smoke`'s `scenario_soundio_connect_keeps_fd0` guards th
 
 **CI / packaging.** `.github/workflows/build-{linux,macos,windows}.yml` build + package the app per
 OS: Linux AppImage (`linuxdeploy` + `appimagetool`, GTK plugin), macOS `.app` for arm64 (`macos-14`)
-+ Intel x64 (`macos-13`) with dylibs bundled via `dylibbundler`, and a Windows Inno Setup installer
++ Intel x64 (a self-hosted runner on the maintainer's Mac, since GitHub's `macos-13` runners are
+scarce) with dylibs bundled via `dylibbundler`, and a Windows Inno Setup installer
 (MSVC + vcpkg FFmpeg). They run on push/PR (artifacts) + attach to a Release on `v*` tags; packages
 are unsigned. Helper files live in `packaging/{linux,macos,windows}/`. Because `ShaderNode` loads
 shaders by CWD-relative path, each package launches the app with `shaders/` as the working directory
