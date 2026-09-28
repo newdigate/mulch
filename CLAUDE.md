@@ -34,7 +34,11 @@ OS: Linux AppImage (`linuxdeploy` + `appimagetool`, GTK plugin), macOS `.app` fo
 + Intel x64 (a self-hosted runner on the maintainer's Mac, since GitHub's `macos-13` runners are
 scarce) with dylibs bundled via `dylibbundler`, and a Windows Inno Setup installer
 (MSVC + vcpkg FFmpeg). They run on push/PR (artifacts) + attach to a Release on `v*` tags; packages
-are unsigned. Helper files live in `packaging/{linux,macos,windows}/`. Because `ShaderNode` loads
+are unsigned. The repo is public and a self-hosted runner executes a pull request's code, so a pull
+request from a fork gets only the arm64 macOS build (the matrix is built from the event). A fork can
+still edit the workflow in its own pull request, though, so the real guard is the repository setting
+that requires approval for outside contributors' workflow runs. Helper files live in
+`packaging/{linux,macos,windows}/`. Because `ShaderNode` loads
 shaders by CWD-relative path, each package launches the app with `shaders/` as the working directory
 (AppImage `AppRun`, `.app` launcher script, installer shortcut `WorkingDir`).
 
